@@ -29,6 +29,20 @@ The included `carc` profile uses slower polling and disables live GPU sampling,
 queue forecast probes, and allocation queries. Adapt it to your site's guidance.
 The [runbook](docs/runbook.md) covers Python/Slurm modules and optional features.
 
+To launch the new application with one `tower` command, run this from the checkout:
+
+```bash
+python3 scripts/install_shell.py --apply
+source ~/.bashrc
+tower
+```
+
+For an older clone, first run `git pull --ff-only` to get the helper. It backs up
+`.bashrc`, replaces the active `tower`/`dash`/`dash2` commands with a single `tower`
+alias, and uses this checkout's `.venv` even when another virtual environment is active.
+Arguments pass through: `tower --once`, `tower --doctor`, or `tower --fake`.
+See the [shell setup options](docs/runbook.md#use-one-tower-shell-command) for a preview.
+
 Setup creates an isolated `.venv`, checks prerequisites, validates every terminal
 view against simulated data, and saves `.tower/demo.txt`. It needs no package
 downloads or administrator access. Existing environments, configuration, state,

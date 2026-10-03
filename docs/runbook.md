@@ -54,6 +54,53 @@ environments are reused; unrelated directories are rejected. Keep the checkout:
 the `./scripts/tower` launcher runs its source with `.venv/bin/python` when present,
 otherwise `python3`. To run without setup, use `python3 -m tower` from the checkout.
 
+### Use one `tower` shell command
+
+After setting up the application, install the optional Bash alias from the new
+Slurm-Tower checkout on CARC. If this is an older clone, run `git pull --ff-only`
+first to obtain `scripts/install_shell.py`; preserve any conflicting local edits.
+
+```bash
+python3 scripts/install_shell.py --apply
+source ~/.bashrc
+type tower
+tower
+```
+
+The helper backs up `.bashrc` before updating it atomically and prints the backup
+location. Its managed block clears the old `tower`, `dash`, and `dash2` aliases or
+functions, then defines one `tower` alias for this checkout's `scripts/tower` with
+the low-impact `carc` profile. It preserves the rest of your shell configuration.
+Rerunning the helper updates the same managed block.
+
+The launcher uses the Slurm-Tower checkout's own `.venv`, independently of an
+active virtual environment for another project. Run normal setup first so that `.venv` exists;
+without it, the source launcher falls back to `python3` on `PATH`. Keep this
+checkout at its current location, or rerun the helper after moving it.
+
+The alias passes your arguments through and uses `CARC_ACCOUNT` when that shell
+variable is set. When it is empty, Tower retains its normal account detection.
+You can override the account for one invocation with `tower --account ACCOUNT`.
+
+```bash
+tower --doctor
+tower --once --tab sources
+tower --fake
+```
+
+To inspect the alias block without changing a file, run the helper with no flags.
+To create a complete updated-file preview, choose an output path:
+
+```bash
+python3 scripts/install_shell.py
+python3 scripts/install_shell.py --output /tmp/tower-bashrc-preview
+```
+
+Use `--bashrc /path/to/bashrc` to select a different Bash configuration file for
+preview or installation. The helper modifies shell startup configuration only
+when you explicitly pass `--apply`. Source the file you updated, or open a new
+Bash session, to load the alias.
+
 ## 3. Adapt setup to your environment
 
 | Your environment | Setup | Launch |
@@ -205,4 +252,7 @@ running it.
 
 To remove Tower, remove only the checkout and virtual environment you created.
 Personal configuration and state are separate; keep them for future use or remove
-them intentionally. Setup never edits shell startup files or creates services.
+them intentionally. Core setup never edits shell startup files or creates services.
+The optional
+`scripts/install_shell.py --apply` command changes only the selected Bash startup
+file after creating a backup.
