@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slurm-tower"
+version = "2.0.0"
+description = "A clear Slurm dashboard with resource analytics, live logs, and portable ASCII reports"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Slurm-Tower contributors"}]
+keywords = ["slurm", "hpc", "dashboard", "tui", "curses", "cluster", "jobs"]
+classifiers = [
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "build>=1,<2"]
+
+[project.urls]
+Homepage = "https://github.com/rahel99x/Slurm-Tower"
+Documentation = "https://github.com/rahel99x/Slurm-Tower/blob/main/docs/runbook.md"
+Repository = "https://github.com/rahel99x/Slurm-Tower"
+Issues = "https://github.com/rahel99x/Slurm-Tower/issues"
+
+[project.scripts]
+tower = "tower.cli:main"
+
+[tool.setuptools]
+packages = ["tower"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

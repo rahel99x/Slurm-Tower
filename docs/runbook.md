@@ -1,0 +1,208 @@
+# The Slurm Tower runbook
+
+Run Tower in a terminal on your CARC login node. Setup is noninteractive and
+repeatable. It never submits or changes jobs, installs system packages, replaces
+your configuration, or asks for a password.
+
+## 1. Connect to CARC and check the tools
+
+Use your institution's documented SSH hostname and username. Complete the normal
+key, passphrase, MFA, and host-key verification flow, then run these commands on
+the login node:
+
+```bash
+python3 --version
+command -v squeue
+command -v scontrol
+```
+
+Use Python 3.10 or newer. If Python or Slurm is unavailable, check your site's
+module documentation. Where a module system is provided, `module avail` lists
+available modules; load the actual Python/Slurm modules your site specifies.
+Module names and available versions vary, so no specific module name is assumed.
+
+The application uses standard-library Python and POSIX curses on Linux, macOS,
+or WSL. There are no runtime packages, databases, servers, or build tools to install.
+Do not install system software or start a Slurm controller to use Tower.
+
+## 2. Get the source and set up locally
+
+```bash
+git clone https://github.com/rahel99x/Slurm-Tower.git
+cd Slurm-Tower
+python3 scripts/setup.py --mode local
+./scripts/tower --config docs/config.example.json --profile carc
+```
+
+If the login node cannot access GitHub, download the repository on a permitted
+machine and transfer the source directory using your site's file-transfer procedure.
+Then run setup from that directory. The default setup is offline and needs no
+administrator access.
+
+The `carc` example profile polls jobs every 10 seconds, disables in-allocation GPU
+sampling, disables forecast probes, and disables allocation-budget queries. Start
+there, then adjust the profile to your site's usage guidelines. It does not assume
+an account name, partition, scheduler version, or institution-specific hostname.
+
+Every mode validates simulated JSON output, all nine ASCII terminal views, and a
+plain-text report. Local mode checks command availability; it does not query or
+change your jobs. A successful diagnostic confirms tools, not the health of the
+Slurm controller or your site's authorization rules. Verify real data in step 4.
+
+Setup creates `.venv` without downloading pip or packages. Existing valid virtual
+environments are reused; unrelated directories are rejected. Keep the checkout:
+the `./scripts/tower` launcher runs its source with `.venv/bin/python` when present,
+otherwise `python3`. To run without setup, use `python3 -m tower` from the checkout.
+
+## 3. Adapt setup to your environment
+
+| Your environment | Setup | Launch |
+| --- | --- | --- |
+| CARC or another Slurm login node | `python3 scripts/setup.py --mode local` | `./scripts/tower --config docs/config.example.json --profile carc` |
+| Try the simulated cluster | `python3 scripts/setup.py --mode demo` | `./scripts/tower --fake` |
+| Let setup detect it | `python3 scripts/setup.py` | Use the command it prints |
+| Optional SSH transport from another machine | `python3 scripts/setup.py --mode remote --host your-ssh-alias` | `./scripts/tower --host your-ssh-alias` |
+
+Automatic mode uses remote when given `--host`, local when `squeue` is on `PATH`,
+and demo otherwise. If a Slurm command is present but the installation is incomplete,
+setup reports the missing capability; it does not disguise a broken cluster as a demo.
+
+```bash
+# Choose a separate virtual environment; use the launch command setup prints.
+python3 scripts/setup.py --mode demo --venv /path/to/tower-venv
+
+# Read a complete ASCII snapshot in the terminal.
+less .tower/demo.txt
+
+# Save a fresh demo report without replacing an existing file.
+python3 scripts/setup.py --mode demo --report /tmp/tower-preview.txt
+
+# Optional contributor tools and full regression suite; requires a package index.
+python3 scripts/setup.py --mode demo --dev --test
+```
+
+`--dev` bootstraps pip inside the venv if needed, then installs the editable project,
+pytest, and packaging tools using the configured pip index with normal verification.
+Development tools are unnecessary for everyday monitoring. Setup exits `0` when
+requested checks pass and `1` with a specific failure otherwise (`2` indicates
+invalid command-line syntax). Demo validation still completes if local or remote
+prerequisites are missing. Successful local and remote setup prints a launch command
+using the included low-impact `carc` profile; demo setup prints `--fake`.
+
+### Optional SSH transport
+
+The primary workflow runs Tower directly on the login node. If you choose to run
+its terminal interface on a different machine, `--host` sends Slurm commands and
+log reads over your existing SSH connection:
+
+```bash
+ssh your-ssh-alias 'command -v squeue; command -v sacct'
+./scripts/tower --doctor --host your-ssh-alias
+./scripts/tower --host your-ssh-alias --no-gpu
+```
+
+Doctor uses a bounded, read-only SSH check in batch mode. Establish normal SSH
+access first; do not disable host-key checking. Put a bastion, nondefault port, or
+login username in your normal `~/.ssh/config`, then pass that SSH alias to Tower.
+Remote log reads use Linux coreutils (`stat`, `dd`, `base64`, and `ls`).
+
+Slurm must be on the remote noninteractive `PATH`, not only in an interactive
+shell. Follow the site's module-loading instructions if those differ. No SSH
+keys or tokens belong in the repository; Tower uses your existing credentials.
+
+## 4. Verify real data with low-impact settings
+
+```bash
+./scripts/tower --doctor
+./scripts/tower --config docs/config.example.json --profile carc --once
+./scripts/tower --config docs/config.example.json --profile carc --once --tab sources
+```
+
+Jobs and Cluster should match your usual `squeue` and `sinfo` views. Sources shows
+each command's status, latency, retries, and last error. Missing optional accounting,
+allocation, or GPU features can leave those sections empty while the queue works.
+
+The `carc` profile disables live GPU collection. If site policy allows it, enable
+`gpu_sampling` in your personal profile. It runs short `srun` steps in an existing
+allocation and may fall back to SSH to the assigned node. `--no-gpu` disables it
+for one run. Forecasts use `sbatch --test-only` probes: these do not submit jobs but
+do contact the scheduler, and are also disabled in the `carc` profile.
+
+The dashboard reads job and log data. Job mutations are separate actions with
+confirmations. `tower run ... --yes` is explicit unattended authorization for
+that action; do not add it to a generic health check.
+
+## 5. Configure your cluster
+
+All defaults work without a config file. Copy [config.example.json](config.example.json)
+to a new personal file, preserve the `carc` profile, and add your account, partitions,
+thresholds, or polling preferences. Use `--config /path/to/my-tower.json --profile carc`
+to select it. Do not overwrite an existing personal configuration to follow this guide.
+
+JSON works on every supported Python. Python 3.11+ also accepts TOML. The optional
+`tower --write-config` command creates a default config only when none exists.
+Tower normally reads `~/.config/tower/config.toml` or `config.json`, honoring
+`XDG_CONFIG_HOME` and `TOWER_CONFIG`. State is under `~/.local/state/tower`, honoring
+`XDG_STATE_HOME`. Use `--no-state` to skip state and `--no-plugins` to skip plugins.
+
+Notification hooks and plugins execute code: load trusted files only. Demo mode
+simulates Slurm, but normal config/plugin loading still applies. Setup's smoke test
+uses an empty config and disables plugins and state explicitly.
+
+Slurm accounting itself may update only every 30 seconds. Faster polling does not
+guarantee fresher CPU metrics. Tune intervals to your site's guidance and use Sources
+to identify slow or unavailable commands.
+
+### Reports and automation
+
+```bash
+./scripts/tower --config /path/to/my-tower.json --profile carc --report report.txt
+less report.txt
+./scripts/tower --json > snapshot.json
+./scripts/tower --csv --tab history > history.csv
+./scripts/tower --doctor --json
+```
+
+Reports are plain ASCII snapshots for terminals, text editors, and attachments.
+Exports and recordings may expose names, account usage, log output, and file paths;
+review them before sharing and use `--fake` for public examples. The regular
+`--report PATH` command replaces its destination. Choose a unique filename to
+retain older reports. Setup's `--report` never replaces a file.
+
+For scheduled collection, use absolute paths to the venv's Python, the checkout's
+`tower` directory, and your config. The interactive UI needs a terminal; use
+`--once`, `--json`, or `--report` in automation. No background service is required.
+
+## 6. Troubleshoot the specific failure
+
+| Symptom | Next step |
+| --- | --- |
+| Python is too old | Select a Python 3.10+ module/interpreter provided by the site. |
+| `.venv` is not a virtual environment | Keep its contents; choose a new `--venv PATH`. |
+| `No module named venv` | Select a site Python with venv support, or run `python3 -m tower --fake` directly. |
+| `No module named curses` | Use a Python build with curses support, or WSL on Windows. |
+| Slurm command missing | Load the site's Slurm module and rerun `--doctor` on the login node. |
+| SSH check fails | Verify normal SSH, keys/MFA, host keys, network access, and remote noninteractive `PATH`. |
+| TOML fails on Python 3.10 | Use JSON config or Python 3.11+. |
+| Blank history or budget | Check Sources; `sacct`, `sreport`, or `sacctmgr` may be unavailable or restricted. |
+| Missing GPU metrics | Start with `--no-gpu`; enable sampling only for allocated GPUs where site policy permits. |
+| Terminal looks broken | Check `$TERM`, widen the terminal, and try `--ascii --no-color`. |
+| Setup's report looks unchanged | Existing reports are preserved; choose a new `--report` path. |
+| Contributor tools cannot download | Runtime setup is offline; omit `--dev`, use a permitted package mirror, or provide development wheels. |
+
+Network access is needed only for cloning, optional package installation, and SSH
+to a real cluster. Standard pip downloads use `pypi.org` and
+`files.pythonhosted.org` unless a different index is configured. Tower requires no
+analytics or telemetry endpoint.
+
+## 7. Update or remove
+
+Pull reviewed updates with `git pull --ff-only` when your checkout has no conflicting
+local edits, then rerun the same setup command. The source launcher sees changes
+immediately. For a packaged install, reinstall with that venv's
+`python -m pip install .`. Preserve personal changes and review incoming code before
+running it.
+
+To remove Tower, remove only the checkout and virtual environment you created.
+Personal configuration and state are separate; keep them for future use or remove
+them intentionally. Setup never edits shell startup files or creates services.
