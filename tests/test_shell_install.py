@@ -34,7 +34,7 @@ tower --once --tab history "argument with spaces"
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split("\0")[:-1] == [
-        "--config", str(root / "docs/config.example.json"), "--profile", "carc", "--ascii",
+        "--config", str(root / "docs/config.example.json"), "--profile", "carc", "--unicode",
         "--account", "current account", "--once", "--tab", "history", "argument with spaces",
     ]
 

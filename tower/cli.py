@@ -27,7 +27,7 @@ import shutil
 import sys
 import time
 
-from . import clock, plugins, screen
+from . import __version__, clock, plugins, screen
 from .actions import Actions, Notifier
 from .config import Config, default_path, state_dir
 from .controller import App
@@ -83,6 +83,20 @@ def make_backend(args, cfg: Config, user: str):
     return backend, files, replay, user
 
 
+def ascii_mode(args, cfg: Config) -> bool:
+    """Explicit glyph preferences override config, within the output encoding's limits."""
+    if cfg["theme"] == "reader":
+        return True
+    encoding = sys.stdout.encoding or "ascii"
+    try:
+        "█▁⣿┌".encode(encoding)
+    except (UnicodeError, LookupError):
+        return True
+    if args.ascii is not None:
+        return args.ascii
+    return bool(cfg["ascii"] or os.environ.get("TERM", "dumb") == "dumb")
+
+
 def build(args, cfg: Config) -> Session:
     user = args.user or cfg["user"] or os.environ.get("USER", "")
     if args.fake and not user:
@@ -113,7 +127,7 @@ def build(args, cfg: Config) -> Session:
     for i, expr in enumerate(args.alert or []):
         rules.append(dict(name=f"alert {i + 1}", when=expr, actions=["bell", "event"], every=600))
     store.alerts = AlertEngine(rules, store, user=user, notify=notifier, bell=bell_fn)
-    ascii_ = args.ascii or cfg["ascii"] or "UTF-8" not in (sys.stdout.encoding or "").upper() or cfg["theme"] == "reader"
+    ascii_ = ascii_mode(args, cfg)
     views = Views(Glyphs(ascii_), cfg, files=files, plugins=api)
     app = App(store, sampler, actions, cfg, user, ascii_=ascii_, interactive=not (args.once or args.json or args.csv or args.watch or args.run or args.eval or args.wait_for or args.report))
     app.plugins, app.files, app.views_ref = api, files, views
@@ -197,6 +211,7 @@ def scripted(args, s: Session) -> int:
 
 def parse(argv):
     ap = argparse.ArgumentParser(prog="tower", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--config", help="configuration file (TOML or JSON); default ~/.config/tower/config.toml")
     ap.add_argument("--write-config", action="store_true", help="write the commented defaults to the default path and exit")
     ap.add_argument("--doctor", action="store_true", help="check local, --host, or --fake prerequisites without sampling or changing jobs; combine with --json")
@@ -209,7 +224,9 @@ def parse(argv):
     ap.add_argument("--days", type=float, default=0.0, help="history window in days (config: history_days)")
     ap.add_argument("--no-gpu", action="store_true", help="no nvidia-smi sampling")
     ap.add_argument("--bell", action="store_true", help="ring when one of your jobs starts")
-    ap.add_argument("--ascii", action="store_true", help="plain characters for bars, rules and sparklines")
+    # Last preference wins, so --ascii can override a shell alias's --unicode.
+    ap.add_argument("--ascii", action="store_const", const=True, default=None, help="plain characters for bars, rules and sparklines")
+    ap.add_argument("--unicode", dest="ascii", action="store_const", const=False, help="solid block and high-resolution terminal graphics (encoding permitting)")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--no-plugins", action="store_true", help="do not load ~/.config/tower/plugins")
     ap.add_argument("--once", action="store_true", help="one frame of text and exit")
@@ -237,7 +254,7 @@ def parse(argv):
     if "run" in argv:                                      # tower [tower flags] run <command and its flags> [tower flags]
         i = argv.index("run")
         pre, post, cmd = argv[:i], argv[i + 1:], []
-        switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--no-color", "--no-gpu", "--bell", "--paused"}
+        switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--unicode", "--no-color", "--no-gpu", "--bell", "--paused"}
         valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval"}
         if post and post[0] and "resubmit".startswith(post[0]):
             # After `run resubmit`, --account belongs to sbatch. Tower's account
@@ -293,7 +310,7 @@ def main(argv=None):
         except KeyError as exc:
             print(f"tower: {exc.args[0]}", file=sys.stderr)
             return 1
-        if args.no_color:
+        if args.no_color or os.environ.get("NO_COLOR"):
             cfg.set("color", False)
         if args.doctor:
             from .doctor import diagnose, render
@@ -302,7 +319,7 @@ def main(argv=None):
             return 0 if result["ready"] else 1
         s = build(args, cfg)
         app, views, store, sampler, actions = s.app, s.views, s.store, s.sampler, s.actions
-        width = args.width or max(80, shutil.get_terminal_size((130, 40)).columns)
+        width = args.width or max(1, shutil.get_terminal_size((130, 40)).columns)
         color = cfg["color"] and sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb"
         try:
             if args.run or args.eval or args.wait_for:

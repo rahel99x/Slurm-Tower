@@ -10,6 +10,7 @@ import time
 from typing import Optional
 
 from . import layout as L
+from . import palette as P
 from .model import to_plain
 from .views import stdout_path
 
@@ -36,6 +37,113 @@ def style_attr(style: str, theme: str, base: dict, colors: dict, bold: int) -> i
     return a
 
 
+class CursesPalette:
+    """Lazy, bounded colour pairs; an initialized pair is never repurposed.
+
+    Reusing pair numbers for new gradients changes already painted cells. When
+    a small terminal exhausts its pair table, approximate with the nearest
+    existing pair instead. Styles and quantised colours are cached across frames.
+    """
+
+    def __init__(self, curses, enabled: bool = True):
+        self.curses = curses
+        self.enabled = enabled and not P.colors_disabled() and curses.has_colors()
+        self.background = -1
+        self.count = self.limit = 0
+        self.pairs: dict[tuple[int, int], int] = {}
+        self.approximations: dict[tuple[int, int], int] = {}
+        self.attributes: dict[tuple[str, str], int] = {}
+        if not self.enabled:
+            return
+        try:
+            curses.start_color()
+            self.count = (1 << 24) if curses.COLORS >= (1 << 24) else (256 if curses.COLORS >= 256 else min(8, curses.COLORS))
+            self.limit = max(0, min(curses.COLOR_PAIRS - 1, 1024))
+            try:
+                curses.use_default_colors()
+            except curses.error:
+                self.background = curses.COLOR_BLACK
+            if self.count < 8 or not self.limit:
+                self.enabled = False
+                return
+            # Reserve essential text and selection tones before gradient charts.
+            for style in ("white", "sel", "cyan", "green", "yellow", "red", "magenta", "blue"):
+                parsed = P.resolve(style)
+                self._pair(self._index(parsed.foreground), self._index(parsed.background, background=True))
+            if not self.pairs:
+                self.enabled = False
+        except curses.error:
+            self.enabled = False
+
+    def _index(self, color, background=False):
+        if color is None:
+            if background or self.background == -1:
+                return self.background
+            color = P.rgb(P.PALETTE["white"])
+        if self.count >= (1 << 24):
+            return (color[0] << 16) | (color[1] << 8) | color[2]
+        return P.color_index(color, self.count)
+
+    def _rgb(self, index, default):
+        if index < 0:
+            return P.rgb(P.PALETTE[default])
+        if self.count >= (1 << 24):
+            return ((index >> 16) & 255, (index >> 8) & 255, index & 255)
+        return P.INDEXED[index]
+
+    def _pair(self, foreground: int, background: int) -> int:
+        key = (foreground, background)
+        if key in self.pairs:
+            return self.pairs[key]
+        if key in self.approximations:
+            return self.approximations[key]
+        c = self.curses
+        if len(self.pairs) < self.limit:
+            number = len(self.pairs) + 1
+            try:
+                c.init_pair(number, foreground, background)
+                result = c.color_pair(number)
+                self.pairs[key] = result
+                return result
+            except (c.error, OverflowError, ValueError):
+                # Some curses builds expose more pairs than init_pair supports.
+                self.limit = len(self.pairs)
+        if not self.pairs:
+            return 0
+
+        def distance(existing):
+            fg, bg = existing
+            a, b = self._rgb(foreground, "white"), self._rgb(fg, "white")
+            x, y = self._rgb(background, "black"), self._rgb(bg, "black")
+            return sum((v - w) ** 2 for v, w in zip(a, b)) + 2 * sum((v - w) ** 2 for v, w in zip(x, y))
+
+        result = self.pairs[min(self.pairs, key=distance)]
+        if len(self.approximations) >= 4096:
+            self.approximations.clear()
+        self.approximations[key] = result
+        return result
+
+    def attr(self, style: str, theme: str = "default") -> int:
+        key = (style, theme)
+        if key in self.attributes:
+            return self.attributes[key]
+        c = self.curses
+        parsed = P.resolve(style, theme if self.enabled else "mono")
+        result = 0
+        flags = {"bold": c.A_BOLD, "dim": c.A_DIM, "rev": c.A_REVERSE, "under": c.A_UNDERLINE}
+        for flag in parsed.flags:
+            result |= flags[flag]
+        if self.enabled and (parsed.foreground is not None or parsed.background is not None):
+            result |= self._pair(self._index(parsed.foreground), self._index(parsed.background, background=True))
+            if "sel" in style.split("+") and self.limit < 2:
+                result |= c.A_REVERSE
+        # Keep plugin-generated styles from growing memory indefinitely.
+        if len(self.attributes) >= 4096:
+            self.attributes.clear()
+        self.attributes[key] = result
+        return result
+
+
 def key_name(ch: int, curses) -> Optional[str]:
     """A curses key code -> the name the controller and the config use."""
     if ch == -1:
@@ -60,7 +168,10 @@ def run_curses(app, views, sampler, store, actions, cfg):
     locale.setlocale(locale.LC_ALL, "")
 
     def main(stdscr):
-        curses.curs_set(0)
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
         stdscr.timeout(200)
         stdscr.keypad(True)
         try:
@@ -68,33 +179,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
             curses.mouseinterval(0)
         except curses.error:
             pass
-        base = dict(bold=curses.A_BOLD, dim=curses.A_DIM, rev=curses.A_REVERSE, under=curses.A_UNDERLINE, sel=curses.A_REVERSE | curses.A_BOLD)
-        colors, default_colors = {}, {}
-        if cfg["color"] and curses.has_colors():
-            curses.start_color()
-            try:
-                curses.use_default_colors()
-                bg = -1
-            except curses.error:
-                bg = curses.COLOR_BLACK
-            for i, (name, c) in enumerate([("green", curses.COLOR_GREEN), ("yellow", curses.COLOR_YELLOW), ("red", curses.COLOR_RED), ("cyan", curses.COLOR_CYAN),
-                                           ("magenta", curses.COLOR_MAGENTA), ("blue", curses.COLOR_BLUE), ("white", curses.COLOR_WHITE)], start=1):
-                curses.init_pair(i, c, bg)
-                colors[name] = curses.color_pair(i)
-                if curses.COLORS >= 256 and curses.COLOR_PAIRS >= 16:
-                    curses.init_pair(i + 8, PALETTE_256[name], bg)
-                    default_colors[name] = curses.color_pair(i + 8)
-            try:
-                curses.init_pair(8, curses.COLOR_WHITE, curses.COLOR_BLUE)
-                colors["sel"] = curses.color_pair(8) | curses.A_BOLD
-            except curses.error:
-                pass
-
-        default_colors = {**colors, **default_colors}
-
-        def attr(style):
-            palette = default_colors if app.theme == "default" else colors
-            return style_attr(style, app.theme, base, palette, curses.A_BOLD)
+        palette = CursesPalette(curses, cfg["color"])
 
         def paint(y, x0, segs, width, height):
             x = x0
@@ -103,7 +188,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
                     break
                 text = L.cut(text, width - x, True) if L.vlen(text) > width - x else text
                 try:
-                    stdscr.addstr(y, x, text, attr(style))
+                    stdscr.addstr(y, x, text, palette.attr(style, app.theme))
                 except curses.error:
                     pass
                 x += L.vlen(text)
@@ -129,7 +214,8 @@ def run_curses(app, views, sampler, store, actions, cfg):
             if app.bell and started > rung:
                 curses.beep()
             rung = started
-            stdscr.refresh()
+            stdscr.noutrefresh()
+            curses.doupdate()
             ch = stdscr.getch()
             name = key_name(ch, curses)
             if name is None or name == "resize":
@@ -164,6 +250,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
                     try:
                         subprocess.call(files.less_argv(path))
                     finally:
+                        stdscr.touchwin()
                         stdscr.refresh()
                 else:
                     app.say("no stdout file yet for this job")
@@ -174,34 +261,58 @@ def run_curses(app, views, sampler, store, actions, cfg):
 def run_watch(app, views, sampler, store, actions, cfg, interval: float, color: bool, width_hint: int = 120):
     """The non-interactive animated screen (Ctrl-C exits)."""
     import shutil
-    sys.stdout.write("\033[?25l\033[2J")
+    interactive = sys.stdout.isatty() and os.environ.get("TERM", "").lower() != "dumb"
+    if interactive:
+        sys.stdout.write("\033[?25l\033[2J")
     rung = 0
+    previous: list[str] = []
+    previous_size = None
     try:
         while True:
+            size = shutil.get_terminal_size((width_hint, 40))
+            width, height = max(1, size.columns), max(1, size.lines)
+            app.width = width
             app.tick()
             snap = store.snapshot()
-            width = max(80, shutil.get_terminal_size((width_hint, 40)).columns)
-            rows, _ = views.compose(snap, app, width, None, actions)
+            rows, _ = views.compose(snap, app, width, height if interactive else None, actions)
+            if interactive and len(rows) == height:
+                rows[-1] = L.clip_row([(" Ctrl-C exit", "bold"), (f"  |  watch every {interval:g}s", "dim")], width)
             started = sum(1 for e in snap["events"] if e.get("kind") == "started" and not e.get("old"))
             bell = "\a" if app.bell and started > rung else ""
             rung = started
-            sys.stdout.write("\033[H\033[J" + L.to_text(rows, width, color) + "\n" + bell)
+            frame = L.to_text(rows, width, color, theme=app.theme).split("\n")
+            if interactive:
+                if previous_size is not None and previous_size != (width, height):
+                    sys.stdout.write("\033[2J")
+                    previous = []
+                # Update changed lines only, retaining a stable screen on SSH.
+                for y, line in enumerate(frame):
+                    if y >= len(previous) or line != previous[y]:
+                        sys.stdout.write(f"\033[{y + 1};1H{line}\033[K")
+                if len(previous) > len(frame) and len(frame) < height:
+                    sys.stdout.write(f"\033[{len(frame) + 1};1H\033[J")
+                sys.stdout.write(bell)
+            else:
+                sys.stdout.write("\n".join(frame) + "\n" + bell)
+            previous = frame
+            previous_size = (width, height)
             sys.stdout.flush()
             time.sleep(interval)
     except KeyboardInterrupt:
         pass
     finally:
-        sys.stdout.write("\033[?25h\n")
+        sys.stdout.write("\033[?25h\n" if interactive else "")
         sys.stdout.flush()
 
 
 def once_text(app, views, store, actions, width: int, color: bool, tab: Optional[str] = None) -> str:
     if tab:
         app.tab = tab
+    app.width = width
     app.tick()
     snap = store.snapshot()
     rows, _ = views.compose(snap, app, width, None, actions)
-    return L.to_text(rows, width, color)
+    return L.to_text(rows, width, color, theme=app.theme)
 
 
 def once_json(store) -> str:

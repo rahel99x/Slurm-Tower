@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 DEFAULTS: Dict[str, Any] = {
     "user": "",                          # empty: $USER
     "account": "",                       # empty: the first account of sshare -U
-    "ascii": True,                       # portable ASCII bars, rules and sparklines for CARC and SSH terminals
+    "ascii": False,                      # solid Unicode blocks; auto-fallback for limited terminal encodings
     "color": True,
     "history_days": 2,                   # sacct window of the history tab
     "log_lines": 8,                      # stdout tail under the selected job
@@ -67,7 +67,7 @@ DEFAULTS: Dict[str, Any] = {
 TEMPLATE = '''# tower configuration (TOML).  Every key is optional; these are the defaults.
 # user = ""                     # empty: $USER
 # account = ""                  # empty: the first account of sshare -U
-ascii = true                    # portable ASCII bars, rules and sparklines for CARC and SSH terminals
+ascii = false                   # solid Unicode blocks (use --ascii for a plain-character fallback)
 color = true
 history_days = 2                # sacct window of the history tab
 log_lines = 8                   # stdout tail under the selected job

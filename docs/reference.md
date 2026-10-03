@@ -3,12 +3,16 @@
 [Quick start](../README.md) · [Runbook](runbook.md)
 
 This reference describes the terminal dashboard and its underlying metrics.
+Unicode block visuals are the normal terminal presentation, with portable ASCII
+and accessible themes available.
 ASCII reports present the complete snapshot as portable plain text.
 Run Tower directly on your CARC login node; the runbook provides a low-impact profile.
 
 ```bash
 tower                        # interactive (curses); q quits, ? lists the keys
 tower --fake                 # a simulated cluster: try it anywhere, no Slurm needed
+tower --unicode              # explicitly prefer block and braille visuals
+tower --ascii --no-color     # portable fallback for a limited terminal
 tower --watch --bell         # the animated non-interactive screen (Ctrl-C exits)
 tower --once --tab history   # one frame of text, e.g. to paste into a chat
 tower --json                 # the whole snapshot as JSON, for scripts
@@ -24,9 +28,43 @@ tower --report report.txt    # the whole dashboard as a plain ASCII text report
 
 ## Install and configure
 
-Start with the [quick start](../README.md#start-in-one-minute) or the
-[adaptive runbook](runbook.md). The commands below use `tower` after a package
-installation; `./scripts/tower` from the checkout accepts the same arguments.
+Start with the [quick start](../README.md#start-on-your-carc-login-node) or the
+[adaptive runbook](runbook.md). The commands below use `tower` after installing
+the Bash alias or Python package; `./scripts/tower` from the checkout accepts
+the same arguments.
+
+## Terminal visuals and accessibility
+
+The dashboard uses solid Unicode blocks for resource bars, distributions, and
+timelines. Fractional blocks preserve values at one eighth of a character's width.
+Filled area charts use gradient blocks; braille telemetry curves use two by four
+dots per character for finer detail. Measured resource heatmaps use opaque cells,
+an explicit scale, and numeric readings. Composition strips carry a legend with
+the underlying counts or allocation values.
+`--unicode` explicitly selects the Unicode preference; `--ascii` selects portable
+characters. By default Tower checks the output encoding and terminal type and
+falls back to ASCII when needed. `--unicode` overrides the default fallback for
+`TERM=dumb`, but cannot override an output encoding that lacks the glyphs.
+Existing configurations with `ascii = true`
+retain that preference unless overridden on the command line.
+
+Color adapts to terminal support. The interactive curses renderer uses native
+truecolor when ncurses and the terminal description expose direct colors, with
+256-color and basic fallbacks. ANSI `--once` and `--watch` output uses truecolor gradients
+when `COLORTERM` is `truecolor` or `24bit`, or `$TERM` names a direct-color terminal;
+otherwise it selects 256 or basic colors. Labels, axis values, and state names convey
+the metrics without relying on color alone. `--no-color` and a nonempty
+`NO_COLOR` environment variable suppress colors. `T` or `:theme NAME` selects
+`default`, `mono`, `high`, `cb`, or `reader`: `mono` retains the graphics without
+colors; `cb` uses the color-blind palette; `reader` forces plain ASCII text.
+
+Charts use collected measurements. Unavailable metrics and gaps remain unknown,
+and time-series detail grows as samples arrive. ASCII `--report` exports remain
+portable plain text regardless of the live dashboard's glyph preference.
+
+Roomier terminals reveal resource cards, node heatmaps, and additional charts;
+compact terminals retain the essential tables and labels. These visuals reuse
+the existing snapshot and sample history without increasing Slurm polling.
 
 ## Tabs
 

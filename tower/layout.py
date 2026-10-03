@@ -5,6 +5,7 @@ Styles are '+'-joined names: bold dim rev under green yellow red cyan magenta bl
 from __future__ import annotations
 
 import unicodedata
+import math
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -13,6 +14,7 @@ Row = List[Seg]
 
 SPARK = "▁▂▃▄▅▆▇█"
 SPARK_ASCII = ".:-=+*#@"
+FRACTIONS = " ▏▎▍▌▋▊▉█"
 
 
 def vlen(s: str) -> int:
@@ -152,16 +154,49 @@ def level(frac: float) -> str:
 
 
 def bar(g: Glyphs, frac: Optional[float], width: int, invert: bool = False) -> Seg:
-    f = 0.0 if frac is None else max(0.0, min(1.0, frac))
-    n = int(round(f * width))
-    return (g.full * n + g.empty * (width - n), "dim" if frac is None else level(1 - f if invert else f))
+    """A meter with eighth-cell Unicode precision and a distinct unknown state."""
+    width = max(0, width)
+    known = frac is not None and math.isfinite(frac)
+    f = max(0.0, min(1.0, frac)) if known else 0.0
+    if g.ascii:
+        n = int(round(f * width))
+        text = g.full * n + g.empty * (width - n)
+    else:
+        units = min(width * 8, int(round(f * width * 8)))
+        full, partial = divmod(units, 8)
+        text = g.full * full + (FRACTIONS[partial] if partial else "")
+        text += g.empty * (width - full - bool(partial))
+    return (text, "dim" if not known else level(1 - f if invert else f))
+
+
+def gradient_bar(g: Glyphs, frac: Optional[float], width: int, start: str = "#22d3ee", end: str = "#a78bfa") -> Row:
+    """A smooth opaque meter, with a dark track and an explicit unknown marker.
+
+    Colours are style metadata; characters still form a useful meter when colour is disabled.
+    """
+    text, style = bar(g, frac, width)
+    if g.ascii:
+        return [(text, style)]
+    if frac is None or not math.isfinite(frac):
+        width = max(0, width)
+        left = max(0, (width - 1) // 2)
+        return [(g.empty * left + ("?" if width else "") + g.empty * max(0, width - left - 1), "dim")]
+    from .palette import gradient
+    rows: Row = []
+    for i, ch in enumerate(text):
+        color = gradient(start, end, i / max(1, width - 1)) if ch != g.empty else "#24445b"
+        rows.append((ch, "fg:" + color))
+    return rows
 
 
 def spark(g: Glyphs, values: Sequence[Optional[float]], width: int = 12) -> str:
-    vals = [v for v in values if v is not None][-width:]
-    if not vals:
-        return " " * width
-    return "".join(g.spark[min(7, int(max(0.0, min(1.0, v)) * 7.999))] for v in vals).rjust(width)
+    """The most recent samples, preserving missing positions instead of shifting time."""
+    if width <= 0:
+        return ""
+    vals = values[-width:]
+    return "".join(" " if v is None or not math.isfinite(v) else
+                   g.spark[min(7, int(max(0.0, min(1.0, v)) * 7.999))]
+                   for v in vals).rjust(width)
 
 
 def rule(g: Glyphs, width: int, title: str = "", style: str = "dim") -> Row:
@@ -253,14 +288,18 @@ def clip_row(row: Row, width: int) -> Row:
 ANSI = {"bold": "1", "dim": "2", "rev": "7", "under": "4", "green": "32", "yellow": "33", "red": "31", "cyan": "36", "magenta": "35", "blue": "34", "white": "37"}
 
 
-def to_text(rows: Sequence[Row], width: int, color: bool = False) -> str:
+def to_text(rows: Sequence[Row], width: int, color: bool = False, color_depth: Optional[int] = None,
+            theme: str = "default") -> str:
     """Rows as lines of text, with ANSI colours when asked."""
+    if color:
+        from .palette import ansi_codes, color_depth as detect_depth
+        color_depth = detect_depth() if color_depth is None else color_depth
     out = []
     for row in rows:
         parts = []
         for text, style in clip_row(row, width):
             if color and style:
-                codes = ";".join(ANSI[s] for s in style.split("+") if s in ANSI)
+                codes = ansi_codes(style, color_depth=color_depth, theme=theme)
                 parts.append(f"\033[{codes}m{text}\033[0m" if codes else text)
             else:
                 parts.append(text)

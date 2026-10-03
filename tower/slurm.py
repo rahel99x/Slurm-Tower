@@ -4,6 +4,7 @@ small cluster that evolves in time, so the parsers, the screen and the tests all
 from __future__ import annotations
 
 import os
+import math
 import re
 import subprocess
 import time
@@ -561,8 +562,17 @@ def parse_node(text: str) -> Optional[Node]:
     kv = parse_kv(text)
     if "NodeName" not in kv:
         return None
-    return Node(name=kv["NodeName"], state=kv.get("State", ""), cpus=fint(kv.get("CPUTot")), alloc=fint(kv.get("CPUAlloc")), load=fnum(kv.get("CPULoad")),
-                mem_total=fnum(kv.get("RealMemory")), mem_free=fnum(kv.get("FreeMem")), gres=kv.get("Gres", ""), gres_used=kv.get("GresUsed", ""),
+    def measurement(key: str) -> Optional[float]:
+        # Slurm can report N/A while a node is down or before its first update.
+        # Never turn missing telemetry into a measured idle/exhausted state.
+        try:
+            value = float(kv[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) and value >= 0 else None
+
+    return Node(name=kv["NodeName"], state=kv.get("State", ""), cpus=fint(kv.get("CPUTot")), alloc=fint(kv.get("CPUAlloc")), load=measurement("CPULoad"),
+                mem_total=measurement("RealMemory") or 0.0, mem_free=measurement("FreeMem"), gres=kv.get("Gres", ""), gres_used=kv.get("GresUsed", ""),
                 partitions=kv.get("Partitions", ""))
 
 

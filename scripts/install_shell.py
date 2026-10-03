@@ -31,7 +31,7 @@ _slurm_tower() {{
   fi
   local -a command=("$root/scripts/tower"
     --config "${{TOWER_CONFIG:-$root/docs/config.example.json}}"
-    --profile "${{SLURM_TOWER_PROFILE:-carc}}" --ascii)
+    --profile "${{SLURM_TOWER_PROFILE:-carc}}" --unicode)
   if [ -n "${{CARC_ACCOUNT:-}}" ]; then
     command+=(--account "$CARC_ACCOUNT")
   fi

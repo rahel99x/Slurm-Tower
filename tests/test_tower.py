@@ -54,7 +54,9 @@ def test_parsers_on_recorded_output():
 
 
 # ------------------------------------------------------------------------------------------------ layout and config
-def test_layout_fits_drops_and_clips():
+def test_layout_fits_drops_and_clips(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.delenv("NO_COLOR", raising=False)
     cols = [L.Column("a", "A", 2, 10), L.Column("b", "B", 4, 40, flex=True), L.Column("c", "C", 3, 5, ">")]
     rows = [dict(a="xx", b="a very long job name indeed", c="1"), dict(a="y", b="short", c="12345")]
     w, kept = L.fit_columns(cols, rows, 100)
@@ -251,7 +253,7 @@ def test_cli_once_json_and_watch_from_the_simulated_cluster():
     r = subprocess.run([sys.executable, DASH, "--fake", "--json", "--no-state"], env=env, capture_output=True, text=True)
     assert r.returncode == 0 and json.loads(r.stdout)["account"]["account"] == "lab_01"
     r = subprocess.run(["timeout", "-s", "INT", "2", sys.executable, DASH, "--fake", "--watch", "--ascii", "--no-state", "--interval", "0.5"], env=env, capture_output=True, text=True)
-    assert r.stdout.count("tower - alex") >= 2 and r.stdout.rstrip().endswith("\x1b[?25h") and "Traceback" not in r.stderr
+    assert r.stdout.count("tower - alex") >= 2 and "\x1b" not in r.stdout and "Traceback" not in r.stderr
 
 
 @pytest.mark.skipif(shutil.which("script") is None, reason="needs util-linux script for a pseudo-terminal")

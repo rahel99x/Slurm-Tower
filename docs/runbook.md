@@ -44,7 +44,7 @@ sampling, disables forecast probes, and disables allocation-budget queries. Star
 there, then adjust the profile to your site's usage guidelines. It does not assume
 an account name, partition, scheduler version, or institution-specific hostname.
 
-Every mode validates simulated JSON output, all nine ASCII terminal views, and a
+Every mode validates simulated JSON output, all nine terminal views, and a
 plain-text report. Local mode checks command availability; it does not query or
 change your jobs. A successful diagnostic confirms tools, not the health of the
 Slurm controller or your site's authorization rules. Verify real data in step 4.
@@ -70,7 +70,8 @@ tower
 The helper backs up `.bashrc` before updating it atomically and prints the backup
 location. Its managed block clears the old `tower`, `dash`, and `dash2` aliases or
 functions, then defines one `tower` alias for this checkout's `scripts/tower` with
-the low-impact `carc` profile. It preserves the rest of your shell configuration.
+the low-impact `carc` profile and Unicode visuals. It preserves the rest of your
+shell configuration.
 Rerunning the helper updates the same managed block.
 
 The launcher uses the Slurm-Tower checkout's own `.venv`, independently of an
@@ -86,6 +87,7 @@ You can override the account for one invocation with `tower --account ACCOUNT`.
 tower --doctor
 tower --once --tab sources
 tower --fake
+tower --ascii --no-color     # portable fallback for a limited terminal
 ```
 
 To inspect the alias block without changing a file, run the helper with no flags.
@@ -100,6 +102,36 @@ Use `--bashrc /path/to/bashrc` to select a different Bash configuration file for
 preview or installation. The helper modifies shell startup configuration only
 when you explicitly pass `--apply`. Source the file you updated, or open a new
 Bash session, to load the alias.
+
+### Preview and choose terminal visuals
+
+Tower renders every chart inside the terminal; no browser, graphical display, or
+image viewer is needed. A UTF-8 terminal and a font with block and braille glyphs
+provide the fullest visuals. Unicode is the default, with an automatic ASCII
+fallback for unsupported output encodings and dumb terminals. `--unicode` selects
+the Unicode preference explicitly, even when `$TERM` is `dumb`, while an unsupported
+output encoding still requires ASCII. `--ascii` selects portable characters. An
+explicit `tower --ascii` also overrides the alias's Unicode preference.
+
+Try the full dashboard without contacting the cluster:
+
+```bash
+./scripts/tower --fake --unicode
+# Or print one simulated Analytics frame in the current terminal:
+./scripts/tower --fake --unicode --once --tab analytics
+```
+
+Let the demo run briefly to build sample history, then use `Tab` for the nine pages
+and the left/right arrows for each page's alternate views. `T` cycles themes.
+The `mono` theme keeps the glyphs without colors; `reader` uses plain ASCII text.
+`--no-color` or a nonempty `NO_COLOR` environment variable disables color.
+The interactive curses display uses native truecolor when ncurses and the terminal
+description expose direct colors; otherwise it uses 256 or basic colors.
+ANSI output from `--once` or `--watch` also supports truecolor
+when the terminal advertises it through `COLORTERM=truecolor`, `COLORTERM=24bit`,
+or a direct-color `$TERM`. Missing data remains visibly unknown rather than
+appearing as zero usage. Plain-text reports always use ASCII, independently of
+the live dashboard's visual preference.
 
 ## 3. Adapt setup to your environment
 
@@ -234,6 +266,7 @@ For scheduled collection, use absolute paths to the venv's Python, the checkout'
 | Blank history or budget | Check Sources; `sacct`, `sreport`, or `sacctmgr` may be unavailable or restricted. |
 | Missing GPU metrics | Start with `--no-gpu`; enable sampling only for allocated GPUs where site policy permits. |
 | Terminal looks broken | Check `$TERM`, widen the terminal, and try `--ascii --no-color`. |
+| Blocks or braille look misaligned | Use a UTF-8 locale and a monospace terminal font with those glyphs, or use `--ascii`. |
 | Setup's report looks unchanged | Existing reports are preserved; choose a new `--report` path. |
 | Contributor tools cannot download | Runtime setup is offline; omit `--dev`, use a permitted package mirror, or provide development wheels. |
 
@@ -245,8 +278,20 @@ analytics or telemetry endpoint.
 ## 7. Update or remove
 
 Pull reviewed updates with `git pull --ff-only` when your checkout has no conflicting
-local edits, then rerun the same setup command. The source launcher sees changes
-immediately. For a packaged install, reinstall with that venv's
+local edits, then rerun the same setup command. If you installed the Bash alias,
+refresh its managed block and reload it as well:
+
+```bash
+git pull --ff-only
+python3 scripts/setup.py --mode local
+python3 scripts/install_shell.py --apply
+source ~/.bashrc
+tower
+```
+
+This refresh enables the current Unicode preference even if your old alias passed
+`--ascii`. The source launcher sees application changes immediately. For a packaged
+install, reinstall with that venv's
 `python -m pip install .`. Preserve personal changes and review incoming code before
 running it.
 

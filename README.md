@@ -3,11 +3,12 @@
 **A calmer view of a busy cluster, entirely in your terminal.**
 
 Slurm Tower brings your jobs, resource usage, logs, and cluster health into one
-readable terminal dashboard. ASCII charts make trends visible over an ordinary
-SSH session. Find the jobs that need attention, understand where resources go,
-and export a complete plain-text snapshot when you need to share the picture.
+readable terminal dashboard. Solid block charts, precise trend lines, and resource
+heatmaps make trends visible over an ordinary SSH session. Find the jobs that need
+attention, understand where resources go, and export a complete plain-text snapshot
+when you need to share the picture.
 
-**Terminal only | ASCII visuals | Python 3.10+ | Zero runtime dependencies | MIT**
+**Terminal only | Unicode block visuals | Python 3.10+ | Zero runtime dependencies | MIT**
 
 [Runbook](docs/runbook.md) | [Complete reference](docs/reference.md) |
 [Tests](https://github.com/rahel99x/Slurm-Tower/actions/workflows/tests.yml) |
@@ -37,10 +38,12 @@ source ~/.bashrc
 tower
 ```
 
-For an older clone, first run `git pull --ff-only` to get the helper. It backs up
-`.bashrc`, replaces the active `tower`/`dash`/`dash2` commands with a single `tower`
+For an older clone, first run `git pull --ff-only`, then rerun the helper to refresh
+the alias with Unicode visuals. It backs up `.bashrc`, replaces the active
+`tower`/`dash`/`dash2` commands with a single `tower`
 alias, and uses this checkout's `.venv` even when another virtual environment is active.
 Arguments pass through: `tower --once`, `tower --doctor`, or `tower --fake`.
+Use `tower --ascii` when you need the portable fallback.
 See the [shell setup options](docs/runbook.md#use-one-tower-shell-command) for a preview.
 
 Setup creates an isolated `.venv`, checks prerequisites, validates every terminal
@@ -72,9 +75,21 @@ Python 3.11+ reads TOML configuration; Python 3.10 uses JSON.
 | **Logs** | What is the job doing? Search, follow, wrap, and bookmark its output. |
 | **Sources** | Is the data fresh? Which command is slow or unavailable? |
 
-Resource bars, trend charts, distributions, and timelines use terminal-renderable
-characters. Color adds emphasis, while labels and shapes keep the dashboard useful
-without it. Use `--no-color` for plain output, or `T` to cycle accessible themes.
+Solid fractional bars, gradient area charts, braille precision traces, measured
+resource heatmaps, and timelines use terminal-renderable characters. Unicode
+visuals are the default on capable terminals; `--unicode`
+selects them explicitly and `--ascii` selects the portable character fallback.
+Tower falls back automatically on limited output encodings and dumb terminals.
+Color adds emphasis, while labels and shapes keep the dashboard useful
+without it. Use `--no-color` or `NO_COLOR=1` to suppress colors, and `T` to cycle
+accessible themes. The `reader` theme uses plain ASCII text.
+
+Preview the visuals without connecting to Slurm:
+
+```bash
+./scripts/tower --fake --unicode       # switch tabs and let live trends accumulate
+./scripts/tower --fake --unicode --once --tab analytics
+```
 
 ## A few useful commands
 

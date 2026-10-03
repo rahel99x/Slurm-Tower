@@ -73,6 +73,7 @@ class App:
         self.width = 120
         self.last_hits: list = []
         self.restore(store.load_ui())
+        self.labels = KEY_LABELS_ASCII if self.theme == "reader" or ascii_ else KEY_LABELS
 
     # ---- persistence -------------------------------------------------------------------------------
     def restore(self, ui: dict):
@@ -102,6 +103,7 @@ class App:
 
     def set_theme(self, name: str):
         self.theme = name
+        self.labels = KEY_LABELS_ASCII if name == "reader" or self._ascii_cfg else KEY_LABELS
         if self.views_ref is not None and hasattr(self.views_ref, "set_ascii"):
             self.views_ref.set_ascii(True if name == "reader" else self._ascii_cfg)
         self.say(f"theme {name}" + (" (plain text, no colour, no glyphs)" if name == "reader" else ""))

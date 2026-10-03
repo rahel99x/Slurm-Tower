@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from . import clock
 from . import layout as L
 from . import charts
-from .layout import Column, Glyphs, Row, bar, box, cut, pad, rule, spark, table, vlen
+from .layout import Column, Glyphs, Row, bar, box, cut, gradient_bar, pad, rule, spark, table, vlen
 from . import advisor
 from .deps import DepGraph
 from .model import Finished, Job, Step, compact, hms, human, secs, short_duration, stamp, when
@@ -74,6 +74,87 @@ class Views:
         """Reader mode: plain glyphs (the painter also drops colour)."""
         if ascii_ != self.g.ascii:
             self.g = Glyphs(ascii_)
+
+    def visual_room(self, width: int, height: Optional[int], minimum: int = 18) -> bool:
+        """Give dense visual panels room without displacing a selected table row on small screens."""
+        return not self.g.ascii and width >= 72 and (height is None or height >= minimum)
+
+    def composition(self, items: Sequence[Tuple[str, float, str]], width: int, title: str = "") -> List[Row]:
+        """A measured distribution: counts remain readable when colour is unavailable."""
+        if not any(value > 0 for _, value, _ in items):
+            return []
+        return charts.stacked_bar(self.g, items, width, title=title)
+
+    @staticmethod
+    def beside(panels: Sequence[List[Row]], widths: Sequence[int], gap: int = 2) -> List[Row]:
+        """Join independent panels while retaining every segment's style and display width."""
+        out: List[Row] = []
+        for y in range(max((len(panel) for panel in panels), default=0)):
+            row: Row = []
+            for i, (panel, width) in enumerate(zip(panels, widths)):
+                cell = L.clip_row(panel[y] if y < len(panel) else [], width)
+                row += cell + [(" " * max(0, width - vlen(L.row_text(cell))), "")]
+                if i < len(panels) - 1:
+                    row.append((" " * gap, ""))
+            out.append(row)
+        return out
+
+    def resource_cards(self, snap: dict, j: Job, width: int) -> List[Row]:
+        """Three solid resource instruments, using only recorded CPU, peak RSS and elapsed time."""
+        lv = snap["live"].get(j.id)
+        cpu = (lv.rate if lv.rate is not None else lv.avg) if lv else None
+        mem = lv.rss / j.mem_bytes if lv and lv.rss is not None and j.mem_bytes else None
+        elapsed, limit = j.elapsed_s, j.limit_s
+        used_time = elapsed / limit if elapsed is not None and limit else None
+        efficiency = f"{100 * lv.avg:.1f}%" if lv and lv.avg is not None else "unknown"
+        cpu_value = "waiting for a sample" if cpu is None else f"{100 * cpu:.0f}% {'now' if lv.rate is not None else 'average'}  ·  eff {efficiency}"
+        cpu_note = (f"{cpu * j.cpus:.1f}/{j.cpus} cores  " + spark(self.g, snap["hist_cpu"].get(j.id, []), 10)) if cpu is not None else "sstat utilisation unknown"
+        mem_value = f"{human(lv.rss)} / {human(j.mem_bytes)}" if lv and lv.rss is not None and j.mem_bytes else (f"{human(lv.rss)} used" if lv and lv.rss is not None else "memory sample unknown")
+        mem_note = f"{100 * mem:.1f}% of requested memory" if mem is not None else "memory request unknown" if not j.mem_bytes else f"requested {human(j.mem_bytes)}"
+        time_value = f"{j.elapsed or '?'} / {j.limit or '?'}"
+        time_note = f"{hms(max(0, limit - elapsed))} remaining" if elapsed is not None and limit else "wall-time limit unknown"
+        cards = [("CPU", cpu, cpu_value, cpu_note, "#22d3ee", "#3b82f6"),
+                 ("PEAK MEMORY", mem, mem_value, mem_note, "#a78bfa", "#ec4899"),
+                 ("WALL TIME", used_time, time_value, time_note, "#34d399", "#fbbf24")]
+        cell = max(8, (width - 2 - 4) // 3)
+        sizes = [cell, cell, max(8, width - 2 - 4 - cell * 2)]
+        panels = []
+        for (label, frac, value, note, start, end), size in zip(cards, sizes):
+            inner = size - 4
+            title = cut(" " + label + " ", size - 2, self.g.ascii)
+            top = [("┌" + title + "─" * max(0, size - 2 - vlen(title)) + "┐", "dim")]
+            def content(segments):
+                segments = L.clip_row(segments, inner)
+                return [("│ ", "dim")] + segments + [(" " * max(0, inner - vlen(L.row_text(segments))) + " │", "dim")]
+            panel = [top, content([(cut(value, inner), "bold")]),
+                     content(gradient_bar(self.g, frac, inner, start, end)),
+                     content([(cut(note, inner), "dim")]), [("└" + "─" * (size - 2) + "┘", "dim")]]
+            panels.append(panel)
+        return [[(" ", "")] + row for row in self.beside(panels, sizes)]
+
+    def node_resource_rows(self, nodes, width: int) -> List[Row]:
+        """A categorical resource matrix; columns are measurements, never an implied time axis."""
+        from .palette import gradient
+        label_w = min(16, max(vlen(node.name) for node in nodes))
+        cell_w = max(8, (width - label_w - 7) // 3)
+        titles = ("CPU ALLOCATED", "LOAD / CORE", "MEMORY USED")
+        out = [rule(self.g, width, "node resource matrix · measured percentages"),
+               [(" " + " " * label_w + "  ", "")] + [(pad(cut(title, cell_w), cell_w) + ("  " if i < 2 else ""), "cyan+bold") for i, title in enumerate(titles)]]
+        for node in nodes[:8]:
+            values = (node.alloc / node.cpus if node.cpus else None,
+                      node.load / node.cpus if node.cpus and node.load is not None else None,
+                      (node.mem_total - node.mem_free) / node.mem_total if node.mem_total and node.mem_free is not None and node.mem_free <= node.mem_total else None)
+            row: Row = [(" " + pad(cut(node.name, label_w), label_w) + "  ", "bold")]
+            for i, value in enumerate(values):
+                frac = max(0.0, min(1.0, value)) if value is not None else 0
+                shade = gradient("#164e63", "#22d3ee", frac * 2) if frac < .5 else gradient("#22d3ee", "#fbbf24", (frac - .5) * 2)
+                row += gradient_bar(self.g, value, cell_w - 8, "#164e63", shade)
+                row.append((f" {100 * value:>4.0f}%  " if value is not None else "    ?   ", "bold" if value is not None else "dim"))
+                if i < 2:
+                    row.append(("  ", ""))
+            out.append(row)
+        out.append([("   Allocation is reserved CPU capacity; load is runnable work per core. ? means unobserved.", "dim")])
+        return [L.clip_row(row, width) for row in out]
 
     # ---- shared pieces ----------------------------------------------------------------------------
     def header(self, snap: dict, app, width: int) -> List[Row]:
@@ -392,27 +473,30 @@ class Views:
         rows.append([(f" {j.id} ", "cyan"), (j.name, "bold"),
                      (f"   started {when(j.start)} {g_.dot} submitted {when(j.submit)} {g_.dot} {j.partition} {g_.dot} {j.nodelist} {g_.dot} {j.cpus} cpus" + (f" {g_.dot} {j.gpu_text}" if j.gpus else "")
                       + f" {g_.dot} mem {j.mem_req} {g_.dot} {j.account or ''} {j.qos or ''}", "")])
-        b = bar(g_, tfrac, 10)
-        left = "?" if (el is None or lim is None) else hms(max(0, lim - el))
-        time_pct = "n/a" if tfrac is None else f"{round(100 * tfrac)}%"
-        rows.append([("   time  ", ""), b, (f" {time_pct:>4}  {j.elapsed or '?'} of {j.limit or '?'}, {left} left, ends {when(j.end)}", "")])
         lv = snap["live"].get(j.id)
-        hist = snap["hist_cpu"].get(j.id, [])
-        if not lv:
-            rows.append([("   cpu   ", ""), bar(g_, None, bw), ("  n/a (sstat has no batch step yet)", "dim")])
-        elif lv.rate is None and lv.avg is None:
-            rows.append([("   cpu   ", ""), bar(g_, None, bw), ("  n/a (waiting for CPU utilisation samples)", "dim")])
+        if not g_.ascii and width >= 104:
+            rows += self.resource_cards(snap, j, width)
         else:
-            shown = lv.rate if lv.rate is not None else lv.avg
-            tag = "now" if lv.rate is not None else "avg"
-            efficiency = "n/a" if lv.avg is None else f"{100 * lv.avg:.1f}%"
-            rows.append([("   cpu   ", ""), bar(g_, shown, bw), (f" {int(100 * shown):>3}% {tag}  eff {efficiency:>6}  ", ""), (spark(g_, hist), "cyan"),
-                         (f"  {shown * j.cpus:.1f}/{j.cpus} cores, {hms(lv.cpu_time)} cpu time", "")])
-        req = j.mem_bytes
-        if lv and lv.rss is not None and req:
-            rows.append([("   mem   ", ""), bar(g_, lv.rss / req, bw), (f" {round(100 * lv.rss / req):>3}%  {human(lv.rss)} of {human(req)} requested", "")])
-        elif lv and lv.rss is not None:
-            rows.append([("   mem   ", ""), bar(g_, None, bw), (f"  {human(lv.rss)} used (request unknown)", "")])
+            b = bar(g_, tfrac, 10)
+            left = "?" if (el is None or lim is None) else hms(max(0, lim - el))
+            time_pct = "n/a" if tfrac is None else f"{round(100 * tfrac)}%"
+            rows.append([("   time  ", ""), b, (f" {time_pct:>4}  {j.elapsed or '?'} of {j.limit or '?'}, {left} left, ends {when(j.end)}", "")])
+            hist = snap["hist_cpu"].get(j.id, [])
+            if not lv:
+                rows.append([("   cpu   ", ""), bar(g_, None, bw), ("  n/a (sstat has no batch step yet)", "dim")])
+            elif lv.rate is None and lv.avg is None:
+                rows.append([("   cpu   ", ""), bar(g_, None, bw), ("  n/a (waiting for CPU utilisation samples)", "dim")])
+            else:
+                shown = lv.rate if lv.rate is not None else lv.avg
+                tag = "now" if lv.rate is not None else "avg"
+                efficiency = "n/a" if lv.avg is None else f"{100 * lv.avg:.1f}%"
+                rows.append([("   cpu   ", ""), bar(g_, shown, bw), (f" {int(100 * shown):>3}% {tag}  eff {efficiency:>6}  ", ""), (spark(g_, hist), "cyan"),
+                             (f"  {shown * j.cpus:.1f}/{j.cpus} cores, {hms(lv.cpu_time)} cpu time", "")])
+            req = j.mem_bytes
+            if lv and lv.rss is not None and req:
+                rows.append([("   mem   ", ""), bar(g_, lv.rss / req, bw), (f" {round(100 * lv.rss / req):>3}%  {human(lv.rss)} of {human(req)} requested", "")])
+            elif lv and lv.rss is not None:
+                rows.append([("   mem   ", ""), bar(g_, None, bw), (f"  {human(lv.rss)} used (request unknown)", "")])
         if j.gpus:
             g = snap["gpu"].get(j.id, [])
             if g is None:
@@ -431,7 +515,9 @@ class Views:
             rows.append(self.trace_row(trace, j, bw))
         for n, info in snap["nodes"].items():
             if n in j.hosts:
-                rows.append([(f"   node {n}: load {info.load:.1f} of {info.cpus} cores ({info.alloc} allocated), {info.mem_free / 1024:.0f} of {info.mem_total / 1024:.0f} GB free, {info.state}", "dim")])
+                load = f"{info.load:.1f}" if info.load is not None else "unknown"
+                memory = f"{info.mem_free / 1024:.0f} of {info.mem_total / 1024:.0f} GB free" if info.mem_free is not None and info.mem_total else "free memory unknown"
+                rows.append([(f"   node {n}: load {load} of {info.cpus} cores ({info.alloc} allocated), {memory}, {info.state}", "dim")])
         steps = [st for st in snap.get("steps", {}).get(j.id, []) if st.name not in ("extern",)]
         if len(steps) > 1 or (steps and steps[0].ntasks > 1):
             for st in steps[:4]:
@@ -603,19 +689,23 @@ class Views:
         for st, c in sorted(counts.items(), key=lambda kv: -kv[1]):
             summary.append((f"{st.lower()} {c}  ", "green" if st == "COMPLETED" else ("yellow" if st.startswith("CANCEL") else "red")))
         summary.append((f"{self.g.dot} {core_h:.1f} core-hours {self.g.dot} {gpu_h:.1f} gpu-hours" + (f" {self.g.dot} mean cpu eff {100 * sum(effs) / len(effs):.0f}%" if effs else "") + f" {self.g.dot} sorted by {key}{' (reversed)' if rev else ''}", "dim"))
+        prefix = [summary]
+        if self.visual_room(width, height):
+            prefix += self.composition([(state.lower(), count, "green" if state == "COMPLETED" else "yellow" if state.startswith("CANCEL") else "red")
+                                        for state, count in sorted(counts.items(), key=lambda pair: -pair[1])], width)
         if height is None:
             rows = self.finished_rows(fin, width, "history")
-            return [summary] + rows, []
-        vis = max(1, height - 3)
+            return prefix + rows, []
+        vis = max(1, height - len(prefix) - 2)
         top = app.scroll_to("history", cur, vis, n)
         shown = fin[top:top + vis]
         data = [self.finished_dict(f) for f in shown]
         trows, _ = table(self.FIN_COLS, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top)
         title = f"history {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "history"
-        out = [summary, rule(self.g, width, title)] + trows
+        out = prefix + [rule(self.g, width, title)] + trows
         if not fin:
             out.append([("   nothing matches the filter; Esc clears it" if app.filter else "   No completed runs yet. Finished jobs and efficiency appear here.", "dim")])
-        hits = [(2 + i + 1, "fin", f.id) for i, f in enumerate(shown)]
+        hits = [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
         return out, hits
 
     # ---- cluster tab ------------------------------------------------------------------------------
@@ -649,7 +739,11 @@ class Views:
             for t, v in sorted(inv.items()):
                 up = v["total"] - v["down"]
                 frac = v["used"] / up if up else 0
-                out.append([(f"   {t:<6} ", "bold"), bar(self.g, frac, 24), (f"  {v['used']}/{up} in use, {v['free']} free" + (f", {v['down']} down or drained" if v["down"] else ""), "")])
+                if self.visual_room(width, height, minimum=22):
+                    out.append([(f"   {t.upper():<8}", "bold"), (f"{v['total']} installed  ·  {up} available  ·  {v['used']} allocated", "dim")])
+                    out += self.composition([("free", v["free"], "green"), ("allocated", v["used"], "cyan"), ("down / drained", v["down"], "red")], width)
+                else:
+                    out.append([(f"   {t:<6} ", "bold"), bar(self.g, frac, 24), (f"  {v['used']}/{up} in use, {v['free']} free" + (f", {v['down']} down or drained" if v["down"] else ""), "")])
         sh = snap["share"]
         if sh:
             out.append(rule(self.g, width, "fair share"))
@@ -760,6 +854,8 @@ class Views:
         cell_w = 26
         per_row = max(1, (width - 3) // cell_w)
         for p in order:
+            if height is not None and len(out) >= height:
+                break
             nodes = sorted(parts[p], key=lambda c: c.name)
             n_idle = sum(1 for c in nodes if c.state.startswith("idle"))
             n_down = sum(1 for c in nodes if c.down)
@@ -771,7 +867,10 @@ class Views:
             title = f"{p}: {len(nodes)} node{'s' if len(nodes) != 1 else ''}, {n_idle} idle, {n_down} down/drained, {alloc}/{cores} cores allocated" + (f", {gu}/{gp} gpus in use" if gp else "") + (f", {n_mine} running mine" if n_mine else "")
             out.append(rule(g, width, title))
             for i in range(0, len(nodes), per_row):
+                if height is not None and len(out) >= height:
+                    break
                 row: Row = [("  ", "")]
+                capacity: Row = [("  ", "")]
                 for c in nodes[i:i + per_row]:
                     if c.down:
                         glyph, style = "x", "magenta"
@@ -785,7 +884,14 @@ class Views:
                     gpu = f" {c.gpus_used}/{c.gpus}g" if c.gpus else ""
                     text = f"{mark}{glyph} {cut(c.name, 9, g.ascii):<9}{c.cpus_alloc:>3}/{c.cpus:<3}{gpu}"
                     row.append((pad(text, cell_w), ("cyan" if c.name in mine else style)))
+                    if not g.ascii:
+                        frac = c.cpus_alloc / c.cpus if c.cpus else None
+                        capacity += [("  ", "")] + gradient_bar(g, frac, 12, "#34d399", "#22d3ee")
+                        capacity.append((f" {100 * frac:>3.0f}%  " if frac is not None else "   ?   ", "dim"))
+                        capacity += gradient_bar(g, c.gpus_used / c.gpus if c.gpus else None, 4, "#a78bfa", "#ec4899") + [(" ", "")]
                 out.append(row)
+                if not g.ascii and (height is None or len(out) < height):
+                    out.append(capacity)
         if height is not None:
             out = out[:height]
         return out
@@ -793,7 +899,7 @@ class Views:
     def my_nodes(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
         nodes = list(snap["nodes"].values())
         key, rev = app.sort.get("nodes", "name"), app.reverse.get("nodes", False)
-        nodes.sort(key=(lambda n: n.name) if key == "name" else (lambda n: -n.load), reverse=rev)
+        nodes.sort(key=(lambda n: n.name) if key == "name" else (lambda n: (n.load is None, -(n.load or 0))), reverse=rev)
         by_host: Dict[str, List[Job]] = {}
         for j in snap["jobs"]:
             for h in j.hosts:
@@ -806,14 +912,17 @@ class Views:
                 for s in snap["gpu"].get(j.id) or []:
                     gsamp.append(s)
             gutil = f"{sum(s.util for s in gsamp) / len(gsamp):.0f}%" if gsamp else ""
-            rows.append(dict(name=nd.name, state=nd.state, load=f"{nd.load:.1f}", cpus=f"{nd.alloc}/{nd.cpus}", loadpct=f"{100 * nd.load / max(nd.cpus, 1):.0f}%",
-                             mem=f"{(nd.mem_total - nd.mem_free) / 1024:.0f}/{nd.mem_total / 1024:.0f} GB", gres=nd.gres.split("(")[0] if nd.gres and nd.gres != "(null)" else "",
+            rows.append(dict(name=nd.name, state=nd.state, load=f"{nd.load:.1f}" if nd.load is not None else "n/a", cpus=f"{nd.alloc}/{nd.cpus}", loadpct=f"{100 * nd.load / nd.cpus:.0f}%" if nd.load is not None and nd.cpus else "n/a",
+                             mem=f"{(nd.mem_total - nd.mem_free) / 1024:.0f}/{nd.mem_total / 1024:.0f} GB" if nd.mem_free is not None and nd.mem_total and nd.mem_free <= nd.mem_total else "n/a", gres=nd.gres.split("(")[0] if nd.gres and nd.gres != "(null)" else "",
                              gused=nd.gres_used.split("(")[0] if nd.gres_used and nd.gres_used != "(null)" else "", gutil=gutil,
                              jobs=" ".join(f"{j.id}({j.name})" for j in jobs), _styles={"state": "red" if any(k in nd.state.lower() for k in ("drain", "down", "fail")) else ""}))
         cols = [Column("name", "NODE", 6, 16), Column("state", "STATE", 5, 14), Column("cpus", "ALLOC/CPUS", 10, 10, ">"), Column("load", "LOAD", 4, 7, ">"), Column("loadpct", "LOAD%", 5, 5, ">"),
                 Column("mem", "MEM USED", 8, 14, ">"), Column("gres", "GRES", 4, 16), Column("gused", "GRES USED", 9, 16), Column("gutil", "GPU%", 4, 4, ">"), Column("jobs", "MY JOBS", 7, 60, flex=True)]
         trows, _ = table(cols, rows, width, self.g.ascii, droppable=("gused", "gres", "loadpct"))
-        out = [rule(self.g, width, "nodes running your jobs")] + trows
+        out = []
+        if nodes and self.visual_room(width, height, minimum=22):
+            out += self.node_resource_rows(nodes, width)
+        out += [rule(self.g, width, "nodes running your jobs")] + trows
         if not rows:
             out.append([("   no running jobs (or scontrol has not answered yet)", "dim")])
         for nd in nodes:
@@ -854,10 +963,20 @@ class Views:
                 d["nodes"] += j.nodes
         tot_cpu = sum(d["cpus"] for d in by_user.values()) or 1
         out.append(rule(g, width, f"{acc.get('account', 'the account')}: {len(by_user)} users, {sum(d['running'] for d in by_user.values())} running, {sum(d['pending'] for d in by_user.values())} pending"))
-        for u, d in sorted(by_user.items(), key=lambda kv: (-kv[1]["cpus"], kv[0])):
+        ordered_users = sorted(by_user.items(), key=lambda kv: (-kv[1]["cpus"], kv[0]))
+        if self.visual_room(width, height):
+            mix = [(u, d["cpus"], "cyan" if u == app.user else "magenta" if i % 2 else "blue") for i, (u, d) in enumerate(ordered_users[:6])]
+            if len(ordered_users) > 6:
+                mix.append(("other users", sum(d["cpus"] for _, d in ordered_users[6:]), "dim"))
+            out += self.composition(mix, width)
+        user_limit = len(ordered_users) if height is None else max(1, min(6, (height - len(out) - 5) // 2))
+        for u, d in ordered_users[:user_limit]:
             style = "cyan" if u == app.user else ""
-            out.append([(f"   {u:<12}", "bold+" + style if style else "bold"), bar(g, d["cpus"] / tot_cpu, 16),
-                        (f"  {d['running']:>3} running on {d['cpus']:>5} cpus" + (f", {d['gpus']} gpus" if d["gpus"] else "") + f", {d['nodes']} nodes   {d['pending']} pending", style)])
+            meter = [bar(g, d["cpus"] / tot_cpu, 16)] if g.ascii else gradient_bar(g, d["cpus"] / tot_cpu, 16)
+            out.append([(f"   {u:<12}", "bold+" + style if style else "bold")] + meter +
+                       [(f"  {d['running']:>3} running on {d['cpus']:>5} cpus" + (f", {d['gpus']} gpus" if d["gpus"] else "") + f", {d['nodes']} nodes   {d['pending']} pending", style)])
+        if user_limit < len(ordered_users) and (height is None or height - len(out) >= 5):
+            out.append([(f"   {len(ordered_users) - user_limit} more users in the account; the job table includes everyone", "dim")])
         # the table
         rows = []
         for j in jobs:
@@ -901,6 +1020,13 @@ class Views:
         jobs = graph.jobs
         trees = graph.trees()
         out: List[Row] = [rule(g, width, f"dependency chains: {len(graph.edges)} edges among {len(graph.related())} jobs (c cancels a job and everything downstream, h releases a held chain)")]
+        if self.visual_room(width, height) and trees:
+            related = [jobs[jid] for jid in graph.related() if jid in jobs]
+            held = sum(j.held for j in related)
+            out += self.composition([("running", sum(not j.pending for j in related), "green"),
+                                     ("waiting", sum(j.pending for j in related) - held, "yellow"),
+                                     ("held", held, "magenta")], width)
+        prefix_length = len(out)
         app.dep_ids = []
         if not trees:
             out.append([("   no job depends on another (the Dependency field of squeue is empty for all of yours)", "dim")])
@@ -945,11 +1071,11 @@ class Views:
         if height is not None:
             # Keep the selected dependency visible while retaining its position in the
             # full graph for keyboard actions and chain confirmations.
-            visible = max(1, height - 1)
-            selected_row = hits[cur][0] - 1 if hits else 0
-            top = app.scroll_to("deps", selected_row, visible, max(0, len(out) - 1))
-            out = out[:1] + out[1 + top:1 + top + visible]
-            hits = [(y - top, kind, key) for y, kind, key in hits if top < y <= top + visible]
+            visible = max(1, height - prefix_length)
+            selected_row = hits[cur][0] - prefix_length if hits else 0
+            top = app.scroll_to("deps", selected_row, visible, max(0, len(out) - prefix_length))
+            out = out[:prefix_length] + out[prefix_length + top:prefix_length + top + visible]
+            hits = [(y - top, kind, key) for y, kind, key in hits if prefix_length + top <= y < prefix_length + top + visible]
         return out, hits
 
     # ---- log tab ----------------------------------------------------------------------------------
@@ -1026,6 +1152,8 @@ class Views:
             status.append((f" {g.dot} search '{search}': {buf.count(search)} lines (N / P next / previous)", "magenta"))
         if marks:
             status.append((f" {g.dot} {len(marks)} bookmark{'s' if len(marks) != 1 else ''} (' jumps)", "cyan"))
+        if not g.ascii and width >= 100 and total:
+            status = [(" ", "")] + gradient_bar(g, (start + len(lines)) / total, 12) + [(" ", "")] + status
         out.append(status)
         body: List[Row] = []
         for i, l in enumerate(lines):
@@ -1041,7 +1169,10 @@ class Views:
             else:
                 style = ""
             mark = (g.mark if idx in marks else " ")
-            content_width = max(1, width - 2)
+            numbers = not g.ascii and width >= 64
+            number_width = max(5, len(str(total))) if numbers else 0
+            gutter = [(mark, "cyan"), (f"{idx + 1:>{number_width}} │ ", "dim")] if numbers else [(mark, "cyan")]
+            content_width = max(1, width - (number_width + 5 if numbers else 2))
             if app.logs.wrap and vlen(l) > content_width:
                 chunks, cur = [], l
                 while cur:
@@ -1052,9 +1183,10 @@ class Views:
                     chunks.append(chunk or "?")
                     cur = cur[consumed:]
                 for n, ch in enumerate(chunks):
-                    body.append([(mark if n == 0 else " ", "cyan"), (ch, style)])
+                    continuation = [(" " * (number_width + 1) + " │ ", "dim")] if numbers else [(" ", "cyan")]
+                    body.append((gutter if n == 0 else continuation) + [(ch, style)])
             else:
-                body.append([(mark, "cyan"), (cut(l, content_width, g.ascii), style)])
+                body.append(gutter + [(cut(l, content_width, g.ascii), style)])
         if app.logs.wrap and len(body) > page:
             body = body[-page:] if app.logs.following else body[:page]
         out += body
@@ -1077,13 +1209,20 @@ class Views:
         cols = [Column("name", "SOURCE", 6, 12), Column("state", "STATE", 5, 7), Column("every", "EVERY", 5, 6, ">"), Column("last", "LAST OK", 7, 12, ">"),
                 Column("latency", "LATENCY", 7, 8, ">"), Column("calls", "CALLS", 5, 6, ">"), Column("errors", "ERRORS", 6, 6, ">"), Column("backoff", "BACKOFF", 7, 7, ">"),
                 Column("error", "LAST ERROR", 10, 80, flex=True)]
-        vis = len(rows) if height is None else max(1, height - 2)
+        prefix = []
+        if self.visual_room(width, height):
+            enabled = [h for h in hs if h.enabled]
+            prefix += self.composition([("healthy", sum(bool(h.last_ok) and not h.error for h in enabled), "green"),
+                                        ("error", sum(bool(h.error) for h in enabled), "red"),
+                                        ("waiting", sum(not h.last_ok and not h.error for h in enabled), "yellow"),
+                                        ("off", len(hs) - len(enabled), "dim")], width)
+        vis = len(rows) if height is None else max(1, height - len(prefix) - 2)
         top = app.scroll_to("sources", cur, vis, n) if height is not None else 0
         shown = rows[top:top + vis]
         trows, _ = table(cols, shown, width, self.g.ascii, cursor=cur - top if height else None,
                          droppable=("backoff", "calls", "errors", "every", "error"))
         title = f"sources {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "sources"
-        out = [rule(self.g, width, title + f" ({app.keys_help('source_toggle')} enables / disables the selected one)")] + trows
+        out = prefix + [rule(self.g, width, title + f" ({app.keys_help('source_toggle')} enables / disables the selected one)")] + trows
         if not hs:
             out.append([("   Waiting for the first sample. Source health appears here automatically.", "dim")])
         out.append([("", "")])
@@ -1092,7 +1231,7 @@ class Views:
         ev = snap["events"][-8:]
         if ev:
             out += self.event_rows(ev, width, limit=8)
-        hits = [(2 + i, "source", r["name"]) for i, r in enumerate(shown)]
+        hits = [(len(prefix) + 2 + i, "source", r["name"]) for i, r in enumerate(shown)]
         return out, hits
 
     # ---- analytics tab ----------------------------------------------------------------------------
@@ -1203,16 +1342,16 @@ class Views:
                 Column("coreh", "CORE-H", 6, 7, ">"), Column("samples", "SAMPLES", 7, 7, ">")]
         trows, _ = table(cols, rows, width, g.ascii, droppable=("samples", "coreh", "cpu_max"))
         out += trows
-        metrics = [("cpu per core", lambda x: (100 * x["cpu"] if x.get("cpu") is not None else (100 * x["eff"] if x.get("eff") is not None else None)) if x.get("k") == "live" else None, 100.0, "%"),
-                   ("memory (GB)", lambda x: (x["rss"] / 1024 ** 3) if (x.get("k") == "live" and x.get("rss") is not None) else None, None, "G"),
-                   ("gpu utilisation", lambda x: (sum(v[0] for v in x["gpu"].values()) / len(x["gpu"])) if (x.get("k") == "gpu" and x.get("gpu")) else None, 100.0, "%")]
+        metrics = [("cpu per core", lambda x: (100 * x["cpu"] if x.get("cpu") is not None else (100 * x["eff"] if x.get("eff") is not None else None)) if x.get("k") == "live" else None, 100.0, "%", "live"),
+                   ("memory (GB)", lambda x: (x["rss"] / 1024 ** 3) if (x.get("k") == "live" and x.get("rss") is not None) else None, None, "G", "live"),
+                   ("gpu utilisation", lambda x: (sum(v[0] for v in x["gpu"].values()) / len(x["gpu"])) if (x.get("k") == "gpu" and x.get("gpu")) else None, 100.0, "%", "gpu")]
         with_data = [i for i in ids[:6] if series.get(i)]
         if not with_data:
             return out + [[("   no recorded series for these jobs (series accumulate while the dashboard runs)", "dim")]]
         span = max((series[i][-1]["t"] - series[i][0]["t"]) for i in with_data) or 1.0
-        n_charts = sum(1 for _, fn, _, _ in metrics if any(fn(x) is not None for i in with_data for x in series[i]))
+        n_charts = sum(1 for _, fn, _, _, _ in metrics if any(fn(x) is not None for i in with_data for x in series[i]))
         h = 3 if avail is None else max(2, min(6, (avail - len(out) - 3 * n_charts * len(with_data)) // max(1, n_charts * len(with_data))))
-        for title, fn, hi, unit in metrics:
+        for title, fn, hi, unit, kind in metrics:
             if not any(fn(x) is not None for i in with_data for x in series[i]):
                 continue
             out.append(rule(g, width, f"{title}, aligned on each job's first sample ({compact(span)} across)"))
@@ -1223,17 +1362,11 @@ class Views:
             for i in with_data:
                 s = series[i]
                 t0 = s[0]["t"]
-                chart_w = max(4, width - 3 - 7)
-                buckets: List[List[float]] = [[] for _ in range(chart_w)]
-                for x in s:
-                    val = fn(x)
-                    if val is None:
-                        continue
-                    b = min(chart_w - 1, int((x["t"] - t0) / span * chart_w))
-                    buckets[b].append(val)
-                values = [sum(b) / len(b) if b else None for b in buckets]
+                samples = [x for x in s if x.get("k") == kind]
+                values = [fn(x) for x in samples]
                 label = f"{i} {cut(rows[[r['id'] for r in rows].index(i)]['name'], 14, g.ascii)}"
-                out += charts.vbar_chart(g, values, width, h, hi=hi_all, unit=unit, title=label, times=None)
+                out += charts.braille_chart(g, values, width, h, hi=hi_all, unit=unit, title=label, times=(0, span),
+                                             sample_times=[x["t"] - t0 for x in samples], sample_interval=self.cfg["intervals"][kind], elapsed=True)
         if avail is not None:
             out = out[:avail]
         return out
@@ -1260,44 +1393,61 @@ class Views:
             head[1].append((f"   {job.partition} {g.dot} {job.nodelist or 'pending'} {g.dot} {job.cpus} cpus" + (f" {g.dot} {job.gpu_text}" if job.gpus else "") + f" {g.dot} {job.elapsed} of {job.limit}", "dim"))
         if not series and not snap.get("trace", {}).get(jid):
             return head + [[("   no samples recorded for this job yet", "dim")]]
-        t0, t1 = (series[0]["t"], series[-1]["t"]) if series else (0.0, 1.0)
-        if t1 <= t0:
-            t1 = t0 + 1
         charts_ = []
         if live:
             cpu = [(s.get("cpu") if s.get("cpu") is not None else s.get("eff")) for s in live]
-            charts_.append(("cpu per core (rate, efficiency where no rate)", [None if v is None else 100 * v for v in cpu], 100.0, "%"))
+            cpu_times = (live[0]["t"], live[-1]["t"])
+            cpu_stamps = [s["t"] for s in live]
+            cpu_title = "cpu per core (rate, efficiency where no rate)" if g.ascii else "CPU per core · rate / efficiency"
+            charts_.append((cpu_title, [None if v is None else 100 * v for v in cpu], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"]))
             req = job.mem_bytes if job else (fin.req_mem if fin else 0)
             if req:
-                charts_.append(("memory of the request", [None if s.get("rss") is None else 100 * s["rss"] / req for s in live], 100.0, "%"))
+                charts_.append(("memory of the request", [None if s.get("rss") is None else 100 * s["rss"] / req for s in live], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"]))
             else:
-                charts_.append(("resident memory (GB)", [None if s.get("rss") is None else s["rss"] / 1024 ** 3 for s in live], None, "G"))
+                charts_.append(("resident memory (GB)", [None if s.get("rss") is None else s["rss"] / 1024 ** 3 for s in live], None, "G", cpu_times, cpu_stamps, self.cfg["intervals"]["live"]))
         keys = []
         for s in gpus:
             for k in s.get("gpu", {}):
                 if k not in keys:
                     keys.append(k)
         for k in keys[:4]:
-            charts_.append((f"gpu {k} utilisation", [s.get("gpu", {}).get(k, [None])[0] for s in gpus], 100.0, "%"))
+            charts_.append((f"gpu {k} utilisation", [s.get("gpu", {}).get(k, [None])[0] for s in gpus], 100.0, "%", (gpus[0]["t"], gpus[-1]["t"]), [s["t"] for s in gpus], self.cfg["intervals"]["gpu"]))
         trace = snap.get("trace", {}).get(jid, [])
         if trace:
             idx = sorted({r["index"] for r in trace})
             for i in idx[:4]:
                 pts = [r for r in trace if r["index"] == i]
-                charts_.append((f"gpu {i} utilisation from the job's own nvidia-smi log (1/min, {len(pts)} samples)", [r["util"] for r in pts], 100.0, "%"))
-            t0, t1 = min(t0, trace[0]["t"]), max(t1, trace[-1]["t"])
+                trace_title = f"gpu {i} utilisation from the job's own nvidia-smi log (1/min, {len(pts)} samples)" if g.ascii else f"gpu {i} · job trace · {len(pts)} samples"
+                charts_.append((trace_title, [r["util"] for r in pts], 100.0, "%", (pts[0]["t"], pts[-1]["t"]), [r["t"] for r in pts], 60.0))
         n = len(charts_)
-        if avail is None:
-            h = 8
-        else:
-            h = max(3, min(12, (avail - len(head) - 3 * n) // max(n, 1)))
+        if not g.ascii and width >= 120 and (avail is None or avail >= 28):
+            telemetry = [(title, values) for title, values, hi, unit, _, _, _ in charts_ if unit == "%" and len(values) >= 2][:4]
+            if telemetry:
+                head += charts.heatmap(g, [values for _, values in telemetry], width,
+                                      labels=[title.split(" · ")[0] for title, _ in telemetry], hi=100, unit="%",
+                                      title="telemetry heatmap · each row's observations, oldest to newest")
+        columns = 2 if not g.ascii and width >= 140 and n >= 2 and (avail is None or avail >= 20) else 1
+        plot_rows = max(1, (n + columns - 1) // columns)
+        filled = not g.ascii and (avail is None or avail - len(head) >= plot_rows * 10)
+        overhead = 7 if filled else 3
+        h = 8 if avail is None else max(2, min(12, (avail - len(head)) // plot_rows - overhead))
+        cell_width = (width - 2 * (columns - 1)) // columns
         out = list(head)
-        for title, values, hi, unit in charts_:
-            times = (t0, t1)
-            if "nvidia-smi log" in title and trace:
-                times = (trace[0]["t"], trace[-1]["t"] if trace[-1]["t"] > trace[0]["t"] else trace[0]["t"] + 60)
-            out += charts.vbar_chart(g, values, width, h, hi=hi, unit=unit, title=title, times=times)
-        return out
+        for offset in range(0, n, columns):
+            if avail is not None and len(out) >= avail:
+                break
+            panels = []
+            for title, values, hi, unit, times, sample_times, sample_interval in charts_[offset:offset + columns]:
+                # Each resource uses its own sampled span; a GPU trace cannot move a CPU time axis.
+                title = title.replace(" · ", " - ") if g.ascii else title
+                panel = charts.braille_chart(g, values, cell_width, h, hi=hi, unit=unit, title=title, times=times,
+                                             sample_times=sample_times, sample_interval=sample_interval)
+                if filled:
+                    panel += charts.vbar_chart(g, values, cell_width, 2, hi=hi, unit=unit, times=times,
+                                              sample_times=sample_times, sample_interval=sample_interval)
+                panels.append(panel)
+            out += self.beside(panels, [cell_width] * len(panels)) if columns > 1 else panels[0]
+        return out if avail is None else out[:avail]
 
     def analytics_history(self, snap: dict, app, width: int, avail: Optional[int], days: float) -> List[Row]:
         g = self.g

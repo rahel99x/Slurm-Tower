@@ -237,9 +237,9 @@ class Node:
     state: str = ""
     cpus: int = 0
     alloc: int = 0
-    load: float = 0.0
+    load: Optional[float] = None          # unknown is distinct from an idle node
     mem_total: float = 0.0               # MiB
-    mem_free: float = 0.0
+    mem_free: Optional[float] = None      # MiB; zero is a real, exhausted-memory reading
     gres: str = ""
     gres_used: str = ""
     partitions: str = ""
