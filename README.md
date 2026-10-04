@@ -90,6 +90,12 @@ queue forecast calibration, blocker citations, reviewed resource choices, and
 repeatable scaling and workflow recipes. Missing evidence remains unknown;
 scaling plans and workflow plans prepare commands for review without submitting jobs.
 
+For your own applications, follow the [project reporting standard](docs/PROJECT_STANDARD.md).
+It defines a portable run directory, live metrics, final measurements, output
+contracts, and planning exports. Copy the [project template](examples/project-template/README.md)
+to instrument a project with the standard-library reporter; [JSON Schemas](docs/schemas/README.md)
+describe the shared formats.
+
 | View | Get an answer quickly |
 | --- | --- |
 | **Jobs** | What is running, what is waiting, and which jobs need attention? |

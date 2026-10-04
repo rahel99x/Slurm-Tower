@@ -8,6 +8,8 @@ dist/
 *.egg-info/
 .venv/
 .tower/
+!examples/project-template/.tower/
+!examples/project-template/.tower/**
 tower-exports/
 .DS_Store
 .env

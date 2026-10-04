@@ -6,6 +6,11 @@ in a terminal. The scientific result comes from your application; Tower reads
 explicit reports and scheduler evidence rather than guessing convergence from
 CPU or GPU utilization.
 
+For a common layout and reporting contract across your own projects, use the
+[project reporting standard](PROJECT_STANDARD.md), its
+[copyable template](../examples/project-template/README.md), and
+[machine-readable schemas](schemas/README.md).
+
 | View | What it answers | Source |
 | --- | --- | --- |
 | Experiment | Is the application progressing, and how are its metrics changing? | Explicit JSONL metrics |

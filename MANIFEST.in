@@ -4,4 +4,6 @@ recursive-include scripts *.py tower
 recursive-include tests *.py
 recursive-include examples/research *.py *.json *.sbatch
 recursive-include examples/planning *.py *.json *.sbatch
+recursive-include examples/project-template *.py *.json *.sbatch *.md .gitignore .gitkeep LICENSE
+recursive-include examples/project-template/.tower *.json
 recursive-include .github/workflows *.yml

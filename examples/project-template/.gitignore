@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.tower/passports/
+runs/*
+!runs/.gitkeep
+reports/*
+!reports/.gitkeep
+logs/*
+!logs/.gitkeep

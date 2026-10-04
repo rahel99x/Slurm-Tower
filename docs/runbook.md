@@ -4,6 +4,11 @@ Run Tower in a terminal on your CARC login node. Setup is noninteractive and
 repeatable. It never submits or changes jobs, installs system packages, replaces
 your configuration, or asks for a password.
 
+To instrument another application, follow the
+[project reporting standard](PROJECT_STANDARD.md) and copy its
+[project template](../examples/project-template/README.md). It defines the run
+directories, metrics, final reports, contracts, and analysis exports Tower reads.
+
 ## 1. Connect to CARC and check the tools
 
 Use your institution's documented SSH hostname and username. Complete the normal

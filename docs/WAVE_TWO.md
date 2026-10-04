@@ -6,6 +6,9 @@ critical paths. They use Tower's existing scheduler snapshot or an explicit JSON
 file. Analysis runs in bounded background work so terminal redraws can continue.
 There are no extra scheduler queries per chart redraw.
 
+The [project reporting standard](PROJECT_STANDARD.md) defines how another
+application should organize its runs and export compatible planning evidence.
+
 The new planners never submit jobs, change allocations, release holds, or execute
 batch scripts. A tradeoff choice can prepare one ordinary submission plan; the
 existing Submit view then requires a separate, explicit confirmation. Scaling
