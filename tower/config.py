@@ -38,6 +38,7 @@ DEFAULTS: Dict[str, Any] = {
     "budget": True,                      # the account's allocation from sreport and sacctmgr (used this month, last 7 days, limits)
     "series_keep": 4000,                 # samples kept per job for the analytics tab (also appended to state/series/<job>.jsonl)
     "analytics_days": [1, 2, 7, 14, 30], # the history windows the analytics tab cycles through
+    "research": {"metrics_file": "", "contract": "", "workdir": "", "passport": "", "interval": 5.0},
     "theme": "default",                  # default | mono | high | cb (colour-blind safe) | reader (plain text, no glyphs)
     "host": "",                          # remote mode: run every Slurm command on this login node over ssh (ControlMaster reused)
     "ssh_user": "",                      # the login on that host (empty: the same as here)
@@ -58,7 +59,7 @@ DEFAULTS: Dict[str, Any] = {
         "details": ["enter", "d"], "cancel": ["c"], "hold": ["h"], "requeue": ["R"], "top": ["t"],
         "log": ["l"], "less": ["L"], "follow": ["f"], "sort": ["s"], "reverse": ["S"], "filter": ["/"], "clear": ["esc"],
         "gpu_toggle": ["n"], "bell_toggle": ["b"], "log_lines": ["+"], "log_lines_less": ["-"], "source_toggle": ["x"],
-        "tab_analytics": ["7"], "view_prev": ["left", ","], "view_next": ["right", "."], "days_more": ["="], "days_less": ["_"],
+        "tab_analytics": ["7"], "tab_research": ["0"], "view_prev": ["left", ","], "view_next": ["right", "."], "days_more": ["="], "days_less": ["_"],
         "visual": ["v"], "visual_all": ["V"], "yank": ["y"], "export_text": ["E"], "export_csv": ["C"], "export_json": ["J"],
         "palette": [":"], "theme": ["T"], "find_next": ["N"], "find_prev": ["P"],
     },
@@ -90,6 +91,13 @@ theme = "default"               # default | mono | high | cb (colour-blind safe)
 # ssh_opts = ["-J", "bastion"]
 # plugins = ["~/my-tower-plugins"]      # besides ~/.config/tower/plugins/*.py; each file defines setup(api)
 # record = ""                           # record every command and answer to this file (tower --replay FILE plays it back)
+
+[research]                      # local application files; read only while Research is visible
+metrics_file = ""               # e.g. "runs/{job_id}/metrics.jsonl"
+contract = ""                   # a JSON output contract
+workdir = ""                    # metrics/output root; empty means current directory
+passport = ""                   # immutable JSON run passport
+interval = 5.0                  # bounded background inspections, minimum 1 second
 
 [intervals]                     # seconds between samples of each source
 jobs = 2.0

@@ -16,7 +16,7 @@ from .deps import DepGraph
 from .model import Finished, Job, Step, compact, hms, human, secs, short_duration, stamp, when
 from .remote import LocalFiles
 
-TABS = [("jobs", "Jobs"), ("cluster", "Cluster"), ("history", "History"), ("analytics", "Analytics"), ("nodes", "Nodes"), ("group", "Group"), ("deps", "Deps"), ("log", "Log"), ("sources", "Sources")]
+TABS = [("jobs", "Jobs"), ("cluster", "Cluster"), ("history", "History"), ("analytics", "Analytics"), ("nodes", "Nodes"), ("group", "Group"), ("deps", "Deps"), ("log", "Log"), ("sources", "Sources"), ("research", "Research")]
 ANALYTICS_VIEWS = [("job", "job series"), ("history", "history"), ("timeline", "timeline"), ("advisor", "advisor"), ("compare", "compare")]
 NODES_VIEWS = [("mine", "my nodes"), ("map", "cluster map")]
 LOG_ERROR = re.compile(r"\b(?:error|fatal|traceback|oom|killed|failed)\b", re.IGNORECASE)
@@ -330,6 +330,7 @@ class Views:
             "log": f"{k('up')}/{k('down')} scroll  {k('follow')} follow  {k('filter')} search  {k('wrap')} wrap  {k('stderr')} stderr",
             "sources": f"{k('up')}/{k('down')} select  {k('source_toggle')} toggle  {k('refresh')} refresh",
             "analytics": f"{k('view_prev')}/{k('view_next')} view  {k('up')}/{k('down')} job  {k('days_more')}/{k('days_less')} days",
+            "research": f"{k('view_prev')}/{k('view_next')} view  {k('up')}/{k('down')} job/cohort  PgUp/PgDn scroll  Enter tasks",
             "nodes": f"{k('view_prev')}/{k('view_next')} view  {k('sort')} sort  {k('refresh')} refresh",
             "group": f"{k('up')}/{k('down')} select  {k('sort')} sort  {k('filter')} filter",
             "deps": f"{k('up')}/{k('down')} select  {k('details')} details  {k('cancel')} cancel chain  {k('hold')} hold/release",
@@ -1551,7 +1552,8 @@ class Views:
               "cluster": lambda: self.cluster_tab(snap, app, width, body_h), "nodes": lambda: self.nodes_tab(snap, app, width, body_h),
               "log": lambda: self.log_tab(snap, app, width, body_h), "sources": lambda: self.sources_tab(snap, app, width, body_h),
               "analytics": lambda: self.analytics_tab(snap, app, width, body_h), "group": lambda: self.group_tab(snap, app, width, body_h),
-              "deps": lambda: self.deps_tab(snap, app, width, body_h)}.get(app.tab)
+              "deps": lambda: self.deps_tab(snap, app, width, body_h),
+              "research": lambda: self.research_tab(snap, app, width, body_h)}.get(app.tab)
         if fn is None:
             body, hits = self.plugin_tab(snap, app, width, body_h), []
         else:
@@ -1596,8 +1598,27 @@ class Views:
             return [rule(self.g, width, app.tab), [(f"   plugin tab failed: {type(e).__name__}: {e}", "red")]]
 
     # ---- overlays ---------------------------------------------------------------------------------
+    def research_tab(self, snap, app, width, height):
+        from .research_views import render
+        return render(self, snap, app, width, height)
+
     def overlay(self, snap: dict, app, width: int, height: int):
         g = self.g
+        if app.mode == "confirm" and app.confirm.get("action") == "submit":
+            from .research import clean
+            plan = app.confirm["plan"]
+            lines = [[(" Submit this reviewed batch script?", "bold")],
+                     [("   workdir: " + clean(plan["workdir"], g.ascii), "dim")]]
+            text = clean(plan["command"], g.ascii, limit=131072)
+            w = max(1, width - 12)
+            for i in range(0, min(len(text), w * 12), w):
+                lines.append([("   " + text[i:i + w], "cyan")])
+            if len(text) > w * 12:
+                lines.append([("   command continues; review exact argv with tower run prepare", "yellow")])
+            for issue in plan.get("issues", [])[:6]:
+                lines.append([("   " + clean(issue.get("message", ""), g.ascii), "yellow")])
+            lines.append([("   y submits once; any other key keeps the prepared plan", "dim")])
+            return box(g, lines, width, height, "submit")
         if app.mode == "confirm" and app.confirm.get("action") == "resubmit":
             c = app.confirm["clone"]
             lines = [[(f" Resubmit {c.id} {c.name}?", "bold")], [("", "")], [(f"   from the {c.source}, in {c.workdir or 'the current directory'}:", "dim")]]
@@ -1629,7 +1650,7 @@ class Views:
         if app.mode == "help":
             k = app.keys_help
             keys = [(f"{k('up')} {k('down')} {k('page_up')} {k('page_down')} {k('home')} {k('end')}", "move; on the Log tab: scroll"),
-                    (f"{k('next_tab')} {k('prev_tab')} 1-9", "switch tabs (Jobs, Cluster, History, Nodes, Log, Sources, Analytics, Group, Deps)"),
+                    (f"{k('next_tab')} {k('prev_tab')} 1-9, 0", "switch tabs; 0 opens Research (Left/Right views, PgUp/PgDn scroll)"),
                     (f"{k('mark')} {k('mark_all')} {k('unmark_all')}", "mark a job, all visible jobs, none: actions apply to the marked jobs, else the selected one"),
                     (k("pin"), "pin / unpin the marked or selected jobs (pinned jobs stay on top; :tag, :note and filter #tag go with it)"),
                     (k("resubmit"), "clone and resubmit the selected job: the palette opens with resubmit <id>, add --mem --time -c --gres -p or --advised; sbatch --test-only previews"),

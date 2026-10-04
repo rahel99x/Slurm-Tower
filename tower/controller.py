@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import shlex
 import math
+import os
 from typing import Dict, List, Optional, Sequence
 
 from . import clipboard, export
@@ -13,6 +14,7 @@ from .actions import Actions
 from .model import Job, Store
 from .sampler import Sampler
 from .views import ANALYTICS_VIEWS, NODES_VIEWS, SORTS, TABS
+from .research import RESEARCH_VIEWS
 
 KEY_LABELS = {"up": "↑", "down": "↓", "pgup": "PgUp", "pgdn": "PgDn", "home": "Home", "end": "End", "tab": "Tab", "btab": "S-Tab", "enter": "Enter",
               "esc": "Esc", "space": "Space"}
@@ -65,6 +67,16 @@ class App:
         self.files = None                                  # the files reader (LocalFiles / RemoteFiles), set by the cli
         self.analytics_view = "job"
         self.analytics_job: Optional[str] = None
+        self.research = None
+        self.research_view = "experiment"
+        self.research_job_id = None
+        self.research_scroll = 0
+        self.research_rows = 0
+        self.research_groups = []
+        self.research_array_open = False
+        self.research_task_offset = 0
+        self.research_array_focus = False
+        self.research_result = None
         days = list(cfg["analytics_days"]) or [1, 2, 7]
         self.days_options = days
         self.days_index = days.index(cfg["history_days"]) if cfg["history_days"] in days else 0
@@ -90,13 +102,15 @@ class App:
             self.analytics_view = ui["analytics_view"]
         if ui.get("nodes_view") in dict(NODES_VIEWS):
             self.nodes_view = ui["nodes_view"]
+        if ui.get("research_view") in dict(RESEARCH_VIEWS):
+            self.research_view = ui["research_view"]
         if isinstance(ui.get("bookmarks"), dict):
             self.logs.bookmarks = {k: sorted(int(i) for i in v) for k, v in ui["bookmarks"].items() if isinstance(v, list)}
         self.logs.wrap = bool(ui.get("log_wrap", False))
 
     def save(self):
         self.store.save_ui(dict(tab=self.tab, log_lines=self.log_lines, gpu=self.gpu, bell=self.bell, sort=self.sort, theme=self.theme, analytics_view=self.analytics_view,
-                                nodes_view=self.nodes_view, bookmarks=self.logs.bookmarks, log_wrap=self.logs.wrap))
+                                nodes_view=self.nodes_view, research_view=self.research_view, bookmarks=self.logs.bookmarks, log_wrap=self.logs.wrap))
 
     def analytics_days_value(self) -> float:
         return float(self.days_options[self.days_index])
@@ -144,6 +158,8 @@ class App:
         """Housekeeping before each frame: expire the message, tell the sampler which job is selected."""
         if self.message and time.time() - self.message_t > 6:
             self.message = ""
+        if self.research:
+            self.research.poll_task()
         if self.sampler:
             self.sampler.select(self.selected_id if self.tab in ("jobs", "log") else None)
             self.sampler.gpu_sampling = self.gpu
@@ -277,6 +293,8 @@ class App:
         elif action == "refresh":
             if self.sampler:
                 self.sampler.refresh_all()
+            if self.research:
+                self.research.configure()
             self.say("sampling every source now")
         elif action in ("up", "down", "page_up", "page_down", "home", "end"):
             self.move(action)
@@ -294,6 +312,10 @@ class App:
             elif self.tab == "nodes":
                 keys = [k for k, _ in NODES_VIEWS]
                 self.nodes_view = keys[(keys.index(self.nodes_view) + (1 if action == "view_next" else -1)) % len(keys)]
+            elif self.tab == "research":
+                keys = [k for k, _ in RESEARCH_VIEWS]
+                self.research_view = keys[(keys.index(self.research_view) + (1 if action == "view_next" else -1)) % len(keys)]
+                self.research_scroll = 0
         elif action == "steps":
             self.open_details()
         elif action in ("days_more", "days_less"):
@@ -337,7 +359,10 @@ class App:
         elif action == "unmark_all":
             self.marks.clear()
         elif action == "details":
-            if self.tab in ("jobs", "group", "deps") and self.selected_id:
+            if self.tab == "research" and self.research_view == "arrays":
+                self.research_array_open = not self.research_array_open
+                self.research_task_offset = 0
+            elif self.tab in ("jobs", "group", "deps") and self.selected_id:
                 self.open_details()
             elif self.tab == "history":
                 ids = [f.id for f in self.store.finished]
@@ -467,6 +492,28 @@ class App:
             self.handle(key)
 
     def move(self, action: str):
+        if self.tab == "research":
+            if action in ("page_up", "page_down", "home", "end"):
+                if self.research_view == "arrays" and self.research_array_open and action in ("page_up", "page_down"):
+                    self.research_task_offset = max(0, self.research_task_offset + (-24 if action == "page_up" else 24))
+                else:
+                    self.research_scroll = max(0, {"page_up": self.research_scroll - 12, "page_down": self.research_scroll + 12,
+                                                    "home": 0, "end": max(0, self.research_rows - 1)}[action])
+                return
+            delta = -1 if action == "up" else 1
+            if self.research_view in ("experiment", "evidence"):
+                ids = list(dict.fromkeys(j.id for j in self.store.jobs + self.store.finished))
+                cur = ids.index(self.research_job_id) if self.research_job_id in ids else 0
+                if ids:
+                    self.research_job_id = ids[max(0, min(len(ids) - 1, cur + delta))]
+                self.research_scroll = 0
+            elif self.research_view == "arrays":
+                self.cursor["research"] = max(0, min(len(self.research_groups) - 1, self.cursor.get("research", 0) + delta))
+                self.research_task_offset = 0
+                self.research_array_focus = True
+            else:
+                self.research_scroll = max(0, self.research_scroll + delta)
+            return
         if self.tab == "analytics":
             if self.analytics_view == "job":
                 ids = [j.id for j in self.store.jobs if not j.pending]
@@ -508,6 +555,9 @@ class App:
             ids = [f.id for f in self.store.finished]
             if ids:
                 self.analytics_job = ids[self.clamp_cursor("history", len(ids))]
+        if name == "research" and self.tab in ("jobs", "history"):
+            ids = self.target_ids()
+            self.research_job_id = ids[0] if ids else self.selected_id
         self.tab = name
         self.sel_anchor = None
 
@@ -597,7 +647,7 @@ class App:
     # ---- the command palette -----------------------------------------------------------------------
     COMMANDS = ["cancel", "hold", "release", "requeue", "top", "filter", "sort", "days", "tab", "view", "export", "copy", "gpu", "bell", "source",
                 "theme", "refresh", "mark", "unmark", "log", "find", "profile", "eval", "advise", "compare", "tag", "untag", "pin", "note", "chain", "resubmit", "replay", "wrap",
-                "bookmark", "help", "quit"]
+                "bookmark", "help", "quit", "metric", "metrics", "passport", "validate", "artifacts", "prepare", "submit", "investigate", "array"]
 
     def commands(self) -> List[str]:
         return self.COMMANDS + sorted(self.plugins.commands) if self.plugins else self.COMMANDS
@@ -622,6 +672,15 @@ class App:
                  "resubmit": "resubmit [id] [--mem 12G] [--time 03:00:00] [-c 4] [--gres gpu:a100:2] [-p gpu] [--dependency=] [--script PATH] [--advised]  (clone the job; sbatch --test-only previews it)"}
         if self.plugins:
             hints.update({k: v[1] for k, v in self.plugins.commands.items()})
+        hints.update({"metrics": "metrics FILE (attach a JSONL experiment stream)",
+                      "metric": "metric FILE --value NAME=NUMBER [--step N] [--completed N --total N]",
+                      "artifacts": "artifacts CONTRACT ROOT (attach a declared output contract)",
+                      "validate": "validate CONTRACT ROOT (validate declared outputs)",
+                      "passport": "passport capture SCRIPT --workdir DIR | show FILE | compare LEFT RIGHT",
+                      "prepare": "prepare SCRIPT --workdir DIR [sbatch flags] (offline preflight)",
+                      "submit": "submit [SCRIPT --workdir DIR --passport-dir DIR] (confirmation required)",
+                      "investigate": "investigate JOBID (scheduler, log and output evidence)",
+                      "array": "array retry ARRAYID SCRIPT --workdir DIR [--indices RANGE] [--limit N]"})
         if word in hints and " " in self.palette_edit:
             return hints[word]
         return " ".join(matches) if matches else "unknown command"
@@ -671,6 +730,9 @@ class App:
             if msg:
                 self.say(str(msg))
             return
+        from .research_commands import execute
+        if execute(self, cmd, args):
+            return
         if cmd in ("cancel", "hold", "release", "requeue", "top"):
             jobs = self._ids_arg(args)
             if not jobs or not self.actions:
@@ -710,6 +772,11 @@ class App:
             else:
                 self.fail("tab <" + "|".join(t for t, _ in TABS) + ">")
         elif cmd == "view":
+            if args and args[0] in dict(RESEARCH_VIEWS):
+                self.research_view = args[0]
+                self.research_scroll = 0
+                self.enter_tab("research")
+                return
             if args and args[0] in dict(ANALYTICS_VIEWS):
                 self.analytics_view = args[0]
                 self.enter_tab("analytics")
@@ -975,6 +1042,12 @@ class App:
                 elif kind == "dep":
                     if key in self.dep_ids:
                         self.cursor["deps"] = self.dep_ids.index(key)
+                elif kind == "research_array":
+                    ids = [g["id"] for g in self.research_groups]
+                    if key in ids:
+                        self.cursor["research"] = ids.index(key)
+                        self.research_task_offset = 0
+                        self.research_array_focus = True
                 return
 
     # ---- confirmations -----------------------------------------------------------------------------
@@ -1069,6 +1142,20 @@ class App:
         self.mode = "main"
         if not yes:
             self.say("kept")
+            return
+        if self.confirm.get("action") == "submit":
+            from .submission import submit
+            from .research_commands import submission_done
+            plan = self.confirm["plan"]
+            directory = self.confirm.get("passport_directory") or os.path.join(plan["workdir"], ".tower", "passports")
+            fn = lambda: submit(plan, self.actions.slurm, passport_directory=directory)
+            if self.interactive:
+                if self.research.start_task(fn, lambda value: submission_done(self, value)):
+                    self.say("submitting once in the background")
+                else:
+                    self.fail("a research operation is still running; confirm submission again after it completes")
+            else:
+                submission_done(self, fn())
             return
         if self.confirm.get("action") == "resubmit":
             clone = self.confirm["clone"]

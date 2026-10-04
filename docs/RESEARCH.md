@@ -1,0 +1,369 @@
+# Experiment and research workflows
+
+Tower's Research workspace connects application progress, run evidence, batch
+submission, arrays, failure investigation, and declared outputs. Everything runs
+in a terminal. The scientific result comes from your application; Tower reads
+explicit reports and scheduler evidence rather than guessing convergence from
+CPU or GPU utilization.
+
+| View | What it answers | Source |
+| --- | --- | --- |
+| Experiment | Is the application progressing, and how are its metrics changing? | Explicit JSONL metrics |
+| Passport | Which script, code revision, inputs, and requests describe this run? | Local bounded capture |
+| Submit | What exactly will be submitted, and what issues need attention? | Script directives and argv options |
+| Arrays | Which observed tasks succeeded, failed, or remain active? | Current queue and accounting |
+| Evidence | Which observations support a possible failure explanation? | Job records and selected log excerpts |
+| Artifacts | Do the declared outputs meet their checks? | An explicit JSON contract |
+
+Start at a particular view with `--tab research --research-view VIEW`, where
+`VIEW` is `experiment`, `passport`, `submit`, `arrays`, `evidence`, or `artifacts`.
+The regular Jobs and History views remain the place to select a job.
+
+## Try the complete workflow without a cluster
+
+From an installed checkout, create a fresh output location and run the included
+regression experiment:
+
+```bash
+demo_dir=$(mktemp -d /tmp/tower-research.XXXXXX)
+.venv/bin/python examples/research/experiment.py \
+  --output "$demo_dir/run" --steps 120 --delay 0.1 &
+experiment_pid=$!
+scripts/tower --fake --tab research --research-view experiment \
+  --metrics-file "$demo_dir/run/metrics.jsonl" --workdir "$demo_dir/run"
+wait "$experiment_pid"
+```
+
+Quit the dashboard with `q`. The output directory contains the generated dataset,
+the loss/RMSE curve, a result summary, and the append-only metric stream. The
+experiment is deterministic for the same seed and parameters, and computes
+full-batch regression gradients using sufficient statistics in
+`O(samples + steps)` work. `--delay` only makes its progress easier to watch.
+It refuses an existing output directory, protecting previous runs.
+
+Validate the results and inspect a snapshot:
+
+```bash
+scripts/tower run validate examples/research/contract.json "$demo_dir/run"
+scripts/tower --fake --tab research --research-view artifacts \
+  --contract examples/research/contract.json --workdir "$demo_dir/run" --once
+scripts/tower run passport capture examples/research/sample.sbatch \
+  --workdir "$PWD" --output-dir "$demo_dir/passports"
+scripts/tower --fake run prepare examples/research/sample.sbatch --workdir "$PWD"
+```
+
+`--fake` explicitly identifies simulated scheduler data. Attached metric files
+are still your actual files. The simulated application curves used when no file
+is attached are demonstration data, not measurements of a CARC job. Passports,
+contracts, and local preparation do not require a Slurm installation.
+
+## Application metrics
+
+Report only the values you want Tower to inspect. A stream is UTF-8 JSONL: one
+object per newline, with a finite epoch timestamp `t`, a `metrics` object, and
+optional `step`, `phase`, and `progress`:
+
+```json
+{"t":1700000000,"step":1,"phase":"fit","metrics":{"loss":0.4,"rmse":0.632456},"progress":{"completed":1,"total":100,"unit":"steps"}}
+```
+
+Numeric values must be finite; progress must satisfy
+`0 <= completed <= total` with a positive total. Metric names are printable
+strings. The reader rejects malformed records atomically, preserves incomplete
+lines until their newline arrives, and displays bounded parsing errors. It
+follows appended bytes and handles truncation/rotation rather than rereading an
+ever-growing file on every terminal frame.
+
+Python applications can use the optional reporter:
+
+```python
+from tower.metrics import MetricReader, write_metric
+
+write_metric("metrics.jsonl", {"loss": 0.4}, step=1, phase="fit",
+             completed=1, total=100, unit="steps")
+snapshot = MetricReader().read("metrics.jsonl")
+print(snapshot["latest"], snapshot["progress"])
+```
+
+Other applications can write the same format, or append through the CLI:
+
+```bash
+tower run metric metrics.jsonl --value loss=0.4 --step 1 \
+  --completed 1 --total 100 --unit steps
+tower --metrics-file metrics.jsonl --workdir "$PWD" \
+  --tab research --research-view experiment
+```
+
+In the dashboard, `:metrics FILE` attaches a stream. `{job_id}` is the supported
+token in a configured metric path, for example `runs/{job_id}/metrics.jsonl`.
+Create the parent directory before reporting. The writer creates private files,
+serializes cooperating writers with a POSIX advisory lock, and appends without
+truncation. Separate streams are preferable for independent array tasks.
+
+By default the reader retains up to 600 points for each of at most 64 metric
+names, reads at most 1 MiB at a time, and keeps at most 32 streams. Limits and
+discarded data are reported. ETA comes from several reported progress samples,
+resets when progress restarts or changes phases, and is an estimate of
+application progress rather than a scheduler finish guarantee.
+
+## Reproducible run passports
+
+```bash
+tower run passport capture examples/research/sample.sbatch \
+  --workdir "$PWD" --output-dir ./passports
+tower run passport show /absolute/path/to/printed-passport.json
+tower run passport compare /absolute/path/to/first-passport.json \
+  /absolute/path/to/second-passport.json
+```
+
+Use the content-addressed file path printed by capture. Passports contain a
+script SHA256, an observed Git revision and tracked dirty status, selected
+resource requests and parameters, and only explicitly declared input and
+environment metadata. Unknown information remains `null`. They do not capture
+Git patches, remote URLs, arbitrary directory contents, or the entire process
+environment. The actual batch script is never executed by capture.
+
+The Python API supports more explicit declarations:
+
+```python
+from tower.provenance import capture, diff, load, save
+
+passport = capture(
+    "/absolute/path/to/workdir", script="run.sbatch",
+    resources={"cpus_per_task": 8, "mem": "32G"},
+    parameters={"seed": 7, "samples": 512},
+    inputs=["dataset.csv", {"path": "experiment.py", "hash": True,
+                           "max_bytes": 1048576}],
+    environment_names=["LOADEDMODULES", "OMP_NUM_THREADS",
+                       "APPTAINER_CONTAINER"],
+)
+path = save(passport, "/absolute/path/to/passports")
+assert diff(passport, load(path)) == []
+```
+
+Input strings record size and modification time, not a content hash. Hashing
+requires explicit opt-in and is bounded to 64 MiB across inputs; scripts are
+bounded to 8 MiB. Capture accepts explicit paths outside the working directory,
+resolves symlinks, and records both the declared and resolved paths. Missing,
+nonregular, oversized, or concurrently changed files prevent capture. Explicitly
+declare application source and data files when the batch script alone does not
+identify them; untracked files do not make the Git snapshot dirty.
+
+Environment selection is an allowlist, with secret-like names rejected. Module
+and container metadata are captured only when their corresponding variables are
+selected. Parameters and resource objects also reject secret-like field names.
+Do not put credential values under other field names. A passport describes
+observed local metadata, not an exhaustive or verified compute-node environment.
+
+Records are immutable through Tower's API, published atomically with mode
+`0600`, and limited to 1 MiB. Equivalent evidence shares an ID despite different
+capture timestamps; saving it again reuses the original record. A separate
+checksum covers the entire record, including its timestamp, and is verified on
+load. These hashes detect corruption or modification; they are not signatures
+proving who created a record. Comparisons report JSON Pointer paths and distinguish
+missing fields from explicit `null` and different JSON types.
+
+## Submission workbench
+
+Prepare and review a batch file before submitting:
+
+```bash
+tower run prepare examples/research/sample.sbatch --workdir "$PWD" \
+  --account "$CARC_ACCOUNT"
+```
+
+The plan includes the exact `sbatch` argv and working directory, the script
+fingerprint, parsed resource requests, and issues. Command-line resource options
+override directives for the same option; conflicting memory or GPU request
+styles still need correction. Only directives before the first executable
+command are active. Slurm does not expand shell variables inside `#SBATCH`
+directives, so account/partition choices should be passed explicitly or written
+as concrete values. Supported options are deliberately bounded; this workbench
+does not claim to parse arbitrary shell behavior or every Slurm extension.
+
+On a CARC login node, set the checkout path for the supplied example and confirm
+a reviewed submission:
+
+```bash
+export SLURM_TOWER_ROOT="$PWD"
+tower run submit examples/research/sample.sbatch --workdir "$PWD" \
+  --account "$CARC_ACCOUNT" --yes
+```
+
+Choose a partition or other resources appropriate to your site if necessary.
+The example uses a single CPU, 256 MiB, and five minutes; its output directory is
+`runs/JOBID` below the submitted working directory. It executes the checkout's
+own `.venv/bin/python` and imports Tower's reporter. Array submissions use
+`runs/JOBID_TASKID` and a distinct seed per task.
+
+Interactive `:prepare SCRIPT --workdir DIR [flags]` reviews a plan in the Submit
+view; `:submit` starts its confirmation flow. Preparation never submits a job.
+Submitting rechecks the script and plan, captures a passport before contacting
+Slurm, and links the returned job ID without changing that immutable passport.
+Confirmed CLI and interactive submissions save private passports under the batch
+workdir's `.tower/passports` by default. Use `--passport-dir DIR` on `submit` to
+choose another directory. Passports are explicit run artifacts, independent of
+the dashboard's `--no-state` option. Heavy palette preparation, capture and
+validation run on the single Research worker; results appear on the next UI tick.
+An accepted response without an unambiguous ID, or a transport timeout, requires
+queue inspection before retrying; Tower does not automatically repeat it.
+
+Programmatic callers use the same separation:
+
+```python
+from tower.submission import prepare, preview, submit
+
+plan = prepare("run.sbatch", workdir="/absolute/workdir",
+               overrides=["--cpus-per-task=8", "--mem=32G"],
+               parameters={"seed": 7}, inputs=["dataset.csv"],
+               outputs=["result.json"])
+# `slurm` is an existing tower.slurm.Slurm instance for the selected cluster.
+# preview(plan, slurm) runs the scheduler's test-only probe when requested.
+# Only call submit(plan, slurm, passport_directory="/absolute/passports")
+# after the user has reviewed and explicitly confirmed this exact plan.
+```
+
+Declared inputs and outputs are explicit paths. The workbench detects obvious
+collisions and missing parents; it cannot infer files opened by arbitrary
+application code. Site account eligibility and scheduler behavior ultimately
+come from Slurm, not an offline plan.
+
+CLI declarations use `--declared-input FILE` and `--declared-output FILE`, each
+repeatable. These describe experiment files; ordinary Slurm `--input FILE` and
+`--output PATTERN` retain their stdin and log-file meanings. Passport capture's
+`--input FILE` declares a fingerprinted input, since capture is not an `sbatch`
+command.
+
+## Array operations
+
+```bash
+tower --tab research --research-view arrays
+```
+
+The Arrays view merges current and historical task records, gives individual
+records precedence over compressed ranges, and displays bounded state mosaics
+and runtime summaries. Compressed ranges are counted arithmetically instead of
+expanding millions of indices into Python objects. An observed subset is not
+reported as the complete array; missing size information stays unknown.
+
+Select an array and prepare a failed-task retry:
+
+```text
+:array retry ARRAYID /absolute/path/to/run.sbatch --workdir /absolute/workdir
+```
+
+This produces a review plan for observed failed tasks. It does not submit it.
+Review the generated indices, resources, and output paths, then use `:submit`
+to confirm. A retry is a new submission, so check how the application's output
+layout distinguishes original attempts from retries.
+
+The API also supports a bounded subset and concurrency limit:
+
+```python
+from tower.arrays import summarize, tasks, select_failed, retry_plan
+
+groups = summarize(current_job_records, accounting_records)
+group = groups[0]
+page = tasks(group, offset=0, limit=100)
+failed_spec = select_failed(group)
+plan = retry_plan(group, "/absolute/run.sbatch", limit=4,
+                  workdir="/absolute/workdir")
+```
+
+Only observed failures are eligible. Ambiguous, malformed, or excessively
+complex range evidence is reported rather than silently converted into a broad
+retry. Bounded grouping and paging limit UI work as campaigns grow.
+
+## Evidence-based failure investigation
+
+Select a job from Jobs or History, then open Evidence, or use
+`:investigate JOBID`. Tower ranks candidate explanations from scheduler state,
+exit code/signal, available resource observations, selected stdout/stderr tails,
+and job-scoped events. Each hypothesis links to supporting evidence,
+contradictory observations, and useful next checks. A recovered warning in a
+completed job does not change its recorded scheduler state.
+
+The pure analysis API does not open files or run commands:
+
+```python
+from tower.investigate import investigate
+
+case = investigate(
+    {"id": "12345", "state": "OUT_OF_MEMORY", "exitcode": "0:125"},
+    stderr={"text": "slurmstepd: oom-kill event detected\n",
+            "path": "/absolute/job.err", "first_line": 42},
+)
+print(case["summary"])
+for candidate in case["hypotheses"]:
+    print(candidate["name"], candidate["support"], candidate["next_checks"])
+```
+
+Log excerpts are bounded to 128 KiB and 1,200 lines per supplied source.
+Original line numbers are shown when supplied; otherwise locations explicitly
+refer to the tail excerpt. Missing or unreadable logs remain limitations, and
+candidate explanations are not proven causes. Terminal escape sequences are
+removed from displayed evidence. Investigation never automatically cancels,
+changes resources, or reruns a job.
+
+## Output contracts
+
+The example contract names four exact files. A smaller contract might require
+a CSV with specified columns and at least ten data rows, plus a JSON summary:
+
+```json
+{
+  "version": 1,
+  "outputs": [
+    {"path": "results.csv", "format": "csv", "columns": ["id", "score"], "min_rows": 10},
+    {"path": "summary.json", "format": "json", "required_keys": ["count", "mean"], "min_bytes": 2}
+  ]
+}
+```
+
+```bash
+tower run validate contract.json /absolute/output-root
+tower --contract contract.json --workdir /absolute/output-root \
+  --tab research --research-view artifacts
+```
+
+Interactive `:artifacts CONTRACT ROOT` attaches the same checks. The API is:
+
+```python
+from tower.artifacts import load_contract, validate_contract
+
+result = validate_contract(load_contract("contract.json"), "/absolute/output-root")
+print(result["status"], result["summary"])
+```
+
+Contract version 1 accepts size bounds, strict JSON and top-level required keys,
+CSV required columns and row bounds, text decoding, optional SHA256, and optional
+files (`required: false`). CSV row counts exclude the header and blank rows.
+Checks establish only the properties declared in the contract; successful
+parsing does not prove scientific correctness or completion of all intended
+steps. Require an exact row count or application completion summary when that
+distinction matters.
+
+Paths are exact relative paths under the output root. Absolute paths, traversal,
+globs, duplicates, and symlinks in output paths are refused. No recursive scan,
+shell command, or validator plugin runs. The default inspection budget is
+8 MiB shared across at most 256 entries; exhausted budgets and concurrent file
+changes yield incomplete checks rather than a false success. Contracts are
+bounded to 256 KiB. The result distinguishes `valid`, `invalid`, `incomplete`,
+and `error` and records per-check observations independently of Slurm's state.
+
+## CARC and remote operation
+
+Install and run Tower on a CARC login node for local submission and confined
+output validation. Keep application work inside allocations; the example's
+offline experiment is deliberately small. The CARC profile slows scheduler
+polling and avoids enabling GPU job steps or scheduling probes automatically.
+
+`--host` can monitor a selected remote cluster and read explicit metric/log
+paths through SSH; these paths belong to that host. A local passport is still a
+local capture, and its optional `host` field labels metadata rather than
+performing remote collection. Submission plans require local files on the
+cluster where they will be submitted. Remote output adapters that cannot prove
+regular-file type and confinement cannot certify a contract; the dashboard asks
+you to run validation on the cluster's login node. No feature turns an SSH
+connection into permission to recursively inspect files or execute application
+code outside a reviewed submission.

@@ -11,6 +11,7 @@ when you need to share the picture.
 **Terminal only | Unicode block visuals | Python 3.10+ | Zero runtime dependencies | MIT**
 
 [Runbook](docs/runbook.md) | [Complete reference](docs/reference.md) |
+[Research workflows](docs/RESEARCH.md) |
 [Tests](https://github.com/rahel99x/Slurm-Tower/actions/workflows/tests.yml) |
 [Contributing](CONTRIBUTING.md)
 
@@ -62,6 +63,22 @@ You can skip installation entirely: `python3 -m tower --fake` runs from the clon
 Python 3.11+ reads TOML configuration; Python 3.10 uses JSON.
 
 ## Every view answers a question
+
+Press `0` to open **Research**, then use Left/Right to switch among six workspaces:
+application metric curves and progress, array cohorts and failed-task retry plans,
+failure hypotheses with cited evidence, output contracts, immutable run passports,
+and a batch submission workbench. Inspections run in a bounded background worker.
+Preparing a script stays offline; submitting requires an explicit confirmation.
+
+```bash
+tower --fake --tab research --research-view experiment
+tower run prepare examples/research/sample.sbatch --workdir "$PWD"
+```
+
+The [research guide](docs/RESEARCH.md) includes a runnable experiment and output
+contract, telemetry instrumentation, provenance comparisons, and safe array retries.
+Confirmed submissions save passports under the batch workdir's `.tower/passports`
+unless `--passport-dir` selects another directory. This output is separate from UI state.
 
 | View | Get an answer quickly |
 | --- | --- |

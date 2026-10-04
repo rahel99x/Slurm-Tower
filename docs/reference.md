@@ -68,6 +68,12 @@ the existing snapshot and sample history without increasing Slurm polling.
 
 ## Tabs
 
+The **Research** tab (`0`) adds six workspaces: experiment telemetry, job arrays,
+failure evidence, output contracts, run passports and batch submission preparation.
+Use Left/Right for subviews and PgUp/PgDn to scroll. Jobs and History carry the
+selected job into Research. See [Research workflows](RESEARCH.md) for schemas,
+instrumentation, commands, examples and inspection limits.
+
 | tab | what it shows |
 |---|---|
 | **Jobs** | your running jobs (by start) then pending ones (by priority): partition, state, nodes, CPUs, GPUs, elapsed against the limit, time left or time waited, CPU rate, CPU efficiency so far, memory against the request, GPU utilisation, flags, and the reason / projected start / priority of pending jobs. Below the table: the selected job (bars and sparklines for time, CPU, memory and each GPU with its mean since the dashboard started, the node's load, a tail of its stdout; for a pending job its dependency with the names of the jobs it waits for), the recently finished jobs, the last events. |
@@ -274,7 +280,7 @@ within one `jobs` round.
 
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
 commented defaults without replacing an existing config (JSON on Python 3.10, TOML on 3.11+).  Sections: top level (`user`, `account`, `ascii`, `color`, `history_days`, `log_lines`,
-`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`), `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
+`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`), `[research]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
 (`command` runs through the shell on the configured `events` with `TOWER_EVENT`, `TOWER_JOBID`, `TOWER_JOBNAME`
 and `TOWER_TEXT` in the environment: a Slack webhook, an e-mail, anything), `[keys]` (action = list of key names).
 

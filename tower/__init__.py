@@ -1,2 +1,2 @@
 """tower: an interactive terminal dashboard of your Slurm jobs (see cli.py)."""
-__version__ = "2.1.0"
+__version__ = "2.2.0"

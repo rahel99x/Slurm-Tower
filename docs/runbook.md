@@ -44,7 +44,7 @@ sampling, disables forecast probes, and disables allocation-budget queries. Star
 there, then adjust the profile to your site's usage guidelines. It does not assume
 an account name, partition, scheduler version, or institution-specific hostname.
 
-Every mode validates simulated JSON output, all nine terminal views, and a
+Every mode validates simulated JSON output, all ten terminal views, and a
 plain-text report. Local mode checks command availability; it does not query or
 change your jobs. A successful diagnostic confirms tools, not the health of the
 Slurm controller or your site's authorization rules. Verify real data in step 4.
@@ -121,7 +121,7 @@ Try the full dashboard without contacting the cluster:
 ./scripts/tower --fake --unicode --once --tab analytics
 ```
 
-Let the demo run briefly to build sample history, then use `Tab` for the nine pages
+Let the demo run briefly to build sample history, then use `Tab` for the ten pages
 and the left/right arrows for each page's alternate views. `T` cycles themes.
 The `mono` theme keeps the glyphs without colors; `reader` uses plain ASCII text.
 `--no-color` or a nonempty `NO_COLOR` environment variable disables color.

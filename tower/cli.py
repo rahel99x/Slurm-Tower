@@ -48,6 +48,8 @@ class Session:
 
     def close(self):
         self.app.save()
+        if getattr(self.app, "research", None):
+            self.app.research.close()
         self.sampler.shutdown()
         rec = getattr(self.backend, "close", None)
         if rec:
@@ -135,6 +137,13 @@ def build(args, cfg: Config) -> Session:
     app.logs.files = files
     app.host_label = (args.host or cfg["host"]) if not (args.fake or args.replay) else ""
     app.replay = replay
+    from .research import ResearchHub
+    app.research = ResearchHub(cfg, files, demo=args.fake, slurm=slurm,
+                              settings={k: getattr(args, k) for k in ("metrics_file", "contract", "workdir", "passport")})
+    if args.research_view:
+        app.research_view = args.research_view
+    if args.tab:
+        app.enter_tab(args.tab)
     if app.theme == "reader":
         views.set_ascii(True)
     if args.no_gpu:
@@ -155,6 +164,8 @@ def settle(s: Session, tab: str = None):
     s.sampler.round(wait=True)
     if tab:
         s.app.tab = tab
+    if tab == "research":
+        s.app.research.request(s.app.research.context(s.store.snapshot(), s.app), wait=True)
 
 
 def scripted(args, s: Session) -> int:
@@ -168,13 +179,19 @@ def scripted(args, s: Session) -> int:
         if app.mode == "confirm":
             jobs = app.confirm["jobs"]
             if not args.yes:
-                if app.confirm.get("action") == "resubmit":
+                if app.confirm.get("action") == "submit":
+                    plan = app.confirm["plan"]
+                    print(f"would run in {plan['workdir']}: {plan['command']}\nadd --yes to submit")
+                elif app.confirm.get("action") == "resubmit":
                     c = app.confirm["clone"]
                     print(f"would run in {c.workdir or '.'}: {c.command()}\n  {c.probe}" + "".join(f"\n  note: {n}" for n in c.notes) + "\nadd --yes to submit")
                 else:
                     print(f"{app.confirm['action']} would apply to {' '.join(j.id for j in jobs)}: add --yes to confirm")
                 return 3
             app.finish_confirm(True)
+        if app.research_result is not None:
+            print(json.dumps(app.research_result, indent=2, ensure_ascii=True, allow_nan=False))
+            return 0 if app.command_ok else 1
         print(app.message or "ok")
         for e in list(s.store.events)[-len(jobs) if app.message and "sent" in app.message else -1:]:
             if e.get("kind") in ("action", "export", "copy") and not e.get("old"):
@@ -230,7 +247,13 @@ def parse(argv):
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--no-plugins", action="store_true", help="do not load ~/.config/tower/plugins")
     ap.add_argument("--once", action="store_true", help="one frame of text and exit")
-    ap.add_argument("--tab", choices=[t for t, _ in TABS], help="with --once / --csv / --run: which tab")
+    ap.add_argument("--tab", choices=[t for t, _ in TABS], help="initial tab; also selects the --once / --csv / --run view")
+    from .research import RESEARCH_VIEWS
+    ap.add_argument("--research-view", choices=[k for k, _ in RESEARCH_VIEWS], help="Research subview")
+    ap.add_argument("--metrics-file", help="application JSONL telemetry; {job_id} selects a stream")
+    ap.add_argument("--contract", help="JSON output contract (local cluster files)")
+    ap.add_argument("--workdir", help="root for attached metrics and declared outputs")
+    ap.add_argument("--passport", help="immutable run passport to inspect")
     ap.add_argument("--json", action="store_true", help="the snapshot as JSON and exit")
     ap.add_argument("--report", nargs="?", const="-", default="", help="the whole dashboard as an ASCII text report (to PATH, or stdout) and exit")
     ap.add_argument("--csv", action="store_true", help="the tab's table (jobs by default, or --tab history / nodes / sources) as CSV and exit")
@@ -254,16 +277,26 @@ def parse(argv):
     if "run" in argv:                                      # tower [tower flags] run <command and its flags> [tower flags]
         i = argv.index("run")
         pre, post, cmd = argv[:i], argv[i + 1:], []
-        switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--unicode", "--no-color", "--no-gpu", "--bell", "--paused"}
+        switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--unicode", "--no-color", "--no-gpu", "--bell", "--paused", "--json"}
         valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval"}
-        if post and post[0] and "resubmit".startswith(post[0]):
+        batch_command = bool(post and post[0] and any(c.startswith(post[0]) for c in ("resubmit", "prepare", "submit", "array")))
+        from .research_commands import COMMANDS, command_value_option
+        candidates = [c for c in (*COMMANDS, "resubmit") if post and c.startswith(post[0])]
+        research_command = post[0] if post and post[0] in (*COMMANDS, "resubmit") else candidates[0] if len(candidates) == 1 else ""
+        if batch_command:
             # After `run resubmit`, --account belongs to sbatch. Tower's account
             # can still be selected explicitly before `run`.
             valued.discard("--account")
         k = 0
         while k < len(post):
             a = post[k]
-            if a in switches:
+            if a == "--":
+                cmd += post[k:]
+                break
+            if command_value_option(research_command, a) and k + 1 < len(post):
+                cmd += post[k:k + 2]
+                k += 1
+            elif a in switches:
                 pre.append(a)
             elif a in valued and k + 1 < len(post):
                 pre += [a, post[k + 1]]
@@ -317,7 +350,16 @@ def main(argv=None):
             result = diagnose(cfg, fake=args.fake, host=args.host, ssh_user=args.ssh_user)
             print(render(result, as_json=args.json))
             return 0 if result["ready"] else 1
-        s = build(args, cfg)
+        if args.run:
+            from .research_commands import offline
+            code = offline(args.run, host=args.host or cfg["host"], replay=bool(args.replay))
+            if code is not None:
+                return code
+        try:
+            s = build(args, cfg)
+        except (ValueError, OSError, TypeError) as exc:
+            print(f"tower: {exc}", file=sys.stderr)
+            return 1
         app, views, store, sampler, actions = s.app, s.views, s.store, s.sampler, s.actions
         width = args.width or max(1, shutil.get_terminal_size((130, 40)).columns)
         color = cfg["color"] and sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb"
@@ -337,7 +379,10 @@ def main(argv=None):
                             f.write(page)
                         print(args.report)
                 elif args.json:
-                    print(screen.once_json(store))
+                    payload = json.loads(screen.once_json(store))
+                    if app.tab == "research":
+                        payload["research"] = app.research.current(app.research.context(store.snapshot(), app))
+                    print(json.dumps(payload, ensure_ascii=True, allow_nan=False))
                 elif args.csv:
                     from .export import tab_csv
                     app.tick()

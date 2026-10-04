@@ -13,6 +13,7 @@ from typing import List
 from . import clock, layout
 from .controller import KEY_LABELS_ASCII
 from .views import ANALYTICS_VIEWS, TABS
+from .research import RESEARCH_VIEWS
 
 
 _TRANSLATE = str.maketrans({"\u00b7": ".", "\u2026": "...", "\u2192": "->", "\u2190": "<-", "\u2013": "-", "\u2014": "--", "\u00d7": "x"})
@@ -75,11 +76,11 @@ def build(snap: dict, app, views, actions=None, title: str = "", width: int = 13
         out.append("Account: " + ascii_text(snap["account"]["account"]))
     if getattr(app, "demo", False):
         out.append("[DEMO] Simulated cluster data. No live cluster connection.")
-    out.extend(textwrap.wrap("Nine dashboard pages, ASCII charts, all available job series, node maps and source diagnostics. This is a fixed snapshot; unmeasured values remain unavailable.", width))
+    out.extend(textwrap.wrap("Ten dashboard pages, ASCII charts, job series, node maps, research evidence and source diagnostics. This is a fixed snapshot; unmeasured values remain unavailable.", width))
     out.extend(textwrap.wrap("All jobs are included regardless of the screen filter. Tables and charts fit this report's width. The Log page contains one 40-line window of the selected log; it is not the whole file.", width))
     out.extend(["", "CONTENTS", "  01 Jobs        02 Cluster       03 History       04 Analytics",
                 "  05 Nodes       06 Group         07 Dependencies  08 Log",
-                "  09 Sources     10 Event journal", ""])
+                "  09 Sources     10 Research      11 Event journal", ""])
 
     def heading(text: str):
         out.extend(["", border, ascii_text(text)[:width], border])
@@ -133,7 +134,21 @@ def build(snap: dict, app, views, actions=None, title: str = "", width: int = 13
             out.extend(textwrap.wrap(ascii_text(f"{health.name}: {health.error}"), width,
                                      subsequent_indent="  ", break_long_words=True, break_on_hyphens=False))
 
-    heading("10 / EVENT JOURNAL")
+    local.research_view = "experiment"
+    if getattr(local, "research", None):
+        local.research.request(local.research.context(snap, local), wait=True)
+    page(10, "research", "Research")
+    for key, label in RESEARCH_VIEWS:
+        if key != "experiment":
+            local.research_view = key
+            local.research_scroll = 0
+            rows([layout.rule(display.g, width, f"research / {label}")])
+            if getattr(local, "research", None):
+                local.research.request(local.research.context(snap, local), wait=True)
+            rendered, _ = display.research_tab(snap, local, width, None)
+            rows(rendered)
+
+    heading("11 / EVENT JOURNAL")
     events = list(snap.get("events", []))
     if events:
         out.append(f"{len(events)} recorded events in this snapshot, oldest first.")

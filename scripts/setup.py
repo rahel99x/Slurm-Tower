@@ -100,13 +100,17 @@ def validate(python, mode, host, report):
         snapshot = json.loads(run([*command, "--fake", "--json"], capture=True))
         if not isinstance(snapshot, dict) or not snapshot.get("jobs"):
             raise SetupError("The simulated cluster did not produce any jobs.")
-        for tab in ("jobs", "cluster", "history", "analytics", "nodes", "group", "deps", "log", "sources"):
+        for tab in ("jobs", "cluster", "history", "analytics", "nodes", "group", "deps", "log", "sources", "research"):
             frame = run([*command, "--fake", "--once", "--tab", tab, "--ascii", "--no-color", "--width", "120"], capture=True)
             if not frame.strip() or not frame.isascii():
                 raise SetupError(f"The {tab} terminal view did not produce plain ASCII output.")
             rich = run([*command, "--fake", "--once", "--tab", tab, "--unicode", "--no-color", "--width", "120"], capture=True)
             if not rich.strip() or "\x1b" in rich:
                 raise SetupError(f"The {tab} Unicode terminal view did not produce clean text output.")
+        for view in ("experiment", "arrays", "evidence", "artifacts", "passport", "submit"):
+            frame = run([*command, "--fake", "--once", "--tab", "research", "--research-view", view, "--ascii", "--no-color"], capture=True)
+            if not frame.strip() or not frame.isascii():
+                raise SetupError(f"The Research/{view} view did not produce plain ASCII output.")
         preview = scratch / "demo.txt"
         run([*command, "--fake", "--report", preview], capture=True)
         page = preview.read_text(encoding="utf-8")

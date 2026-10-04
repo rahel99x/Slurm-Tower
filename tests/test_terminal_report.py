@@ -22,7 +22,7 @@ def test_complete_report_has_all_pages_subviews_and_truthful_empty_states():
     store, app, views = make_report_app()
     page = report.build(store.snapshot(), app, views)
     assert page.isascii() and "\x1b" not in page
-    for i, name in enumerate(['JOBS', 'CLUSTER', 'HISTORY', 'ANALYTICS', 'NODES', 'GROUP', 'DEPENDENCIES', 'LOG', 'SOURCES', 'EVENT JOURNAL'], 1):
+    for i, name in enumerate(['JOBS', 'CLUSTER', 'HISTORY', 'ANALYTICS', 'NODES', 'GROUP', 'DEPENDENCIES', 'LOG', 'SOURCES', 'RESEARCH', 'EVENT JOURNAL'], 1):
         assert f'{i:02d} / {name}' in page
     for subview in ['history', 'timeline', 'advisor', 'compare']:
         assert f'analytics / {subview}' in page

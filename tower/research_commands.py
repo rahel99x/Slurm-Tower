@@ -1,0 +1,296 @@
+"""Terminal research commands; offline work never starts a scheduler sampler."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+
+from .research import clean
+
+COMMANDS = ("metric", "metrics", "passport", "validate", "artifacts", "prepare", "submit", "investigate", "array")
+OFFLINE = {"metric", "passport", "validate", "prepare"}
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+def parser(name):
+    return Parser(prog=name, add_help=False, allow_abbrev=False)
+
+
+def sbatch_value_option(token):
+    """True for supported sbatch flags whose following argv item is a literal value."""
+    from .submission import SHORT, VALUE_OPTIONS
+    return token.startswith("--") and token[2:] in VALUE_OPTIONS or len(token) == 2 and token[0] == "-" and token[1] in SHORT
+
+
+def command_value_option(command, token):
+    options = {
+        "metric": {"--value", "--step", "--phase", "--completed", "--total", "--unit"},
+        "passport": {"--workdir", "--output-dir", "--env", "--input"},
+        "prepare": {"--workdir", "--passport-dir", "--declared-input", "--declared-output", "--parameter"},
+        "submit": {"--workdir", "--passport-dir", "--declared-input", "--declared-output", "--parameter"},
+        "array": {"--workdir", "--indices", "--limit"},
+        "resubmit": {"--script"},
+    }
+    return token in options.get(command, set()) or command in ("prepare", "submit", "array", "resubmit") and sbatch_value_option(token)
+
+
+def script_args(args, *, required=True):
+    """The script comes first; the remaining unknown arguments are exact sbatch argv."""
+    args = list(args)
+    script = args.pop(0) if args and not args[0].startswith("-") else None
+    p = parser("prepare SCRIPT --workdir DIR [sbatch flags]")
+    p.add_argument("--workdir")
+    p.add_argument("--passport-dir")
+    p.add_argument("--declared-input", dest="input", action="append", default=[])
+    p.add_argument("--declared-output", dest="output", action="append", default=[])
+    p.add_argument("--parameter", action="append", default=[])
+    workbench = {"--workdir", "--passport-dir", "--declared-input", "--declared-output", "--parameter"}
+    own, overrides = [], []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            overrides.extend(args[index + 1:])
+            break
+        if sbatch_value_option(token) and index + 1 < len(args):
+            overrides.extend(args[index:index + 2])
+            index += 2
+        elif token.split("=", 1)[0] in workbench:
+            own.append(token)
+            index += 1
+            if "=" not in token and index < len(args):
+                own.append(args[index])
+                index += 1
+        else:
+            overrides.append(token)
+            index += 1
+    opts = p.parse_args(own)
+    if required and not script:
+        raise ValueError("a batch script is required before resource flags")
+    parameters = {}
+    for value in opts.parameter:
+        key, sep, val = value.partition("=")
+        if not sep or not key or key in parameters:
+            raise ValueError("parameters must be unique NAME=VALUE pairs")
+        parameters[key] = val
+    return script, opts, overrides, parameters
+
+
+def prepare_args(args):
+    from .submission import prepare
+    script, opts, overrides, parameters = script_args(args)
+    plan = prepare(script, workdir=opts.workdir, overrides=overrides, parameters=parameters, inputs=opts.input, outputs=opts.output)
+    return plan, opts
+
+
+def offline_result(cmd, args):
+    if cmd == "metric":
+        from .metrics import write_metric
+        p = parser("metric FILE --value NAME=NUMBER")
+        p.add_argument("path")
+        p.add_argument("--value", action="append", required=True)
+        p.add_argument("--step", type=int)
+        p.add_argument("--phase", default="")
+        p.add_argument("--completed", type=float)
+        p.add_argument("--total", type=float)
+        p.add_argument("--unit", default="")
+        a = p.parse_args(args)
+        values = {}
+        for value in a.value:
+            key, sep, number = value.partition("=")
+            if not sep or not key or key in values:
+                raise ValueError("metrics must be unique NAME=NUMBER pairs")
+            values[key] = float(number)
+        return write_metric(os.path.expanduser(a.path), values, step=a.step, phase=a.phase,
+                            completed=a.completed, total=a.total, unit=a.unit), 0
+    if cmd == "validate":
+        from .artifacts import load_contract, validate_contract
+        p = parser("validate CONTRACT ROOT")
+        p.add_argument("contract")
+        p.add_argument("root")
+        a = p.parse_args(args)
+        result = validate_contract(load_contract(os.path.expanduser(a.contract)), os.path.expanduser(a.root))
+        return result, 0 if result.get("valid") else 1
+    if cmd == "prepare":
+        plan, _ = prepare_args(args)
+        return plan, 0 if plan.get("valid") else 1
+    if cmd == "passport":
+        from . import provenance
+        if not args:
+            raise ValueError("passport capture SCRIPT | show FILE | compare LEFT RIGHT")
+        action, rest = args[0], args[1:]
+        if action == "show" and len(rest) == 1:
+            return provenance.load(os.path.expanduser(rest[0])), 0
+        if action == "compare" and len(rest) == 2:
+            return {"differences": provenance.diff(*(os.path.expanduser(x) for x in rest))}, 0
+        if action == "capture":
+            p = parser("passport capture SCRIPT --workdir DIR --output-dir DIR")
+            p.add_argument("script")
+            p.add_argument("--workdir", default=os.getcwd())
+            p.add_argument("--output-dir", default=".tower/passports")
+            p.add_argument("--input", action="append", default=[])
+            p.add_argument("--env", action="append", default=[])
+            a = p.parse_args(rest)
+            passport = provenance.capture(os.path.expanduser(a.workdir), script=os.path.expanduser(a.script),
+                                          inputs=a.input, environment_names=a.env)
+            saved = provenance.save(passport, os.path.expanduser(a.output_dir))
+            return {"path": str(saved), "passport": passport}, 0
+        raise ValueError("passport capture SCRIPT | show FILE | compare LEFT RIGHT")
+    raise ValueError("unknown research command")
+
+
+def offline(line, *, host="", replay=False):
+    """Return an exit code for an offline command, or None for a dashboard command."""
+    try:
+        words = shlex.split(line)
+        if not words:
+            return None
+        from .controller import App
+        matches = [c for c in App.COMMANDS if c.startswith(words[0])]
+        cmd = words[0] if words[0] in App.COMMANDS else matches[0] if len(matches) == 1 else words[0]
+        if cmd not in OFFLINE:
+            return None
+        if host or replay:
+            raise ValueError("offline research commands use local files; run Tower on the cluster for these commands")
+        result, code = offline_result(cmd, words[1:])
+        print(json.dumps(result, indent=2, ensure_ascii=True, allow_nan=False))
+        return code
+    except (ValueError, OSError, TypeError) as exc:
+        print("research: " + clean(exc))
+        return 1
+
+
+def execute(app, cmd, args, *, ready=None):
+    """Return True when handled. Job actions always enter the existing confirmation flow."""
+    if cmd not in COMMANDS:
+        return False
+    hub = getattr(app, "research", None)
+    if hub is None:
+        app.fail("research services are unavailable")
+        return True
+    app.research_result = None
+    try:
+        if isinstance(ready, Exception):
+            raise ready
+        if app.interactive and ready is None and (cmd in OFFLINE or cmd == "array" or (cmd == "submit" and args)):
+            if getattr(app.files, "remote", False) or getattr(app, "replay", None):
+                raise ValueError("this research command requires local files on the cluster")
+            if cmd in OFFLINE:
+                fn = lambda: offline_result(cmd, args)
+            elif cmd == "submit":
+                fn = lambda: prepare_args(args)
+            else:
+                jobs, finished = list(app.store.jobs), list(app.store.finished)
+                fn = lambda: array_plan(args, jobs, finished)
+            if not hub.start_task(fn, lambda value: execute(app, cmd, args, ready=value)):
+                raise ValueError("a research operation is still running; try again after it completes")
+            app.say(f"{cmd}: preparing in the background")
+            return True
+        if cmd in OFFLINE:
+            if getattr(app.files, "remote", False) or getattr(app, "replay", None):
+                raise ValueError("this research command requires local files on the cluster")
+            result, code = ready if ready is not None else offline_result(cmd, args)
+            app.research_result = result
+            if cmd == "prepare":
+                hub.plan = result
+                hub.configure()
+                app.research_view = "submit"
+            elif cmd == "passport":
+                if "passport" in result:
+                    hub.passport = result["passport"]
+                elif "differences" in result:
+                    hub.passport_diff = result["differences"]
+                else:
+                    hub.passport = result
+                hub.configure(passport="")
+                app.research_view = "passport"
+            elif cmd == "validate":
+                hub.configure(contract=args[0], workdir=args[1])
+                app.research_view = "artifacts"
+            if code:
+                app.fail(f"{cmd}: validation failed; see Research for evidence")
+            else:
+                app.command_ok = True
+                app.say(f"{cmd}: complete" + (f" | {result['path']}" if isinstance(result, dict) and "path" in result else ""))
+        elif cmd in ("metrics", "artifacts"):
+            if len(args) != (1 if cmd == "metrics" else 2):
+                raise ValueError("metrics FILE" if cmd == "metrics" else "artifacts CONTRACT ROOT")
+            hub.configure(**({"metrics_file": args[0]} if cmd == "metrics" else {"contract": args[0], "workdir": args[1]}))
+            app.research_view = "experiment" if cmd == "metrics" else "artifacts"
+            app.say(f"{cmd}: attached")
+        elif cmd == "investigate":
+            if len(args) != 1:
+                raise ValueError("investigate JOBID")
+            if args[0] not in {j.id for j in app.store.jobs + app.store.finished}:
+                raise ValueError("job is not present in the current Jobs or History snapshot")
+            app.research_job_id, app.research_view = args[0], "evidence"
+            app.say(f"investigating {args[0]}")
+        elif cmd == "array":
+            hub.plan = ready if ready is not None else array_plan(args, app.store.jobs, app.store.finished)
+            if not hub.plan.get("valid"):
+                raise ValueError("retry script failed preflight; prepare a valid script before retrying")
+            hub.configure()
+            app.research_view = "submit"
+            app.say("failed-task retry prepared; review Research / Submit, then :submit")
+            if not app.interactive:
+                app.confirm, app.mode = {"action": "submit", "jobs": [], "plan": hub.plan}, "confirm"
+        elif cmd == "submit":
+            if getattr(app, "replay", None):
+                raise ValueError("submissions are unavailable during replay")
+            if args:
+                hub.plan, opts = ready if ready is not None else prepare_args(args)
+                passport_dir = opts.passport_dir
+            else:
+                passport_dir = None
+            if not hub.plan or not hub.plan.get("valid"):
+                raise ValueError("prepare a valid batch script first; review issues in Research / Submit")
+            hub.configure()
+            app.research_view = "submit"
+            app.confirm = {"action": "submit", "jobs": [], "plan": hub.plan, "passport_directory": passport_dir}
+            app.mode = "confirm"
+        if cmd != "metric":
+            app.tab = "research"  # preserve an explicitly selected evidence job
+        if not app.interactive and cmd in ("metrics", "artifacts", "investigate"):
+            app.research_result = hub.request(hub.context(app.store.snapshot(), app), wait=True, force=True)
+            if app.research_result.get("status") in ("error", "invalid", "incomplete", "missing"):
+                app.command_ok = False
+    except Exception as exc:
+        app.fail(f"{cmd}: {clean(exc)}")
+    return True
+
+
+def array_plan(args, jobs, finished):
+    from .arrays import retry_plan, summarize
+    if len(args) < 3 or args[0] != "retry":
+        raise ValueError("array retry ARRAYID SCRIPT [--workdir DIR] [--indices RANGE] [--limit N]")
+    array_id, script = args[1:3]
+    p = parser("array retry")
+    p.add_argument("--workdir")
+    p.add_argument("--indices")
+    p.add_argument("--limit", type=int)
+    opts = p.parse_args(args[3:])
+    groups = summarize(jobs, finished)
+    matching = [g for g in groups if g["id"] == array_id]
+    if len(matching) != 1:
+        raise ValueError("array is absent or ambiguous across clusters in the current snapshot")
+    return retry_plan(matching[0], script, indices=opts.indices, limit=opts.limit, workdir=opts.workdir)
+
+
+def submission_done(app, result):
+    if isinstance(result, Exception):
+        # A scheduler may have accepted before the adapter raised. Never retry automatically.
+        result = {"ok": False, "submitted": None, "state": "unknown", "job_id": None,
+                  "error": "submission outcome unknown: " + clean(result)}
+    app.research_result = result
+    app.command_ok = bool(result["ok"])
+    app.say("submitted " + str(result["job_id"]) if result["ok"] else "submission: " + clean(result.get("error") or result.get("output")))
+    if result.get("passport") and app.research:
+        app.research.passport = result["passport"]
+    app.store.event("action", clean(app.message))
+    if app.sampler and result.get("submitted") is not False:
+        app.sampler.refresh_all()

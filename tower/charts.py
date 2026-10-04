@@ -3,6 +3,7 @@ bar rows, histograms, a Gantt timeline and time axes.  Everything returns rows o
 from __future__ import annotations
 
 import math
+import sys
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -16,22 +17,80 @@ MAX_HEIGHT = 128
 
 
 def _finite(v: Optional[float]) -> Optional[float]:
-    return v if v is not None and math.isfinite(v) else None
+    try:
+        return v if v is not None and math.isfinite(v) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _mean(values: Sequence[float]) -> float:
+    """Stable finite mean, preserving tiny values and avoiding overflow sums."""
+    if not values:
+        return 0.0
+    try:
+        return math.fsum(values) / len(values)
+    except OverflowError:
+        # Scaling can erase tiny residuals after cancellation of huge terms.
+        # Float denominators are powers of two; an exact bounded-size integer
+        # accumulator preserves those residuals and rounds only the final mean.
+        ratios = [float(value).as_integer_ratio() for value in values]
+        denominator = max(pair[1] for pair in ratios)
+        shift = denominator.bit_length()
+        numerator = sum(number << (shift - divisor.bit_length()) for number, divisor in ratios)
+        return numerator / (denominator * len(values))
+
+
+def _fraction(value: float, lo: float, hi: float) -> float:
+    """Clamped chart coordinate without overflowing signed finite ranges."""
+    if value <= lo or hi <= lo:
+        return 0.0
+    if value >= hi:
+        return 1.0
+    span = hi - lo
+    if math.isfinite(span):
+        return max(0.0, min(1.0, (value - lo) / span))
+    scale = max(abs(lo), abs(hi))
+    lower, upper = lo / scale, hi / scale
+    return max(0.0, min(1.0, (value / scale - lower) / (upper - lower)))
+
+
+def _between(lo: float, hi: float, fraction: float) -> float:
+    """Finite interpolation, including opposite-sign and subnormal endpoints."""
+    if fraction <= 0:
+        return lo
+    if fraction >= 1:
+        return hi
+    span = hi - lo
+    value = lo + span * fraction if math.isfinite(span) else lo * (1 - fraction) + hi * fraction
+    return max(lo, min(hi, value))
 
 
 def _bounds(values: Sequence[Optional[float]], lo: float, hi: Optional[float]) -> Tuple[float, float]:
-    lo = lo if math.isfinite(lo) else 0.0
-    if hi is None or not math.isfinite(hi):
+    lo = lo if _finite(lo) is not None else 0.0
+    if _finite(hi) is None:
         peak = max((v for v in values if v is not None), default=lo)
-        hi = peak + (peak - lo) * 0.05 if peak > lo else lo + 1.0
-    return lo, hi if hi > lo else lo + 1.0
+        if peak > lo:
+            span = peak - lo
+            padding = span * 0.05 if math.isfinite(span) else peak * 0.05 - lo * 0.05
+            hi = peak + padding
+            if not math.isfinite(hi):
+                hi = sys.float_info.max
+        else:
+            hi = lo + 1.0
+    if hi <= lo or not math.isfinite(hi):
+        hi = lo + 1.0
+        if not math.isfinite(hi) or hi <= lo:
+            hi = math.nextafter(lo, math.inf)
+            if not math.isfinite(hi):
+                hi, lo = lo, math.nextafter(lo, -math.inf)
+    return lo, hi
 
 
 def _header(g: Glyphs, values: Sequence[Optional[float]], width: int, title: str, unit: str, indent: str) -> Row:
     known = [v for v in values if v is not None]
     # The newest sample can be unknown even when earlier samples exist.
     if known:
-        tokens = [f"last {fmt_num(values[-1], unit)}", f"mean {fmt_num(sum(v / len(known) for v in known), unit)}",
+        tokens = [f"last {fmt_num(values[-1], unit)}", f"mean {fmt_num(_mean(known), unit)}",
                   f"max {fmt_num(max(known), unit)}", f"min {fmt_num(min(known), unit)}"]
     else:
         tokens = ["awaiting samples"]
@@ -63,12 +122,11 @@ def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float
         times = (samples[0][0], samples[-1][0]) if samples else (0.0, 0.0)
     if width <= 0:
         return [], times
-    deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:]) if b[0] > a[0])
+    deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:]) if b[0] > a[0] and math.isfinite(b[0] - a[0]))
     cadence = sample_interval if sample_interval is not None and math.isfinite(sample_interval) and sample_interval > 0 else (
               deltas[(len(deltas) - 1) // 2] if deltas else 0.0)
-    gap_limit = cadence * 2.5
+    gap_limit = min(sys.float_info.max, cadence * 2.5)
     t0, t1 = times
-    span = t1 - t0
     buckets: dict[int, list[Tuple[float, Optional[float], bool]]] = {}
     previous: Optional[Tuple[float, Optional[float]]] = None
     for timestamp, value in samples:
@@ -76,13 +134,13 @@ def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float
         previous = (timestamp, value)
         if timestamp < t0 or timestamp > t1:
             continue
-        x = min(width - 1, max(0, round((timestamp - t0) / span * (width - 1)))) if span else width - 1
+        x = min(width - 1, max(0, round(_fraction(timestamp, t0, t1) * (width - 1)))) if t1 > t0 else width - 1
         buckets.setdefault(x, []).append((timestamp, value, bridge))
     points: List[Tuple[int, Optional[float], bool]] = []
     previous_last: Optional[float] = None
     for x, bucket in sorted(buckets.items()):
         known = all(value is not None for _, value, _ in bucket)
-        value = sum(value / len(bucket) for _, value, _ in bucket) if known else None
+        value = _mean([value for _, value, _ in bucket]) if known else None
         bridge = known and bucket[0][2] and previous_last is not None and bucket[0][0] - previous_last <= gap_limit
         points.append((x, value, bridge))
         previous_last = bucket[-1][0] if known else None
@@ -105,7 +163,7 @@ def resample(values: Sequence[Optional[float]], width: int, how: str = "mean") -
         # A bucket intersecting an unobserved interval remains a gap. This avoids
         # drawing continuous telemetry across a failed sample or stale connection.
         out.append(None if not chunk or any(v is None for v in chunk) else
-                   (sum(chunk) / len(chunk) if how == "mean" else max(chunk)))
+                   (_mean(chunk) if how == "mean" else max(chunk)))
     return out
 
 
@@ -113,6 +171,8 @@ def fmt_num(v: Optional[float], unit: str = "") -> str:
     if v is None or not math.isfinite(v):
         return "?"
     a = abs(v)
+    if a >= 1e15 or (0 < a < 0.01):
+        return f"{v:.2g}{unit}"
     if unit == "%":
         return f"{v:.0f}%"
     if a >= 1e9:
@@ -128,21 +188,32 @@ def fmt_num(v: Optional[float], unit: str = "") -> str:
 
 def time_axis(t0: float, t1: float, width: int, indent: str = "", elapsed: bool = False) -> Row:
     """One row with time labels spread over ``width`` columns (HH:MM, or MM-DD HH:MM when the span crosses days)."""
-    if width <= 8 or t1 <= t0:
+    width = max(0, min(MAX_COLUMNS, width))
+    if width <= 8 or _finite(t0) is None or _finite(t1) is None or t1 <= t0:
         return [(indent + " " * max(0, width), "dim")]
     span = t1 - t0
     fmt = "%H:%M" if span < 36 * 3600 else "%m-%d %H:%M"
     n = max(2, min(8, width // 14))
     if span < 120 and not elapsed:                          # too short for a scale: one label at the end
-        label = time.strftime("%H:%M:%S", time.localtime(t1))
+        try:
+            label = time.strftime("%H:%M:%S", time.localtime(t1))
+        except (OverflowError, OSError, ValueError):
+            label = fmt_num(t1, "s")
+        label = cut(label, width, True)
         return [(indent + " " * max(0, width - len(label)) + label, "dim")]
     line = [" "] * width
     for i in range(n):
         frac = i / (n - 1)
-        value = t0 + frac * span
+        value = _between(t0, t1, frac)
         label = fmt_num(value / 3600, "h") if elapsed and span >= 3600 else (
                 fmt_num(value / 60, "m") if elapsed and span >= 120 else (
-                fmt_num(value, "s") if elapsed else time.strftime(fmt, time.localtime(value))))
+                fmt_num(value, "s") if elapsed else ""))
+        if not elapsed:
+            try:
+                label = time.strftime(fmt, time.localtime(value))
+            except (OverflowError, OSError, ValueError):
+                label = fmt_num(value, "s")
+        label = cut(label, width, True)
         x = int(round(frac * (width - 1)))
         x = max(0, min(width - len(label), x - len(label) // 2))
         if all(c == " " for c in line[x:x + len(label) + 1]):
@@ -186,7 +257,7 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
         elif r == height - 1:
             label = fmt_num(lo, unit)
         elif height >= 5 and r == height // 2:
-            label = fmt_num((lo + hi) / 2, unit)
+            label = fmt_num(_mean((lo, hi)), unit)
         segs: Row = [(indent + pad(cut(label, max(0, axis_w - 1), g.ascii), axis_w - 1, ">") + (g.box[5] if not g.ascii else "|"), "dim")]
         floor = (height - 1 - r) * nlev                      # sub-levels below this row
         row_style = ""
@@ -198,7 +269,7 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
             if v is None:
                 segs.append((guide, "dim"))
                 continue
-            frac = (min(max(v, lo), hi) - lo) / (hi - lo)
+            frac = _fraction(v, lo, hi)
             lv = int(round(frac * height * nlev))
             fill = min(nlev, max(0, lv - floor))
             if fill > 0:
@@ -226,14 +297,14 @@ def hbar_rows(g: Glyphs, items: Sequence[Tuple[str, float, str]], width: int, in
     """One row per (label, value, style): ``label  ████░░░░  value``."""
     if not items:
         return []
-    hi = hi if hi is not None else max((v for _, v, _ in items if _finite(v) is not None), default=1.0)
+    hi = hi if _finite(hi) is not None else max((v for _, v, _ in items if _finite(v) is not None), default=1.0)
     hi = hi if hi > 0 else 1.0
     label_w = min(label_w, max(1, (width - vlen(indent) - 10) // 2))
     bar_w = max(0, width - vlen(indent) - label_w - 12)
     rows: List[Row] = []
     for label, v, style in items:
         value = _finite(v)
-        frac = None if value is None else max(0.0, min(1.0, value / hi))
+        frac = None if value is None else _fraction(value, 0.0, hi)
         row: Row = [(indent + pad(cut(label, label_w, g.ascii), label_w) + " ", "")]
         if g.ascii or color:
             from .layout import bar
@@ -287,7 +358,7 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
             if value is None:
                 previous = None
                 continue
-            fraction = (min(hi, max(lo, value)) - lo) / (hi - lo)
+            fraction = _fraction(value, lo, hi)
             y = int(round((1 - fraction) * (pixels_h - 1)))
             mark(x, y)
             if previous is not None and bridge:
@@ -304,7 +375,7 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
         rows.append(_header(g, values, width, title, unit, indent))
     for r, masks in enumerate(cells):
         label = fmt_num(hi, unit) if r == 0 else (fmt_num(lo, unit) if r == height - 1 else
-                (fmt_num((lo + hi) / 2, unit) if height >= 5 and r == height // 2 else ""))
+                (fmt_num(_mean((lo, hi)), unit) if height >= 5 and r == height // 2 else ""))
         row: Row = [(indent + pad(cut(label, max(0, axis_w - 1), g.ascii), axis_w - 1, ">") + "│", "dim")]
         fraction = 1 - r / max(1, height - 1)
         style = color(fraction) if color else "fg:" + gradient("#38bdf8", "#c4b5fd", fraction)
@@ -345,7 +416,7 @@ def heatmap(g: Glyphs, matrix: Sequence[Sequence[Optional[float]]], width: int, 
             if value is None:
                 row.append(("?" if g.ascii else "··", "dim"))
             else:
-                fraction = (min(hi, max(lo, value)) - lo) / (hi - lo)
+                fraction = _fraction(value, lo, hi)
                 if g.ascii:
                     row.append((g.spark[min(7, int(fraction * 7.999))], level(fraction)))
                 else:
@@ -368,7 +439,9 @@ def stacked_bar(g: Glyphs, items: Sequence[Tuple[str, Optional[float], str]], wi
     inferred allocation; all-zero data is labelled 'total 0'. Returns two rows.
     """
     values = [(label, _finite(value), style) for label, value, style in items]
-    total = sum(max(0.0, value) for _, value, _ in values if value is not None)
+    scale = max((max(0.0, value) for _, value, _ in values if value is not None), default=0.0)
+    proportions = [max(0.0, value) / scale if value is not None and scale else 0.0 for _, value, _ in values]
+    total = math.fsum(proportions)
     span = max(0, min(MAX_COLUMNS, width - vlen(indent)))
     prefix = (title + "  ") if title else ""
     bar_w = max(0, span - vlen(prefix))
@@ -379,8 +452,8 @@ def stacked_bar(g: Glyphs, items: Sequence[Tuple[str, Optional[float], str]], wi
         separators = max(0, positive - 1) if bar_w >= positive * 2 - 1 else 0
         fill_w = bar_w - separators
         cumulative, previous, used, groups = 0.0, 0, 0, 0
-        for _, value, style in values:
-            cumulative += max(0.0, value) if value is not None else 0.0
+        for (_, value, style), proportion in zip(values, proportions):
+            cumulative += proportion
             boundary = min(fill_w, int(round(cumulative / total * fill_w)))
             length = boundary - previous
             if length:
@@ -435,7 +508,8 @@ def gantt(g: Glyphs, jobs: Sequence[dict], t0: float, t1: float, width: int, ind
     span = max(1.0, t1 - t0)
 
     def col(t):
-        return int(round((min(max(t, t0), t1) - t0) / span * (bar_w - 1)))
+        fraction = _fraction(t, t0, t1) if span >= 1.0 else min(max(t, t0), t1) - t0
+        return int(round(fraction * (bar_w - 1)))
 
     for j in jobs:
         state = j.get("state", "")
