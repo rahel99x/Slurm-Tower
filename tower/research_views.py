@@ -22,7 +22,7 @@ def render(views, snap, app, width, height):
         nav.append((f" {label} ", "rev+bold" if key == view else "dim"))
     if L.vlen(L.row_text(nav)) > width:
         number = [key for key, _ in RESEARCH_VIEWS].index(view) + 1
-        nav = row(f" < {number}/6 {dict(RESEARCH_VIEWS)[view]} >", "cyan+bold")
+        nav = row(f" < {number}/{len(RESEARCH_VIEWS)} {dict(RESEARCH_VIEWS)[view]} >", "cyan+bold")
     hub = getattr(app, "research", None)
     if hub is None:
         return [nav, row(" Research services are unavailable.", "yellow")], []
@@ -32,7 +32,9 @@ def render(views, snap, app, width, height):
     job = context["job"]
     if view in ("experiment", "evidence"):
         rows.append(row(f" Job {job.id}  {job.name}  {job.state}" if job else " No job selected", "cyan+bold"))
-    structured = (view == "experiment" and "series" in result) or (view == "artifacts" and "outputs" in result)
+    structured = ((view == "experiment" and "series" in result) or (view == "artifacts" and "outputs" in result)
+                  or view in ("predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow")
+                  and any(key in result for key in ("metrics", "predicted_start", "evidence", "candidates", "points", "runs", "issues", "nodes")))
     if result.get("status") in ("loading", "empty", "error", "incomplete") and not structured:
         rows.append(row(" " + result.get("summary", "No data yet."), "red" if result.get("status") == "error" else "dim"))
     elif view == "experiment":
@@ -164,6 +166,9 @@ def render(views, snap, app, width, height):
         for issue in plan.get("issues", []):
             rows.append(row(f" {issue.get('level', 'warning')}: {issue.get('message', '')}", "red" if issue.get("level") == "error" else "yellow"))
         rows.append(row(" :submit opens confirmation. Preparation does not contact Slurm.", "dim"))
+    else:
+        from .planning_views import render as planning_render
+        rows.extend(planning_render(views, app, result, width))
     # Scroll the entire bounded document. Visible hits follow the exact same slice.
     avail = max(0, height - 1) if height is not None else len(rows)
     offset = max(0, min(app.research_scroll, max(0, len(rows) - avail)))

@@ -68,6 +68,7 @@ class App:
         self.analytics_view = "job"
         self.analytics_job: Optional[str] = None
         self.research = None
+        self.forecast_scope = None
         self.research_view = "experiment"
         self.research_job_id = None
         self.research_scroll = 0
@@ -77,6 +78,7 @@ class App:
         self.research_task_offset = 0
         self.research_array_focus = False
         self.research_result = None
+        self.research_data_jobs = []
         days = list(cfg["analytics_days"]) or [1, 2, 7]
         self.days_options = days
         self.days_index = days.index(cfg["history_days"]) if cfg["history_days"] in days else 0
@@ -89,6 +91,7 @@ class App:
 
     # ---- persistence -------------------------------------------------------------------------------
     def restore(self, ui: dict):
+        ui = ui if isinstance(ui, dict) else {}
         for k in ("tab", "log_lines", "gpu", "bell"):
             if k in ui and k != "tab":
                 setattr(self, k, ui[k])
@@ -109,8 +112,12 @@ class App:
         self.logs.wrap = bool(ui.get("log_wrap", False))
 
     def save(self):
+        forecast_state = None
+        if self.store.persist and self.forecast_scope is not None and self.research and self.research.forecasts:
+            forecast_state = dict(version=1, scope=dict(self.forecast_scope), observations=self.research.forecasts.observations())
         self.store.save_ui(dict(tab=self.tab, log_lines=self.log_lines, gpu=self.gpu, bell=self.bell, sort=self.sort, theme=self.theme, analytics_view=self.analytics_view,
-                                nodes_view=self.nodes_view, research_view=self.research_view, bookmarks=self.logs.bookmarks, log_wrap=self.logs.wrap))
+                                nodes_view=self.nodes_view, research_view=self.research_view, bookmarks=self.logs.bookmarks, log_wrap=self.logs.wrap,
+                                forecast_state=forecast_state))
 
     def analytics_days_value(self) -> float:
         return float(self.days_options[self.days_index])
@@ -501,8 +508,11 @@ class App:
                                                     "home": 0, "end": max(0, self.research_rows - 1)}[action])
                 return
             delta = -1 if action == "up" else 1
-            if self.research_view in ("experiment", "evidence"):
-                ids = list(dict.fromkeys(j.id for j in self.store.jobs + self.store.finished))
+            if self.research_view in ("experiment", "evidence", "predict", "forecast", "blockers", "tradeoffs"):
+                if self.research_data_jobs and self.research_view in ("predict", "forecast", "blockers"):
+                    ids = list(dict.fromkeys(r.get("id") or r.get("job_id") for r in self.research_data_jobs if r.get("id") or r.get("job_id")))
+                else:
+                    ids = list(dict.fromkeys(j.id for j in self.store.jobs + self.store.finished))
                 cur = ids.index(self.research_job_id) if self.research_job_id in ids else 0
                 if ids:
                     self.research_job_id = ids[max(0, min(len(ids) - 1, cur + delta))]
@@ -647,7 +657,8 @@ class App:
     # ---- the command palette -----------------------------------------------------------------------
     COMMANDS = ["cancel", "hold", "release", "requeue", "top", "filter", "sort", "days", "tab", "view", "export", "copy", "gpu", "bell", "source",
                 "theme", "refresh", "mark", "unmark", "log", "find", "profile", "eval", "advise", "compare", "tag", "untag", "pin", "note", "chain", "resubmit", "replay", "wrap",
-                "bookmark", "help", "quit", "metric", "metrics", "passport", "validate", "artifacts", "prepare", "submit", "investigate", "array"]
+                "bookmark", "help", "quit", "metric", "metrics", "passport", "validate", "artifacts", "prepare", "submit", "investigate", "array",
+                "predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow", "choose"]
 
     def commands(self) -> List[str]:
         return self.COMMANDS + sorted(self.plugins.commands) if self.plugins else self.COMMANDS
@@ -681,6 +692,13 @@ class App:
                       "submit": "submit [SCRIPT --workdir DIR --passport-dir DIR] (confirmation required)",
                       "investigate": "investigate JOBID (scheduler, log and output evidence)",
                       "array": "array retry ARRAYID SCRIPT --workdir DIR [--indices RANGE] [--limit N]"})
+        hints.update({"predict": "predict [JOBID] [--file FILE] (resource intervals for comparable runs)",
+                      "forecast": "forecast [JOBID] [--file FILE] (scheduler point and calibrated interval)",
+                      "blockers": "blockers [JOBID] [--file FILE] (scheduler reasons and evidence)",
+                      "tradeoffs": "tradeoffs FILE (compare explicit resource candidates)",
+                      "choose": "choose INDEX SCRIPT --workdir DIR (prepare a tradeoff candidate)",
+                      "scaling": "scaling analyze FILE | plan RECIPE [--workdir DIR]",
+                      "workflow": "workflow analyze FILE | plan RECIPE [--workdir DIR]"})
         if word in hints and " " in self.palette_edit:
             return hints[word]
         return " ".join(matches) if matches else "unknown command"
@@ -890,6 +908,8 @@ class App:
         elif cmd == "refresh":
             if self.sampler:
                 self.sampler.refresh_all()
+            if self.research:
+                self.research.configure()
             self.say("sampling every source now")
         elif cmd == "mark":
             if args == ["all"]:

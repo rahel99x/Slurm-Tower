@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "kind": "tower.workflow",
+  "name": "Illustrative experiment DAG",
+  "description": "A review-only fork/join demonstration. Every node reuses the independent toy experiment script; replace scripts and actual data dependencies for your own workflow. Durations are illustrative estimates. Tower does not submit or orchestrate this DAG.",
+  "deadline_seconds": 900,
+  "nodes": [
+    {
+      "id": "pilot",
+      "label": "Pilot experiment",
+      "script": "examples/research/sample.sbatch",
+      "runtime_seconds": 10,
+      "resources": {"cpus_per_task": 1, "ntasks": 1, "nodes": 1, "gpus": 0, "mem": "256M", "time": "00:05:00"}
+    },
+    {
+      "id": "comparison-a",
+      "label": "First comparison",
+      "script": "examples/research/sample.sbatch",
+      "depends_on": ["pilot"],
+      "duration": {"lower": 60, "estimate": 120, "upper": 240},
+      "resources": {"cpus_per_task": 1, "ntasks": 1, "nodes": 1, "gpus": 0}
+    },
+    {
+      "id": "comparison-b",
+      "label": "Second comparison",
+      "script": "examples/research/sample.sbatch",
+      "depends_on": ["pilot"],
+      "duration": {"lower": 40, "estimate": 90, "upper": 180},
+      "resources": {"cpus_per_task": 1, "ntasks": 1, "nodes": 1, "gpus": 0}
+    },
+    {
+      "id": "final-check",
+      "label": "Final check",
+      "script": "examples/research/sample.sbatch",
+      "depends_on": ["comparison-a", "comparison-b"],
+      "runtime_seconds": 15,
+      "resources": {"cpus_per_task": 1, "ntasks": 1, "nodes": 1, "gpus": 0}
+    }
+  ]
+}

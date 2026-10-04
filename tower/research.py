@@ -10,10 +10,11 @@ import time
 
 from . import clock
 from .remote import LocalFiles
+from .planning import PLANNING_VIEWS
 
 RESEARCH_VIEWS = [("experiment", "Experiment"), ("arrays", "Arrays"),
                   ("evidence", "Evidence"), ("artifacts", "Artifacts"),
-                  ("passport", "Passport"), ("submit", "Submit")]
+                  ("passport", "Passport"), ("submit", "Submit")] + PLANNING_VIEWS
 
 
 def clean(value, ascii_=False, limit=4096):
@@ -30,7 +31,7 @@ class ResearchHub:
         self.demo = demo
         self.settings = dict(cfg.get("research", {}) or {})
         self.settings.update({k: v for k, v in (settings or {}).items() if v is not None})
-        for key in ("metrics_file", "contract", "workdir", "passport"):
+        for key in ("metrics_file", "contract", "workdir", "passport", "planning_file"):
             if not isinstance(self.settings.get(key, ""), str):
                 raise ValueError(f"research.{key} must be a path string")
         interval = self.settings.get("interval", 5)
@@ -48,6 +49,9 @@ class ResearchHub:
         self.plan = None
         self.passport = None
         self.passport_diff = None
+        self.forecasts = None
+        self.planning_source = None
+        self.planning_choices = None
 
     def close(self):
         with self.lock:
@@ -59,6 +63,8 @@ class ResearchHub:
             self.settings.update(values)
             self.generation += 1
             self.cache.clear()
+            self.planning_source = None
+            self.planning_choices = None
 
     def start_task(self, fn, completion):
         """Explicit UI commands share the single worker, without an unbounded queue."""
@@ -90,16 +96,19 @@ class ResearchHub:
             job = jobs[0]
             jid = job.id
         return {"view": getattr(app, "research_view", "experiment"), "jid": jid,
+                "explicit_jid": getattr(app, "research_job_id", None),
                 "job": job, "snap": snap, "settings": dict(self.settings),
                 "generation": self.generation}
 
     def _key(self, context):
-        jid = context["jid"] if context["view"] in ("experiment", "evidence") else None
+        jid = context["jid"] if context["view"] in ("experiment", "evidence", "predict", "forecast", "blockers", "tradeoffs") else None
         return context["generation"], context["view"], jid
 
     def current(self, context):
         with self.lock:
             entry = self.cache.get(self._key(context))
+            if entry:
+                self.cache.move_to_end(self._key(context))
             return entry[1] if entry else {"status": "loading", "summary": "Waiting for the background reader."}
 
     def request(self, context, *, wait=False, force=False):
@@ -112,6 +121,7 @@ class ResearchHub:
                     return self.current(context)
                 entry = self.cache.get(self._key(context))
                 if not force and entry and time.monotonic() - entry[0] < self.interval:
+                    self.cache.move_to_end(self._key(context))
                     return entry[1]
                 if self.future is None or self.future.done():
                     self.future = self.pool.submit(self._publish, context)
@@ -134,6 +144,8 @@ class ResearchHub:
         with self.lock:
             if not self.closed and context["generation"] == self.generation:
                 self.cache[self._key(context)] = (time.monotonic(), result)
+                if context["view"] == "tradeoffs":
+                    self.planning_choices = result
                 self.cache.move_to_end(self._key(context))
                 while len(self.cache) > 16:
                     self.cache.popitem(last=False)
@@ -151,6 +163,8 @@ class ResearchHub:
 
     def _read(self, context):
         view, settings, snap = context["view"], context["settings"], context["snap"]
+        if view in dict(PLANNING_VIEWS):
+            return self._planning(context)
         if view == "experiment":
             path = self._path(settings.get("metrics_file"), context)
             if not path:
@@ -208,6 +222,52 @@ class ResearchHub:
             result.setdefault("limitations", []).extend(errors)
             return result
         return {"status": "error", "summary": "Unknown research view."}
+
+    def _planning(self, context):
+        from .planning import analyze, demo_source, record, select_job
+        from .planning_io import load_json
+        settings, snap, view = context["settings"], context["snap"], context["view"]
+        source, job = None, context["job"]
+        selected_file_id = None
+        overrides = dict(settings.get("planning_overrides", {}).get(view, {}))
+        path = settings.get("planning_file", "")
+        if path:
+            if self.files.remote:
+                return {"status": "incomplete", "summary": "Local planning files require running Tower on the cluster."}
+            max_bytes = 1048576
+            if view == "scaling":
+                from .scaling import MAX_BYTES
+                max_bytes = MAX_BYTES
+            with self.lock:
+                cached = self.planning_source
+            if cached and cached[0] == path and cached[3] == max_bytes and time.monotonic() - cached[1] < self.interval:
+                source = cached[2]
+            else:
+                source = load_json(path, max_bytes=max_bytes)
+                with self.lock:
+                    if not self.closed and context["generation"] == self.generation:
+                        self.planning_source = (path, time.monotonic(), source, max_bytes)
+            if isinstance(source, list) and view in ("forecast", "blockers"):
+                source = {"jobs": source}
+            if isinstance(source, dict) and "jobs" in source and view in ("predict", "forecast", "blockers", "tradeoffs"):
+                rows = source["jobs"]
+                current = context["jid"] if any(str(record(j).get("id") or record(j).get("job_id")) == str(context["jid"]) for j in rows) else overrides.get("job_id")
+                job = select_job(rows, current or source.get("job_id"), pending=view in ("forecast", "blockers"))
+                selected_file_id = record(job).get("id") or record(job).get("job_id")
+        elif self.demo and view in ("predict", "tradeoffs", "scaling", "workflow"):
+            source = demo_source(job)
+        observations = self.forecasts.observations() if self.forecasts else ()
+        if selected_file_id is not None:
+            overrides["job_id"] = selected_file_id
+        result = analyze(view, source, snap=snap, job=job, observations=observations, overrides=overrides)
+        if view == "forecast" and getattr(self, "forecast_restore_warning", ""):
+            result.setdefault("limitations", []).append(self.forecast_restore_warning)
+        simulated = isinstance(source, dict) and source.get("simulated") is True
+        result["source"] = (("SIMULATED frozen observations: " if simulated else "") + path if path
+                            else "simulated planning observations" if source is not None and self.demo else "scheduler snapshot")
+        if isinstance(source, dict) and "jobs" in source:
+            result["data_jobs"] = [record(j) for j in source["jobs"][:256]]
+        return result
 
     def _tail(self, path, limit):
         if self.files.remote or type(self.files) is not LocalFiles:

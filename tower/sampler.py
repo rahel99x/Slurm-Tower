@@ -3,6 +3,7 @@ per-source health (latency, errors, exponential backoff) and a kick that makes t
 from __future__ import annotations
 
 import concurrent.futures
+from copy import deepcopy
 import threading
 import time
 from typing import Callable, Dict, List, Optional
@@ -49,6 +50,9 @@ class Sampler(threading.Thread):
         }
         self.last_run: Dict[str, float] = {name: 0.0 for name in self.sources}
         self.hooks: List[Callable[[dict], None]] = []     # plugin event hooks, called after on_event
+        self.job_observers = []                         # bounded read-only consumers of existing samples
+        self.observer_errors = {}
+        self._job_observer_lock = threading.RLock()
 
     def add_source(self, name: str, interval: float, fn: Callable[[Slurm, Store], None]) -> None:
         """A plugin source: ``fn(slurm, store)`` every ``interval`` seconds, with health and backoff like the others."""
@@ -173,6 +177,22 @@ class Sampler(threading.Thread):
         if any(ev["kind"] in ("started", "finished", "left") for ev in events):
             self.last_run["starts"] = 0.0                  # projected starts change when the queue moves
         self.check_alerts()
+        self.observe_jobs()
+
+    def observe_jobs(self):
+        """Observers consume sampled jobs; they never request additional Slurm commands."""
+        if not self.job_observers:
+            return
+        from dataclasses import asdict
+        with self._job_observer_lock:
+            with self.store.lock:
+                jobs = [asdict(j) for j in self.store.jobs[:10000]]
+            for index, observer in enumerate(tuple(self.job_observers[:8])):
+                try:
+                    observer(deepcopy(jobs))
+                    self.observer_errors.pop(index, None)
+                except Exception as exc:
+                    self.observer_errors[index] = str(exc)[:512]
 
     def check_alerts(self):
         eng = self.store.alerts
@@ -186,6 +206,7 @@ class Sampler(threading.Thread):
     def src_starts(self):
         if any(j.pending for j in self.store.jobs):
             self.store.apply_starts(self.slurm.starts())
+            self.observe_jobs()
 
     def src_live(self):
         now = clock.now()

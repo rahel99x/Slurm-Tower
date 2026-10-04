@@ -44,8 +44,9 @@ sampling, disables forecast probes, and disables allocation-budget queries. Star
 there, then adjust the profile to your site's usage guidelines. It does not assume
 an account name, partition, scheduler version, or institution-specific hostname.
 
-Every mode validates simulated JSON output, all ten terminal views, and a
-plain-text report. Local mode checks command availability; it does not query or
+Every mode validates simulated JSON output, all ten terminal tabs, all twelve
+Research workspaces in Unicode and ASCII, and a plain-text report.
+Local mode checks command availability; it does not query or
 change your jobs. A successful diagnostic confirms tools, not the health of the
 Slurm controller or your site's authorization rules. Verify real data in step 4.
 
@@ -210,6 +211,45 @@ do contact the scheduler, and are also disabled in the `carc` profile.
 The dashboard reads job and log data. Job mutations are separate actions with
 confirmations. `tower run ... --yes` is explicit unattended authorization for
 that action; do not add it to a generic health check.
+
+### Inspect experiments and plan the next run
+
+Press `0` for Research and use Left/Right to move among its twelve workspaces.
+The first six cover metric streams, arrays, failure evidence, output contracts,
+passports and submission preparation. The next six show resource predictions,
+queue-start forecast calibration, scheduler blockers, resource tradeoffs,
+controlled scaling and workflow critical paths.
+
+```bash
+./scripts/tower --fake --tab research --research-view predict
+./scripts/tower --fake --tab research --research-view scaling
+./scripts/tower run scaling plan examples/planning/scaling.json --workdir "$PWD"
+./scripts/tower run workflow analyze examples/planning/workflow.json
+```
+
+Preparing a scaling or workflow plan inspects explicit local inputs and prints
+reviewable commands. It does not submit jobs or run scheduler probes. Evidence
+gaps remain visible; resource predictions use matching completed runs, calibrated
+queue windows require recorded start outcomes, and failed/censored scaling runs
+cannot support relative performance claims. Use the [wave two guide](WAVE_TWO.md)
+for the complete recipes, commands and assumptions, and the
+[research guide](RESEARCH.md) for metric instrumentation and output validation.
+
+To measure the bounded CPU example locally without Slurm, choose three new paths:
+
+```bash
+.venv/bin/python examples/planning/scaling_workload.py local --workers 1 --problem-size 10000 --output one.json
+.venv/bin/python examples/planning/scaling_workload.py local --workers 2 --problem-size 10000 --output two.json
+.venv/bin/python examples/planning/scaling_workload.py combine one.json two.json --output measurements.json
+./scripts/tower run scaling analyze measurements.json --mode strong --baseline 1
+```
+
+The example writes actual measured elapsed times, including process startup;
+it is a small synthetic demonstration. With one repeat per worker, observed
+spread is unavailable. Use at least three separately measured repeats per worker
+for empirical spread. `combine` reads 1..1000 explicitly named individual record
+files, at most 64 KiB each and 8 MiB in aggregate; it performs no directory walk
+and preserves existing output files. All analysis remains terminal only.
 
 ## 5. Configure your cluster
 

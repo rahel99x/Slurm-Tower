@@ -3,4 +3,5 @@ recursive-include docs *.md *.json
 recursive-include scripts *.py tower
 recursive-include tests *.py
 recursive-include examples/research *.py *.json *.sbatch
+recursive-include examples/planning *.py *.json *.sbatch
 recursive-include .github/workflows *.yml

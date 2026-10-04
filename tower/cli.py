@@ -99,6 +99,28 @@ def ascii_mode(args, cfg: Config) -> bool:
     return bool(cfg["ascii"] or os.environ.get("TERM", "dumb") == "dumb")
 
 
+def forecast_scope(backend, cfg: Config, user: str):
+    """Separate queue evidence by the actual connection, profile, and owner."""
+    import hashlib
+    import socket
+    from .record import RecordingBackend
+    while isinstance(backend, RecordingBackend):
+        backend = backend.inner
+    try:
+        uid = os.getuid()
+    except (AttributeError, OSError):
+        return None
+    if isinstance(backend, SshBackend):
+        host, kind, ssh_user = backend.host, "ssh", backend.user
+        options = hashlib.sha256(json.dumps(backend.opts, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    else:
+        host, kind, ssh_user, options = socket.gethostname(), "local", "", ""
+    if not host:
+        return None
+    return dict(backend=kind, host=host, profile=cfg.profile_name, uid=uid,
+                user=user, ssh_user=ssh_user, ssh_options_sha256=options)
+
+
 def build(args, cfg: Config) -> Session:
     user = args.user or cfg["user"] or os.environ.get("USER", "")
     if args.fake and not user:
@@ -139,7 +161,37 @@ def build(args, cfg: Config) -> Session:
     app.replay = replay
     from .research import ResearchHub
     app.research = ResearchHub(cfg, files, demo=args.fake, slurm=slurm,
-                              settings={k: getattr(args, k) for k in ("metrics_file", "contract", "workdir", "passport")})
+                              settings={k: getattr(args, k) for k in ("metrics_file", "contract", "workdir", "passport", "planning_file")})
+    from .forecast import ForecastTracker
+    app.research.forecasts = ForecastTracker()
+    app.research.forecast_restore_warning = ""
+    app.forecast_scope = forecast_scope(backend, cfg, user) if store.persist else None
+    if store.persist:
+        state = store.load_ui()
+        saved = state.get("forecast_state") if isinstance(state, dict) else None
+        scope = saved.get("scope") if isinstance(saved, dict) else None
+        scope_matches = (app.forecast_scope is not None and isinstance(scope, dict)
+                         and scope == app.forecast_scope
+                         and all(type(scope[key]) is type(value) for key, value in app.forecast_scope.items()))
+        if isinstance(state, dict) and "forecast_observations" in state:
+            app.research.forecast_restore_warning = "Legacy unscoped forecast evidence was ignored; new calibration is collected for this connection."
+        if saved is not None and not (isinstance(saved, dict) and type(saved.get("version")) is int and saved["version"] == 1):
+            app.research.forecast_restore_warning = "Malformed saved forecast state was ignored; live sampling continues."
+        elif saved is not None and not scope_matches:
+            app.research.forecast_restore_warning = "Saved forecast evidence belongs to another connection or profile and was ignored."
+        elif scope_matches and isinstance(saved, dict):
+            try:
+                rows = saved.get("observations", [])
+                if not isinstance(rows, list):
+                    raise ValueError("saved observations must be a JSON array")
+                app.research.forecasts.restore(rows)
+                if len(rows) != len(app.research.forecasts.observations()):
+                    app.research.forecast_restore_warning = "Malformed, duplicate, future, or excess saved forecast records were omitted."
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                # Corrupt local state cannot stop live polling or become evidence.
+                app.research.forecasts.restore([])
+                app.research.forecast_restore_warning = "Malformed saved forecast observations were ignored; live sampling continues."
+    sampler.job_observers.append(app.research.forecasts.observe)
     if args.research_view:
         app.research_view = args.research_view
     if args.tab:
@@ -254,6 +306,7 @@ def parse(argv):
     ap.add_argument("--contract", help="JSON output contract (local cluster files)")
     ap.add_argument("--workdir", help="root for attached metrics and declared outputs")
     ap.add_argument("--passport", help="immutable run passport to inspect")
+    ap.add_argument("--planning-file", help="local planning observations or scaling/workflow recipe")
     ap.add_argument("--json", action="store_true", help="the snapshot as JSON and exit")
     ap.add_argument("--report", nargs="?", const="-", default="", help="the whole dashboard as an ASCII text report (to PATH, or stdout) and exit")
     ap.add_argument("--csv", action="store_true", help="the tab's table (jobs by default, or --tab history / nodes / sources) as CSV and exit")
@@ -274,15 +327,32 @@ def parse(argv):
     ap.add_argument("--width", type=int, default=0, help="with --once / --report: the width (default: the terminal's)")
     ap.add_argument("words", nargs="*", help="'run <palette command ...>': the same as --run (e.g. tower run cancel 123 --yes); the command's own flags pass through")
     argv = list(sys.argv[1:] if argv is None else argv)
-    if "run" in argv:                                      # tower [tower flags] run <command and its flags> [tower flags]
-        i = argv.index("run")
+    # Option values may themselves be named "run". Only a positional token
+    # starts the palette command; consume global values before looking for it.
+    run_index, scan = None, 0
+    value_flags = {name for action in ap._actions if action.nargs != 0 for name in action.option_strings}
+    while scan < len(argv):
+        token = argv[scan]
+        if token == "run":
+            run_index = scan
+            break
+        if token == "--":
+            break
+        if token in value_flags and scan + 1 < len(argv):
+            scan += 2
+        else:
+            scan += 1
+    if run_index is not None:                              # tower [tower flags] run <command and its flags> [tower flags]
+        i = run_index
         pre, post, cmd = argv[:i], argv[i + 1:], []
         switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--unicode", "--no-color", "--no-gpu", "--bell", "--paused", "--json"}
         valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval"}
         batch_command = bool(post and post[0] and any(c.startswith(post[0]) for c in ("resubmit", "prepare", "submit", "array")))
         from .research_commands import COMMANDS, command_value_option
-        candidates = [c for c in (*COMMANDS, "resubmit") if post and c.startswith(post[0])]
-        research_command = post[0] if post and post[0] in (*COMMANDS, "resubmit") else candidates[0] if len(candidates) == 1 else ""
+        from .planning_commands import COMMANDS as planning_commands
+        all_commands = (*COMMANDS, *planning_commands, "resubmit")
+        candidates = [c for c in all_commands if post and c.startswith(post[0])]
+        research_command = post[0] if post and post[0] in all_commands else candidates[0] if len(candidates) == 1 else ""
         if batch_command:
             # After `run resubmit`, --account belongs to sbatch. Tower's account
             # can still be selected explicitly before `run`.

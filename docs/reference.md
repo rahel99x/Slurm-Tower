@@ -68,11 +68,33 @@ the existing snapshot and sample history without increasing Slurm polling.
 
 ## Tabs
 
-The **Research** tab (`0`) adds six workspaces: experiment telemetry, job arrays,
-failure evidence, output contracts, run passports and batch submission preparation.
+The **Research** tab (`0`) includes twelve workspaces: experiment telemetry, job arrays,
+failure evidence, output contracts, run passports, batch submission preparation,
+resource predictions, queue-start forecasts, scheduler blockers, submission
+tradeoffs, controlled scaling and workflow critical paths.
 Use Left/Right for subviews and PgUp/PgDn to scroll. Jobs and History carry the
 selected job into Research. See [Research workflows](RESEARCH.md) for schemas,
 instrumentation, commands, examples and inspection limits.
+See [Wave two planning](WAVE_TWO.md) for evidence requirements, prediction and
+calibration limits, reviewed choices, and complete scaling/workflow examples.
+
+```bash
+tower --fake --tab research --research-view predict
+tower run blockers 123
+tower run scaling plan examples/planning/scaling.json --workdir "$PWD"
+tower run scaling analyze measurements.json --mode strong --baseline 1
+tower run workflow analyze examples/planning/workflow.json
+```
+
+`--research-view` accepts `experiment`, `arrays`, `evidence`, `artifacts`,
+`passport`, `submit`, `predict`, `forecast`, `blockers`, `tradeoffs`, `scaling`
+and `workflow`. `--planning-file PATH` attaches explicit local observations or
+a recipe. `predict`, `forecast` and `blockers` use the selected snapshot job, or
+read an explicit bundle with `--file PATH`; the latter runs without contacting
+Slurm. `tradeoffs`, `scaling` and `workflow` use explicit local files.
+Planning preparation is separate from confirmed submission. Prediction ranges
+require matching evidence, queue forecasts require recorded calibration, and
+scaling spread describes measured repeats rather than future-run confidence.
 
 | tab | what it shows |
 |---|---|

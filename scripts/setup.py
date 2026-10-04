@@ -14,6 +14,10 @@ import tempfile
 import venv
 
 ROOT = Path(__file__).resolve().parents[1]
+RESEARCH_SMOKE_VIEWS = (
+    "experiment", "arrays", "evidence", "artifacts", "passport", "submit",
+    "predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow",
+)
 
 
 class SetupError(Exception):
@@ -96,7 +100,7 @@ def validate(python, mode, host, report):
         config = scratch / "config.json"
         config.write_text("{}\n", encoding="utf-8")
         command = [python, ROOT / "tower", "--config", config, "--no-state", "--no-plugins"]
-        print("Validating simulated jobs, Unicode and ASCII terminal views, and the ASCII report...", flush=True)
+        print("Validating simulated jobs, Unicode and ASCII terminal views, all 12 Research workspaces, and the ASCII report...", flush=True)
         snapshot = json.loads(run([*command, "--fake", "--json"], capture=True))
         if not isinstance(snapshot, dict) or not snapshot.get("jobs"):
             raise SetupError("The simulated cluster did not produce any jobs.")
@@ -107,10 +111,13 @@ def validate(python, mode, host, report):
             rich = run([*command, "--fake", "--once", "--tab", tab, "--unicode", "--no-color", "--width", "120"], capture=True)
             if not rich.strip() or "\x1b" in rich:
                 raise SetupError(f"The {tab} Unicode terminal view did not produce clean text output.")
-        for view in ("experiment", "arrays", "evidence", "artifacts", "passport", "submit"):
+        for view in RESEARCH_SMOKE_VIEWS:
             frame = run([*command, "--fake", "--once", "--tab", "research", "--research-view", view, "--ascii", "--no-color"], capture=True)
             if not frame.strip() or not frame.isascii():
                 raise SetupError(f"The Research/{view} view did not produce plain ASCII output.")
+            rich = run([*command, "--fake", "--once", "--tab", "research", "--research-view", view, "--unicode", "--no-color"], capture=True)
+            if not rich.strip() or "\x1b" in rich:
+                raise SetupError(f"The Research/{view} Unicode view did not produce clean text output.")
         preview = scratch / "demo.txt"
         run([*command, "--fake", "--report", preview], capture=True)
         page = preview.read_text(encoding="utf-8")

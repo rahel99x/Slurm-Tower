@@ -38,7 +38,7 @@ DEFAULTS: Dict[str, Any] = {
     "budget": True,                      # the account's allocation from sreport and sacctmgr (used this month, last 7 days, limits)
     "series_keep": 4000,                 # samples kept per job for the analytics tab (also appended to state/series/<job>.jsonl)
     "analytics_days": [1, 2, 7, 14, 30], # the history windows the analytics tab cycles through
-    "research": {"metrics_file": "", "contract": "", "workdir": "", "passport": "", "interval": 5.0},
+    "research": {"metrics_file": "", "contract": "", "workdir": "", "passport": "", "planning_file": "", "interval": 5.0},
     "theme": "default",                  # default | mono | high | cb (colour-blind safe) | reader (plain text, no glyphs)
     "host": "",                          # remote mode: run every Slurm command on this login node over ssh (ControlMaster reused)
     "ssh_user": "",                      # the login on that host (empty: the same as here)
@@ -97,6 +97,7 @@ metrics_file = ""               # e.g. "runs/{job_id}/metrics.jsonl"
 contract = ""                   # a JSON output contract
 workdir = ""                    # metrics/output root; empty means current directory
 passport = ""                   # immutable JSON run passport
+planning_file = ""              # observations or a scaling/workflow recipe
 interval = 5.0                  # bounded background inspections, minimum 1 second
 
 [intervals]                     # seconds between samples of each source

@@ -272,6 +272,7 @@ def _digest(plan: dict) -> str:
     # may be attached separately, but cannot alter the exact submission plan.
     fields = {key: plan[key] for key in ("schema", "script", "workdir", "argv", "command", "overrides", "script_sha256",
                                        "parameters", "inputs", "outputs", "resources", "directives", "issues", "valid")}
+    fields.update({key: plan[key] for key in ("workflow_node_id", "symbolic_dependencies", "workflow_orchestration", "requires_workflow_orchestration", "submittable") if key in plan})
     _metadata_bound(fields, depth_limit=24)
     try:
         data = json.dumps(fields, sort_keys=True, ensure_ascii=True, allow_nan=False).encode()
@@ -410,6 +411,8 @@ def prepare(script: str | os.PathLike, workdir: str | os.PathLike | None = None,
 
 
 def _revalidate(plan: dict, slurm) -> dict:
+    if isinstance(plan, dict) and (plan.get("submittable") is False or plan.get("workflow_orchestration") == "review_only" or plan.get("requires_workflow_orchestration") or plan.get("symbolic_dependencies")):
+        raise ValueError("workflow plans have symbolic dependencies and require explicit orchestration; prepare a concrete scheduler dependency plan before submitting")
     if not isinstance(plan, dict) or plan.get("schema") != SCHEMA:
         raise ValueError("not a supported Tower submission plan")
     if plan.get("plan_id") != _digest(plan):

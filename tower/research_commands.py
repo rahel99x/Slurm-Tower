@@ -35,6 +35,13 @@ def command_value_option(command, token):
         "submit": {"--workdir", "--passport-dir", "--declared-input", "--declared-output", "--parameter"},
         "array": {"--workdir", "--indices", "--limit"},
         "resubmit": {"--script"},
+        "predict": {"--file", "--coverage", "--name", "--partition", "--account", "--qos", "--cpus", "--nodes", "--gpus"},
+        "forecast": {"--file", "--coverage"},
+        "blockers": {"--file", "--coverage"},
+        "tradeoffs": {"--choose", "--script", "--workdir"},
+        "choose": {"--file", "--workdir"},
+        "scaling": {"--workdir", "--mode", "--baseline"},
+        "workflow": {"--workdir"},
     }
     return token in options.get(command, set()) or command in ("prepare", "submit", "array", "resubmit") and sbatch_value_option(token)
 
@@ -153,6 +160,13 @@ def offline(line, *, host="", replay=False):
         from .controller import App
         matches = [c for c in App.COMMANDS if c.startswith(words[0])]
         cmd = words[0] if words[0] in App.COMMANDS else matches[0] if len(matches) == 1 else words[0]
+        from .planning_commands import COMMANDS as planning_commands, is_offline, result, success
+        if cmd in planning_commands and is_offline(cmd, words[1:]):
+            if host or replay:
+                raise ValueError("offline planning requires local files on the cluster")
+            output, _ = result(cmd, words[1:])
+            print(json.dumps(output, indent=2, ensure_ascii=True, allow_nan=False))
+            return 0 if success(output) else 1
         if cmd not in OFFLINE:
             return None
         if host or replay:
@@ -167,6 +181,9 @@ def offline(line, *, host="", replay=False):
 
 def execute(app, cmd, args, *, ready=None):
     """Return True when handled. Job actions always enter the existing confirmation flow."""
+    from .planning_commands import execute as planning_execute
+    if planning_execute(app, cmd, args, ready=ready):
+        return True
     if cmd not in COMMANDS:
         return False
     hub = getattr(app, "research", None)

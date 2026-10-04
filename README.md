@@ -12,6 +12,7 @@ when you need to share the picture.
 
 [Runbook](docs/runbook.md) | [Complete reference](docs/reference.md) |
 [Research workflows](docs/RESEARCH.md) |
+[Wave two planning](docs/WAVE_TWO.md) |
 [Tests](https://github.com/rahel99x/Slurm-Tower/actions/workflows/tests.yml) |
 [Contributing](CONTRIBUTING.md)
 
@@ -64,21 +65,30 @@ Python 3.11+ reads TOML configuration; Python 3.10 uses JSON.
 
 ## Every view answers a question
 
-Press `0` to open **Research**, then use Left/Right to switch among six workspaces:
+Press `0` to open **Research**, then use Left/Right to switch among twelve workspaces:
 application metric curves and progress, array cohorts and failed-task retry plans,
 failure hypotheses with cited evidence, output contracts, immutable run passports,
-and a batch submission workbench. Inspections run in a bounded background worker.
+and a batch submission workbench, followed by resource predictions, queue-start
+forecasts, scheduler blockers, submission tradeoffs, controlled scaling experiments,
+and workflow critical paths. Inspections run in a bounded background worker.
 Preparing a script stays offline; submitting requires an explicit confirmation.
 
 ```bash
 tower --fake --tab research --research-view experiment
 tower run prepare examples/research/sample.sbatch --workdir "$PWD"
+tower --fake --tab research --research-view scaling
+tower run scaling plan examples/planning/scaling.json --workdir "$PWD"
 ```
 
 The [research guide](docs/RESEARCH.md) includes a runnable experiment and output
 contract, telemetry instrumentation, provenance comparisons, and safe array retries.
 Confirmed submissions save passports under the batch workdir's `.tower/passports`
 unless `--passport-dir` selects another directory. This output is separate from UI state.
+
+The [wave two guide](docs/WAVE_TWO.md) explains prediction evidence and uncertainty,
+queue forecast calibration, blocker citations, reviewed resource choices, and
+repeatable scaling and workflow recipes. Missing evidence remains unknown;
+scaling plans and workflow plans prepare commands for review without submitting jobs.
 
 | View | Get an answer quickly |
 | --- | --- |
@@ -91,6 +101,7 @@ unless `--passport-dir` selects another directory. This output is separate from 
 | **Group** | How is the account sharing CPUs, GPUs, and nodes? |
 | **Logs** | What is the job doing? Search, follow, wrap, and bookmark its output. |
 | **Sources** | Is the data fresh? Which command is slow or unavailable? |
+| **Research** | What does the application report, what explains its failures, and what evidence supports the next experiment? |
 
 Solid fractional bars, gradient area charts, braille precision traces, measured
 resource heatmaps, and timelines use terminal-renderable characters. Unicode
