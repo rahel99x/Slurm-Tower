@@ -52,6 +52,7 @@ your-project/
   jobs/run.sbatch                   Example CPU batch entry point
   runs/<unique-attempt-id>/
     run.json                       Project-owned manifest and explicit paths
+    logs.json                      Grouped index of exact per-run log locations
     metrics.jsonl                  Append-only native Tower metric rows
     summary.json                   One terminal summary per attempt
     outputs/results.json           Scientific outputs declared by the contract
@@ -74,12 +75,17 @@ identifiers. Do not pool runs after changing work or inputs.
 `run.json` and `summary.json` are reporting conventions. Tower does not discover
 run directories or load their manifests automatically. The config binds native
 metrics, output checks, and an explicit planning aggregate.
+The config also binds the native `logs.json` index, so application logs can be
+opened independently of the scheduler's launch stdout/stderr.
 
 ## Paths and terminal views
 
 Always launch these examples from the project root. In this config:
 
 - `metrics_file = metrics.jsonl` is relative to the selected `--workdir`.
+- `logs.manifest_file = logs.json` is relative to the selected `--workdir`;
+  without that override it uses the selected scheduler job's actual WorkDir.
+- A relative entry in `logs.json` is relative to the index's directory.
 - The contract and `planning_file` paths are relative to the process working
   directory, so they stay at the project root.
 - Contract output paths are relative to the selected `--workdir`.
@@ -92,6 +98,42 @@ For artifact checks use the same config and run directory with
 attaches an explicit stream; use an absolute path when a run workdir is already
 selected. `:artifacts .tower/contracts/outputs.v1.json
 runs/demo-001` attaches the matching output root.
+
+## Organize logs across locations
+
+`begin_run` writes `logs.json` with application stdout/stderr and the actual
+`job_id` when provided. Add explicit other files with the same run coordinator:
+
+```python
+from reporting import register_log
+
+register_log(run, "training.rank-0", "logs/rank-0.log",
+             label="Rank 0", group="Training", description="Coordinator training output")
+register_log(run, "scheduler.stderr", "/scratch/my-project/batch/12345.err",
+             label="Batch stderr", group="Scheduler")
+```
+
+Replace the external path with the real location for that run. IDs and resolved
+paths must be unique; at most 256 entries and 256 KiB are allowed. Registration replaces the
+index atomically without opening the logs. A listed file may not exist yet;
+existing paths must use regular files and real directory ancestors. An explicit
+`../` path may reach a sibling location; these read-only log attachments are
+separate from confined artifact-contract paths. No glob, symlink, or recursive
+discovery is allowed. Absolute paths retain their
+source-machine meaning when copying a run; update them explicitly or move the
+file into the bundle and use a relative entry.
+
+In Jobs, select an active job or a row in **Recents**, then press `l`. In History,
+select any job state and press `l`; its identity stays bound in Logs. Press `O`
+to open the grouped file list, move with arrows or PgUp/PgDn/Home/End, and press
+Enter to open a file. Esc returns to the list, then back to the file view;
+choose another entry without changing jobs. `o` retains quick cycling and `e`
+switches stdout/stderr. Scheduler paths and bounded job-ID-matching files in
+their directories join the explicit index; Tower does not scan the filesystem.
+
+For old jobs whose accounting service did not retain stdout/stderr or WorkDir,
+Tower reports missing evidence instead of using a currently running job. Select
+the run directory explicitly with `--workdir` to attach its `logs.json`.
 
 ## Instrument another application
 

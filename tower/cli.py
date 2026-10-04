@@ -50,6 +50,8 @@ class Session:
         self.app.save()
         if getattr(self.app, "research", None):
             self.app.research.close()
+        if self.app.logs.catalog:
+            self.app.logs.catalog.close()
         self.sampler.shutdown()
         rec = getattr(self.backend, "close", None)
         if rec:

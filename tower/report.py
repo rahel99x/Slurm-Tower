@@ -60,6 +60,7 @@ def build(snap: dict, app, views, actions=None, title: str = "", width: int = 13
     local.cursor = {key: 0 for key, _ in TABS}
     local.top = {key: 0 for key, _ in TABS}
     local.logs = _ui_copy(app.logs)
+    local.logs.browser = False
     # A new buffer cache avoids mutating the interactive reader or copying its
     # potentially large retained files. The normal bounded file reader is reused.
     local.logs.buffers = {}

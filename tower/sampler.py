@@ -36,6 +36,7 @@ class Sampler(threading.Thread):
         self.stop = threading.Event()
         self.kick = threading.Event()
         self.want_detail: Optional[str] = None
+        self._historical_details: Dict[str, Dict[str, str]] = {}
         self.sources: Dict[str, Callable[[], None]] = {
             "jobs": self.src_jobs, "starts": self.src_starts, "live": self.src_live, "gpu": self.src_gpu, "nodes": self.src_nodes,
             "partitions": self.src_partitions, "finished": self.src_finished, "share": self.src_share, "account": self.src_account, "details": self.src_details,
@@ -379,11 +380,50 @@ class Sampler(threading.Thread):
         jid = self.want_detail
         if not jid:
             return
-        kv = self.slurm.details(jid)
         with self.store.lock:
+            finished = next((job for job in self.store.finished if job.id == jid), None)
+            previous = dict(self.store.details.get(jid, {}))
+        if finished is None:
+            kv = self.slurm.details(jid)
+        else:
+            # Successful completed-job paths are immutable. Missing accounting
+            # paths can lag completion, so retry them on the normal cadence or a
+            # manual refresh. Keep real paths fetched while the job was alive.
+            kv = self._historical_details.get(jid)
+            if kv is None:
+                seed = dict(previous)
+                seed.pop("LogPathError", None)
+                seed.update({"JobId": jid, "JobName": finished.name, "JobState": finished.state})
+                if finished.workdir and not seed.get("WorkDir"):
+                    seed["WorkDir"] = finished.workdir
+
+                def known_path() -> bool:
+                    return any(isinstance(seed.get(key), str) and seed[key] and
+                               seed[key].lower() not in ("unknown", "n/a", "(null)", "none")
+                               for key in ("StdOut", "StdErr"))
+
+                if not known_path():
+                    try:
+                        control = self.slurm.details(jid)
+                    except CommandError:
+                        control = {}
+                    seed.update(control)
+                    if not known_path():
+                        seed.update(self.slurm.historical_details(jid))
+                kv = seed
+                if known_path():
+                    self._historical_details[jid] = dict(kv)
+                    if len(self._historical_details) > 50:
+                        self._historical_details.pop(next(iter(self._historical_details)))
+        with self.store.lock:
+            # An in-flight fetch for an old cursor must not evict or overwrite
+            # the newly selected job's details.
+            if jid != self.want_detail:
+                return
             self.store.details[jid] = kv
             alive = {j.id for j in self.store.jobs}
-            for k in [k for k in self.store.details if k not in alive and k != jid]:
+            retained = set(self._historical_details)
+            for k in [k for k in self.store.details if k not in alive and k not in retained and k != jid]:
                 del self.store.details[k]
 
     def select(self, jid: Optional[str]):

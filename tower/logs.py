@@ -179,6 +179,15 @@ class LogSession:
         self.candidates: dict = {}            # job id -> (time, [paths]) of the other files
         self.bookmarks: dict = {}             # path -> sorted line indices
         self.last_bookmark: Optional[int] = None   # the bookmark the last jump landed on (the next jump continues from it)
+        self.browser = False
+        self.browse_return = False
+        self.browser_cursor = 0
+        self.browser_top = 0
+        self.browser_page = 10
+        self.file_filter = ""
+        self.entry = None
+        self.entries = []
+        self.catalog = None
 
     # ---- bookmarks ------------------------------------------------------------------------------
     def toggle_bookmark(self, path: str, index: int) -> bool:

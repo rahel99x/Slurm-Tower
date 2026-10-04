@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Sequence
 from . import clipboard, export
 from .logs import LogSession
 from .actions import Actions
-from .model import Job, Store
+from .model import Job, Store, secs
 from .sampler import Sampler
 from .views import ANALYTICS_VIEWS, NODES_VIEWS, SORTS, TABS
 from .research import RESEARCH_VIEWS
@@ -46,6 +46,7 @@ class App:
         self.scroll = 0
         self.log_lines = int(cfg["log_lines"])
         self.log_job: Optional[str] = None
+        self.log_record = None
         self.logs = LogSession(max_bytes=int(cfg["log_max_mb"]) << 20)
         self.gpu = bool(cfg["gpu_sampling"])
         self.bell = bool(cfg["bell"])
@@ -53,6 +54,8 @@ class App:
         self.command_ok = True
         self.selected_id: Optional[str] = None
         self.visible_ids: List[str] = []
+        self.recent_ids: List[str] = []
+        self.jobs_selection_options = None
         self.tab_hits: list = []
         self.quit = False
         self.sel_anchor: Optional[int] = None             # line selection (screen rows) for copying
@@ -168,7 +171,8 @@ class App:
         if self.research:
             self.research.poll_task()
         if self.sampler:
-            self.sampler.select(self.selected_id if self.tab in ("jobs", "log") else None)
+            jid = (self.log_job or self.selected_id) if self.tab == "log" else self.detail_id if self.mode == "details" else self.selected_id if self.tab == "jobs" and self.selected_job() else None
+            self.sampler.select(jid)
             self.sampler.gpu_sampling = self.gpu
             self.sampler.marks = set(self.marks)
             self.sampler.select_fin(self.detail_id if (self.mode == "details" and self.detail_id and not self.store.job(self.detail_id)) else None)
@@ -176,6 +180,86 @@ class App:
 
     def selected_job(self) -> Optional[Job]:
         return self.store.job(self.selected_id) if self.selected_id else None
+
+    def job_record(self, jid, snap=None):
+        """Resolve an exact ID across queue and accounting records, without another-job fallback."""
+        snap = self.store.snapshot() if snap is None else snap
+        return next((j for j in snap["jobs"] + snap["finished"] + snap.get("group", []) if j.id == jid), None)
+
+    def log_target(self, snap=None):
+        jid = self.log_job or self.selected_id
+        record = self.job_record(jid, snap)
+        if record is not None and self.log_job:
+            self.log_record = record
+        return record or (self.log_record if self.log_record and self.log_record.id == jid else None)
+
+    def finished_jobs(self, snap=None, *, recent=False):
+        """The same sorted/filtered accounting records drive rendering and every row action."""
+        snap = self.store.snapshot() if snap is None else snap
+        fin = list(snap["finished"])
+        if recent:
+            active = {j.id for j in snap["jobs"]}
+            fin = [f for f in fin if f.id not in active]
+        else:
+            key = self.sort.get("history", "end")
+            keyfn = {"end": lambda f: f.end, "name": lambda f: (f.name, f.end),
+                     "state": lambda f: (f.state, f.end), "elapsed": lambda f: secs(f.elapsed) or 0,
+                     "cpu_eff": lambda f: -1 if f.cpu_eff is None else f.cpu_eff,
+                     "mem_eff": lambda f: -1 if f.mem_eff is None else f.mem_eff}.get(key, lambda f: f.end)
+            fin.sort(key=keyfn, reverse=(key == "end") != self.reverse.get("history", False))
+        flt = self.filter.lower()
+        if flt.startswith("#"):
+            fin = [f for f in fin if flt[1:] in [t.lower() for t in snap.get("tags", {}).get(f.id, {}).get("tags", [])]]
+        elif flt:
+            fin = [f for f in fin if any(flt in value.lower() for value in (f.name, f.id, f.state, f.partition))]
+        return fin[:5] if recent else fin
+
+    def history_jobs(self, snap=None):
+        return self.finished_jobs(snap)
+
+    def recent_jobs(self, snap=None):
+        return self.finished_jobs(snap, recent=True)
+
+    def jobs_options(self):
+        return self.filter, self.sort.get("jobs", "state"), self.reverse.get("jobs", False)
+
+    def open_log(self, jid=None):
+        self.sync_selection()
+        jid = jid or (self.log_job if self.tab == "log" else self.selected_id)
+        record = self.job_record(jid)
+        if record is None and self.log_record and self.log_record.id == jid:
+            record = self.log_record
+        if record is None:
+            self.fail("no job selected for logs")
+            return
+        if jid != self.log_job:
+            self.logs.which, self.logs.file_index = "out", 0
+            self.logs.path, self.logs.match, self.logs.last_bookmark = "", None, None
+            self.logs.entry, self.logs.entries = None, []
+            self.logs.browser, self.logs.browse_return = False, False
+            self.logs.browser_cursor, self.logs.browser_top, self.logs.file_filter = 0, 0, ""
+        self.log_job, self.log_record, self.logs.top = jid, record, None
+        self.enter_tab("log")
+        if self.sampler:
+            self.sampler.select(jid)
+
+    def log_entries(self):
+        flt = self.logs.file_filter.casefold()
+        return [entry for entry in self.logs.entries if not flt or
+                any(flt in str(entry.get(key, "")).casefold() for key in ("label", "group", "path", "description"))]
+
+    def select_log_file(self):
+        entries = self.log_entries()
+        if not entries:
+            self.say("no log file selected")
+            return False
+        self.logs.browser_cursor = max(0, min(self.logs.browser_cursor, len(entries) - 1))
+        entry = entries[self.logs.browser_cursor]
+        if not self.logs.entry or self.logs.entry["path"] != entry["path"]:
+            self.logs.path, self.logs.top, self.logs.match, self.logs.last_bookmark = "", None, None, None
+        self.logs.entry = dict(entry)
+        self.logs.file_index, self.logs.browser, self.logs.browse_return = 0, False, True
+        return True
 
     def target_jobs(self) -> List[Job]:
         """The marked jobs when there are any (visible ones first), else the selected job."""
@@ -191,7 +275,7 @@ class App:
         if self.marks:
             return sorted(self.marks)
         if self.tab == "history":
-            ids = [f.id for f in self.store.finished]
+            ids = [f.id for f in self.history_jobs()]
             return [ids[self.clamp_cursor("history", len(ids))]] if ids else []
         return [self.selected_id] if self.selected_id else []
 
@@ -211,13 +295,23 @@ class App:
     # ---- key handling ------------------------------------------------------------------------------
     def sync_selection(self):
         """The selected job follows the cursor even between two renders (keys can arrive faster than frames)."""
-        if self.tab in ("jobs", "log") and self.visible_ids:
-            cur = self.clamp_cursor("jobs", len(self.visible_ids))
-            self.selected_id = self.visible_ids[cur]
-        elif self.tab == "deps" and self.dep_ids:
+        if self.tab == "jobs":
+            if self.views_ref is not None and self.jobs_selection_options != self.jobs_options():
+                snap = self.store.snapshot()
+                self.visible_ids = [r["id"] for r in self.views_ref.job_rows(snap, self, self.actions)]
+                self.recent_ids = [f.id for f in self.recent_jobs(snap)]
+                self.jobs_selection_options = self.jobs_options()
+            ids = self.visible_ids + self.recent_ids
+            self.selected_id = ids[self.clamp_cursor("jobs", len(ids))] if ids else None
+        elif self.tab == "history":
+            ids = [f.id for f in self.history_jobs()]
+            self.selected_id = ids[self.clamp_cursor("history", len(ids))] if ids else None
+        elif self.tab == "log" and self.log_job:
+            self.selected_id = self.log_job
+        elif self.tab == "deps":
             cur = self.clamp_cursor("deps", len(self.dep_ids))
-            self.selected_id = self.dep_ids[cur]
-        elif self.tab == "group" and getattr(self, "group_ids", []):
+            self.selected_id = self.dep_ids[cur] if self.dep_ids else None
+        elif self.tab == "group":
             self.selected_id = self.group_selected()
 
     def handle(self, key: str) -> None:
@@ -236,6 +330,10 @@ class App:
             return
         if self.mode == "filter":
             if key == "enter":
+                if self.tab == "log" and self.logs.browser:
+                    self.logs.file_filter, self.mode = self.filter_edit, "main"
+                    self.logs.browser_cursor, self.logs.browser_top = 0, 0
+                    return
                 if self.tab == "log":                      # on the Log tab the prompt is the search
                     self.logs.search, self.mode = self.filter_edit, "main"
                     self.logs.match = None
@@ -246,7 +344,9 @@ class App:
                 self.filter, self.mode = self.filter_edit, "main"
                 self.cursor[self.tab] = 0
             elif key == "esc":
-                if self.tab == "log":
+                if self.tab == "log" and self.logs.browser:
+                    self.logs.file_filter = ""
+                elif self.tab == "log":
                     self.logs.search, self.logs.match = "", None
                 else:
                     self.filter = ""
@@ -276,6 +376,9 @@ class App:
         action = self.keymap.get(key)
         if action is None:
             return
+        if self.tab == "log" and self.logs.browser and action in ("follow", "find_next", "find_prev", "bookmark", "bookmark_next"):
+            self.say("Open a log with Enter before using file search, follow, or bookmarks")
+            return
         if self.sel_anchor is not None and action in ("up", "down", "page_up", "page_down", "home", "end"):
             n = len(self.last_rows) or 1
             step = {"up": -1, "down": 1, "page_up": -10, "page_down": 10, "home": -n, "end": n}[action]
@@ -291,6 +394,8 @@ class App:
         elif action == "clear":
             if self.sel_anchor is not None:
                 self.sel_anchor = None; self.say("selection cancelled")
+            elif self.tab == "log" and (self.logs.browser or self.logs.browse_return):
+                self.logs.browser = not self.logs.browser
             elif self.filter:
                 self.filter = ""; self.say("filter cleared")
             elif self.marks:
@@ -302,6 +407,8 @@ class App:
                 self.sampler.refresh_all()
             if self.research:
                 self.research.configure()
+            if self.logs.catalog:
+                self.logs.catalog.configure(files=self.logs.files)
             self.say("sampling every source now")
         elif action in ("up", "down", "page_up", "page_down", "home", "end"):
             self.move(action)
@@ -344,7 +451,7 @@ class App:
         elif action == "theme":
             self.set_theme(THEMES[(THEMES.index(self.theme) + 1) % len(THEMES)])
         elif action == "mark":
-            if self.tab in ("jobs", "deps") and self.selected_id:
+            if self.tab in ("jobs", "deps") and self.selected_job():
                 if self.selected_id in self.marks:
                     self.marks.discard(self.selected_id)
                 else:
@@ -366,13 +473,15 @@ class App:
         elif action == "unmark_all":
             self.marks.clear()
         elif action == "details":
-            if self.tab == "research" and self.research_view == "arrays":
+            if self.tab == "log" and self.logs.browser:
+                self.select_log_file()
+            elif self.tab == "research" and self.research_view == "arrays":
                 self.research_array_open = not self.research_array_open
                 self.research_task_offset = 0
             elif self.tab in ("jobs", "group", "deps") and self.selected_id:
                 self.open_details()
             elif self.tab == "history":
-                ids = [f.id for f in self.store.finished]
+                ids = [f.id for f in self.history_jobs()]
                 cur = self.clamp_cursor("history", len(ids))
                 if ids:
                     self.analytics_job, self.analytics_view = ids[cur], "job"
@@ -380,12 +489,17 @@ class App:
         elif action in ("cancel", "hold", "requeue", "top"):
             self.start_confirm(action)
         elif action == "log":
-            if self.selected_id:
-                self.log_job = self.selected_id
-                self.logs.top = None
-                self.enter_tab("log")
+            self.open_log()
         elif action == "less":
+            if self.tab == "log" and self.logs.browser:
+                if not self.select_log_file():
+                    return
             self.want_less = True                       # the screen opens less on the selected job
+        elif action == "log_files":
+            if self.tab != "log":
+                self.open_log()
+            if self.tab == "log":
+                self.logs.browser, self.logs.browse_return = True, True
         elif action == "follow":
             buf = self.logs.buffer(self.logs.path) if self.logs.path else None
             if self.logs.following:
@@ -406,16 +520,23 @@ class App:
             self.say(f"long lines {'wrapped' if self.logs.wrap else 'cut'}")
         elif action == "stderr":
             if self.tab == "log":
+                self.logs.entry, self.logs.browser = None, False
                 self.logs.which = "err" if self.logs.which == "out" else "out"
                 self.logs.file_index, self.logs.top, self.logs.match = 0, None, None
                 self.say(f"showing {'stderr' if self.logs.which == 'err' else 'stdout'}")
         elif action == "log_file":
             if self.tab == "log":
                 jid = self.log_job or self.selected_id
+                if self.views_ref:
+                    snap = self.store.snapshot()
+                    job = self.log_target(snap)
+                    if job:
+                        self.views_ref.log_candidates(self, job, snap["details"].get(jid, {}))
                 cands = self.logs.candidates.get(jid, (0, []))[1] if jid else []
                 if not cands:
                     self.say("no other files of this job in its log directory (array tasks, steps, gpu-util-<id>.csv)")
                 else:
+                    self.logs.entry, self.logs.browser = None, False
                     self.logs.file_index = (self.logs.file_index + 1) % (len(cands) + 1)
                     self.logs.top, self.logs.match = None, None
                     self.say("stdout" if self.logs.file_index == 0 else f"file {self.logs.file_index + 1}/{len(cands) + 1}: {cands[self.logs.file_index - 1]}")
@@ -450,7 +571,7 @@ class App:
         elif action == "reverse":
             self.reverse[self.tab] = not self.reverse.get(self.tab, False)
         elif action == "filter":
-            self.mode, self.filter_edit = "filter", (self.logs.search if self.tab == "log" else self.filter)
+            self.mode, self.filter_edit = "filter", (self.logs.file_filter if self.tab == "log" and self.logs.browser else self.logs.search if self.tab == "log" else self.filter)
         elif action == "gpu_toggle":
             self.gpu = not self.gpu
             self.say(f"GPU sampling {'on' if self.gpu else 'off'}")
@@ -475,7 +596,7 @@ class App:
     def open_details(self):
         """The details overlay of the selected job: scontrol and the steps of a running job, sacct -j of a finished one."""
         if self.tab == "history":
-            ids = [f.id for f in self.store.finished]
+            ids = [f.id for f in self.history_jobs()]
             if not ids:
                 return
             jid = ids[self.clamp_cursor("history", len(ids))]
@@ -485,8 +606,10 @@ class App:
             jid = self.selected_id
         if jid:
             self.detail_id, self.mode, self.scroll = jid, "details", 0
-            if self.sampler and not self.store.job(jid):
-                self.sampler.select_fin(jid)
+            if self.sampler:
+                self.sampler.select(jid)
+                if not self.store.job(jid):
+                    self.sampler.select_fin(jid)
 
     def group_selected(self) -> Optional[str]:
         ids = getattr(self, "group_ids", [])
@@ -536,6 +659,13 @@ class App:
                     self.analytics_job = ids[max(0, min(len(ids) - 1, cur + step))]
             return
         if self.tab == "log":
+            if self.logs.browser:
+                n = len(self.log_entries())
+                cur = self.logs.browser_cursor
+                step = max(1, self.logs.browser_page - 1)
+                self.logs.browser_cursor = max(0, min(max(0, n - 1), {"up": cur - 1, "down": cur + 1,
+                    "page_up": cur - step, "page_down": cur + step, "home": 0, "end": n - 1}[action]))
+                return
             buf = self.logs.buffer(self.logs.path) if self.logs.path else None
             page = max(1, self.logs.page - 1)
             if action == "home":
@@ -546,8 +676,8 @@ class App:
                 self.logs.scroll({"up": -1, "down": 1, "page_up": -page, "page_down": page}[action], buf)
             return
         tab = self.tab
-        n = {"jobs": len(self.visible_ids), "history": len(self.store.finished), "sources": len(self.store.health), "group": len(getattr(self, "group_ids", [])),
-             "deps": len(self.dep_ids)}.get(tab, 0)
+        n = len(self.history_jobs()) if tab == "history" else {"jobs": len(self.visible_ids) + len(self.recent_ids),
+             "sources": len(self.store.health), "group": len(getattr(self, "group_ids", [])), "deps": len(self.dep_ids)}.get(tab, 0)
         page = 10
         cur = self.cursor.get(tab, 0)
         cur = {"up": cur - 1, "down": cur + 1, "page_up": cur - page, "page_down": cur + page, "home": 0, "end": 10 ** 9}[action]
@@ -562,7 +692,7 @@ class App:
         if name == "analytics" and self.tab == "jobs" and self.selected_id:
             self.analytics_job = self.selected_id
         elif name == "analytics" and self.tab == "history":
-            ids = [f.id for f in self.store.finished]
+            ids = [f.id for f in self.history_jobs()]
             if ids:
                 self.analytics_job = ids[self.clamp_cursor("history", len(ids))]
         if name == "research" and self.tab in ("jobs", "history"):
@@ -589,7 +719,7 @@ class App:
         if self.click_row is not None:
             return self.click_row
         for (y, kind, key) in getattr(self, "last_hits", []):
-            if kind == "job" and key == self.selected_id:
+            if kind in ("job", "recent", "fin") and key == self.selected_id:
                 return y
         return min(4, max(0, len(self.last_rows) - 1))
 
@@ -641,7 +771,7 @@ class App:
             else:
                 ids = sorted(self.marks) or ([self.analytics_job] if self.tab == "analytics" and self.analytics_job else ([self.selected_id] if self.selected_id else []))
                 if self.tab == "history" and not self.marks:
-                    fins = [f.id for f in self.store.finished]
+                    fins = [f.id for f in self.history_jobs()]
                     if fins:
                         ids = [fins[self.clamp_cursor("history", len(fins))]]
                 if not ids:
@@ -762,9 +892,17 @@ class App:
                 return
             self.confirm, self.mode = dict(action=cmd, jobs=ok), "confirm"
         elif cmd == "filter":
-            self.filter = " ".join(args)
-            self.cursor[self.tab] = 0
-            self.say(f"filter '{self.filter}'" if self.filter else "filter cleared")
+            value = " ".join(args)
+            if self.tab == "log":
+                if self.logs.browser:
+                    self.logs.file_filter = value
+                    self.logs.browser_cursor, self.logs.browser_top = 0, 0
+                else:
+                    self.logs.search, self.logs.match = value, None
+            else:
+                self.filter = value
+                self.cursor[self.tab] = 0
+            self.say(f"filter '{value}'" if value else "filter cleared")
         elif cmd == "sort":
             opts = SORTS.get(self.tab, ["name"])
             if args and args[0] in opts:
@@ -924,15 +1062,19 @@ class App:
                 self.marks.clear()
             self.say(f"{len(self.marks)} marked")
         elif cmd == "log":
-            if args and self.store.job(args[0]):
-                self.log_job, self.logs.top = args[0], None
-                self.enter_tab("log")
+            if len(args) == 1 and self.job_record(args[0]):
+                self.open_log(args[0])
             else:
                 self.fail("log <id>")
         elif cmd == "find":
-            self.logs.search, self.logs.match = " ".join(args), None
             if self.tab != "log":
-                self.enter_tab("log")
+                self.open_log()
+                if self.tab != "log":
+                    return
+            if self.logs.browser:
+                self.fail("Open a log with Enter before searching its contents")
+                return
+            self.logs.search, self.logs.match = " ".join(args), None
             buf = self.logs.buffer(self.logs.path) if self.logs.path else None
             i = self.logs.find_next(buf, backwards=True) if self.logs.search else None
             self.say(f"{buf.count(self.logs.search) if buf and self.logs.search else 0} lines match" if self.logs.search else "search cleared")
@@ -1047,8 +1189,15 @@ class App:
                 if kind == "job":
                     if key in self.visible_ids:
                         self.cursor["jobs"] = self.visible_ids.index(key)
+                elif kind == "recent":
+                    if key in self.recent_ids:
+                        self.cursor["jobs"] = len(self.visible_ids) + self.recent_ids.index(key)
+                elif kind == "log_file":
+                    ids = [entry["id"] for entry in self.log_entries()]
+                    if key in ids:
+                        self.logs.browser_cursor = ids.index(key)
                 elif kind == "fin":
-                    ids = [f.id for f in self.store.finished]
+                    ids = [f.id for f in self.history_jobs()]
                     if key in ids:
                         self.cursor["history"] = ids.index(key)
                 elif kind == "source":
@@ -1068,6 +1217,7 @@ class App:
                         self.cursor["research"] = ids.index(key)
                         self.research_task_offset = 0
                         self.research_array_focus = True
+                self.sync_selection()
                 return
 
     # ---- confirmations -----------------------------------------------------------------------------

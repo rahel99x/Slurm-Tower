@@ -21,6 +21,8 @@ MAX_JSON = 1 << 20
 MAX_RUNS = 256
 MAX_AGGREGATE = 1 << 20
 MAX_SCRIPT = 8 << 20
+MAX_LOGS = 256
+MAX_LOG_JSON = 256 << 10
 RESOURCE_KEYS = {"partition", "cpus", "nodes", "gpus", "gpu_type", "account", "qos",
                  "mem_bytes", "time_seconds"}
 QUERY_KEYS = RESOURCE_KEYS | {"name", "script_sha256", "parameters", "input_size", "memory_scope"}
@@ -221,6 +223,84 @@ def _parameters(value):
     return value
 
 
+def _log_path(run_dir, value):
+    """Validate an exact location without opening, scanning, or creating logs."""
+    raw = _text(value, "log path", 4096)
+    if "\\" in raw or any(c in raw for c in "*?[]") or raw.endswith("/") or raw.startswith("~"):
+        raise ValueError("log path must name an exact file without globs or backslashes")
+    supplied = Path(raw)
+    path = Path(os.path.normpath(supplied if supplied.is_absolute() else run_dir / supplied))
+    if len(str(path)) > 4096:
+        raise ValueError("resolved log path exceeds 4096 characters")
+    for component in reversed((path, *path.parents)):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            continue  # a registered log may be created later by its actual writer
+        if component == path:
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("registered log must be a regular file when present")
+        elif not stat.S_ISDIR(info.st_mode):
+            raise ValueError("log path ancestors must be directories; symlinks refused")
+    return str(path)
+
+
+def _log_index(run_dir, value, manifest=None):
+    if (not isinstance(value, dict) or value.get("schema") != "tower.logs/v1"
+            or set(value) - {"schema", "logs", "run_id", "job_id"}
+            or not isinstance(value.get("logs"), list) or len(value["logs"]) > MAX_LOGS):
+        raise ValueError("log index must be a bounded tower.logs/v1 object")
+    if "run_id" in value and value["run_id"] != run_dir.name:
+        raise ValueError("log index run_id must describe the selected run")
+    if "job_id" in value:
+        _text(value["job_id"], "log index job_id")
+        if manifest is not None and value["job_id"] != manifest.get("job_id"):
+            raise ValueError("log index job_id must match the actual run job_id")
+    ids, paths = set(), set()
+    for entry in value["logs"]:
+        if not isinstance(entry, dict) or set(entry) - {"id", "path", "label", "group", "description"}:
+            raise ValueError("log entries use id, path, label, group, and description only")
+        ident = entry.get("id")
+        if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", ident):
+            raise ValueError("log id must be a safe stable ID of at most 128 characters")
+        path = _log_path(run_dir, entry.get("path"))
+        if ident in ids or path in paths:
+            raise ValueError("log IDs and resolved paths must be unique")
+        ids.add(ident)
+        paths.add(path)
+        for key, limit in (("label", 160), ("group", 160), ("description", 512)):
+            if key in entry and (entry[key] != "" or key != "description"):
+                _text(entry[key], f"log {key}", limit)
+    _encoded(value, MAX_LOG_JSON)
+    return value
+
+
+def register_log(run_dir, id, path, *, label="", group="", description=""):
+    """Atomically register another exact log location for one run coordinator.
+
+    Relative paths, including explicit sibling locations, resolve to this run
+    directory. Absolute paths can name
+    explicit external logs; they must be rebound when a project is relocated.
+    Logs may not exist yet. This helper never opens their contents or scans a
+    directory, and it refuses duplicate IDs/paths and symlinks when present.
+    """
+    run_dir = _directory(run_dir)
+    manifest = _read_json(run_dir / "run.json")
+    if (not isinstance(manifest, dict) or manifest.get("schema") != "tower.run/v1"
+            or manifest.get("run_id") != run_dir.name):
+        raise ValueError("run manifest must describe the selected run")
+    index_path = run_dir / "logs.json"
+    index = _log_index(run_dir, _read_json(index_path), manifest)
+    entry = {"id": id, "path": str(path)}
+    for key, value in (("label", label), ("group", group), ("description", description)):
+        if value != "":
+            entry[key] = value
+    index["logs"].append(entry)
+    _log_index(run_dir, index, manifest)
+    _atomic_json(index_path, index, replace=True)
+    return entry
+
+
 def _summary(row):
     """Check the shared producer profile without adding a schema dependency."""
     if (not isinstance(row, dict) or row.get("schema") != "tower.summary/v1"
@@ -327,11 +407,17 @@ def begin_run(root, run_id, *, name, script, experiment_id=None, attempt=1,
                 "provenance": {"script": str(script_path.relative_to(root)), "script_sha256": digest.hexdigest()},
                 "paths": {"metrics": "metrics.jsonl", "summary": "summary.json", "outputs": "outputs",
                           "logs": "logs", "stdout": "logs/stdout.log", "stderr": "logs/stderr.log",
-                          "passports": "passports"}}
+                          "log_index": "logs.json", "passports": "passports"}}
     if job_id is not None:
         manifest["job_id"] = job_id
     if input_size is not None:
         manifest["input_size"] = input_size
+    log_index = {"schema": "tower.logs/v1", "run_id": run_id, "logs": [
+        {"id": "application.stdout", "path": "logs/stdout.log", "label": "Application stdout", "group": "Application"},
+        {"id": "application.stderr", "path": "logs/stderr.log", "label": "Application stderr", "group": "Application"}]}
+    if job_id is not None:
+        log_index["job_id"] = job_id
+    _atomic_json(run_dir / "logs.json", _log_index(run_dir, log_index, manifest))
     _atomic_json(run_dir / "run.json", manifest)
     return run_dir
 

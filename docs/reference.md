@@ -105,7 +105,7 @@ scaling spread describes measured repeats rather than future-run confidence.
 | **Nodes** | two views (`←`/`→`): **my nodes**, the nodes running your jobs: state, allocated CPUs, load, memory in use, GRES and GRES in use, GPU utilisation with a sparkline per GPU; **cluster map**, every node of every partition (or of the configured `partitions`) as a cell: a state glyph (idle, mixed, allocated, down or drained), cores allocated / total, GPUs in use / total, the nodes running your jobs marked, with per-partition totals. |
 | **Deps** | the dependency chains among your jobs (the `Dependency` field of squeue: `afterok`, `afterany`, `afternotok`, `after`, `aftercorr`, `singleton`), as trees from each root with every job's state; prerequisites that already finished are named from the history. The cursor selects a job; `c` cancels it **and everything that waits for it** (the confirmation lists the chain), `h` holds or releases the chain, `Space` marks, `Enter` opens its details. The selected panel on the Jobs tab says what a pending job still waits for and how many jobs wait for it. |
 | **Group** | everyone in your account: a bar per user (running jobs, CPUs, GPUs, nodes, pending) and the table of all their jobs (sortable by user, state, name, id, time, priority; filterable; `C` exports it; `i` opens a job's details). |
-| **Log** | the selected job's stdout, read once (the last `log_max_mb`) and then only as it grows, so following costs one stat per frame. Pages are bounded: arrows and PgUp/PgDn scroll a full page at a time, Home goes to the top, End (or `f`) follows again; while paused the view stays put as the file grows. `/` searches (a regular expression, matches highlighted, the status line counts them), `N`/`P` jump to the next / previous match, `L` opens the file in `less`. `w` wraps long lines instead of cutting them (the page stays bounded), `e` switches to stderr (and says when it is the same file), `o` cycles through the job's other files in its log directory, those carrying its id: array tasks (`name-12480002_3.out`), step outputs, the GPU trace `gpu-util-<id>.csv`; `m` bookmarks the current line (the search match on the page, else the top line when paused, the last when following; a `●` in the gutter) and `'` jumps to the next bookmark, wrapping around; bookmarks and the wrap setting persist in `ui.json`. |
+| **Log** | logs stay attached to the exact job selected from active Jobs, Recents, or History, including failed and other terminal states. `O` opens a grouped file list combining actual scheduler stdout/stderr, bounded job-ID-matching files in both output directories, and explicit `tower.logs/v1` index entries from other locations. Select with arrows/PgUp/PgDn/Home/End and Enter; Esc returns to the list, then closes it. Files are read once (the last `log_max_mb`) and then only as they grow. Arrows/PgUp/PgDn scroll, Home goes to the top, End or `f` follows; paused views stay put. `/` searches, `N`/`P` move through matches, `L` opens `less`, `w` wraps, `e` switches stdout/stderr, and `o` cycles files. `m` bookmarks a line; `'` jumps to the next bookmark. Bookmarks and wrapping persist in `ui.json`. Missing historical paths stay missing instead of falling back to a running job. |
 | **Sources** | every Slurm command the dashboard runs: cadence, last success, latency, calls, errors, backoff, the last error; `x` disables or enables one (say `sinfo` on a slow controller). |
 
 ## Keys (remappable in the config)
@@ -122,7 +122,8 @@ scaling spread describes measured repeats rather than future-run confidence.
 | `h` | hold a pending job, release a held one (confirmation) |
 | `R` | requeue a running job (confirmation) |
 | `t` | `scontrol top`: put a pending job first among your own (confirmation) |
-| `l` `L` `f` `+` `-` | the Log tab for the selected job; its stdout in `less`; follow on/off; more / fewer log lines under the selected job |
+| `l` `L` `f` `+` `-` | the Log tab for the exact selected Jobs/Recents/History job; the current log in `less`; follow on/off; more / fewer log lines under the selected job |
+| `O` `Enter` `Esc` | Logs: open the grouped file list; open its selected file; return from the file to its list, then close the list |
 | `s` `S` | cycle the sort of the tab (jobs: state, name, id, time, priority; history: end, name, state, elapsed, cpu eff, mem eff); reverse |
 | `/` `Esc` | filter by name, id, partition or info; clear the filter (or the marks) |
 | `n` `b` `r` `x` | GPU sampling on/off; bell on start on/off; sample every source now; Sources tab: enable / disable the selected source |
@@ -133,7 +134,13 @@ scaling spread describes measured repeats rather than future-run confidence.
 | `?` `q` | help; quit (Esc closes an overlay, cancels a selection, clears the filter or the marks) |
 
 The mouse works too: a click selects a row or switches tabs, a double-click opens the details (Jobs) or the series
-(History), the wheel scrolls, a right-click or shift-click extends a line selection from the last click.
+(History), or opens the selected file in the Logs browser. The wheel scrolls,
+and a right-click or shift-click extends a line selection from the last click.
+
+The palette follows the same targets: `:find PATTERN` from Jobs or History opens
+that selected job's logs. In the file browser, `:filter TEXT` filters file labels,
+groups, and paths; inside a file, it sets the content search. These filters stay
+separate from the job-table filter. Empty tables or file lists have no action target.
 
 ## Copying and exporting
 
@@ -302,9 +309,19 @@ within one `jobs` round.
 
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
 commented defaults without replacing an existing config (JSON on Python 3.10, TOML on 3.11+).  Sections: top level (`user`, `account`, `ascii`, `color`, `history_days`, `log_lines`,
-`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`), `[research]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
+`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`), `[research]`, `[logs]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
 (`command` runs through the shell on the configured `events` with `TOWER_EVENT`, `TOWER_JOBID`, `TOWER_JOBNAME`
 and `TOWER_TEXT` in the environment: a Slack webhook, an e-mail, anything), `[keys]` (action = list of key names).
+
+Set `logs.manifest_file` to an exact log-index filename, such as `logs.json`.
+Relative filenames use the explicitly selected research workdir (`--workdir`),
+otherwise the selected job's actual WorkDir; `{job_id}` follows that exact job.
+The index's relative file entries use its own directory and may explicitly name
+sibling locations. Exact absolute entries may name other directories; they retain
+their source-machine meaning after copying a run. See the
+[project log-index standard](PROJECT_STANDARD.md#log-locations-logsjson) and
+[schema](schemas/logs.v1.schema.json). Tower caches bounded catalog work on its
+shared background worker and does not recursively scan directories.
 
 State lives in `~/.local/state/tower/`: `ui.json` (tab, sort, log lines, toggles) and `events.jsonl`, the append-only
 log of every transition and every action (an audit trail: what was cancelled, held or requeued, when, and whether
@@ -330,7 +347,7 @@ Slurm accepted it).  `--no-state` reads and writes neither.
 | 14 | pins, tags and notes that persist; `#tag` filters | `p`, `:tag`, `:note` |
 | 15 | steps per job: tasks, CPU time, peak memory and where, the slowest rank; sacct steps of finished jobs | the panel, `i` |
 | 16 | the job's own GPU trace CSV in the panel and the charts | `logs/gpu-util-<id>.csv` |
-| 17 | log extras: wrap, stderr, the job's other files, bookmarks | Log tab `w` `e` `o` `m` `'` |
+| 17 | log extras: grouped multi-location files, wrap, stderr, bookmarks | Log tab `O` `w` `e` `o` `m` `'` |
 | 18 | scripted mode: one command, an expression, a wait | `tower run`, `--eval`, `--wait-for` |
 | 19 | plugins: commands, flags, tabs, hooks, sources | `~/.config/tower/plugins/` |
 | 20 | accessibility: a colour-blind palette and a plain-text reader theme; recordings as test fixtures | `T`, `theme cb`, `theme reader` |

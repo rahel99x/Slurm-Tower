@@ -20,6 +20,8 @@ SACCT_FIELDS = "JobID,JobName,State,Elapsed,AllocCPUS,TotalCPU,ReqMem,MaxRSS,Sta
 SSTAT_FIELDS = "JobID,AveCPU,MaxRSS,MaxRSSTask,MaxRSSNode,AveRSS,NTasks,MinCPU,MinCPUTask,MinCPUNode"
 SACCT_STEP_FIELDS = "JobID,JobName,State,Elapsed,TotalCPU,MaxRSS,MaxRSSNode,MaxRSSTask,NTasks,ExitCode,NodeList"
 SACCT_SUBMIT_FIELDS = "JobID,SubmitLine,WorkDir,JobName,Partition,Account,QOS,ReqCPUS,ReqMem,Timelimit,NNodes,ReqTRES"
+SACCT_LOG_FIELDS = "JobID,JobIDRaw,JobName,WorkDir,StdOut,StdErr,User"
+MAX_LOG_DETAIL_BYTES = 1 << 20
 SINFO_NODE_FMT = "NodeList:24,Partition:20,Gres:60,GresUsed:60,StateCompact:14,CPUsState:16,Memory:12,AllocMem:12"
 NVSMI = ["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total,name", "--format=csv,noheader,nounits"]
 
@@ -243,6 +245,13 @@ class FakeBackend(Backend):
                 raise CommandError(f"scontrol: Invalid job id specified {jid}")
         if name == "sacct":
             wd = os.getcwd()
+            if "-j" in cmd and "StdOut" in cmd[cmd.index("-o") + 1]:
+                jid = cmd[cmd.index("-j") + 1]
+                for f in self._finished_rows():
+                    if f["id"] == jid:
+                        out = os.path.join(wd, "logs", f"{f['name'].split('_')[0]}-{jid}.out")
+                        return "|".join([jid, jid, f["name"], wd, out, out, self.user]) + "\n", 0.1
+                return "", 0.1
             if "-j" in cmd and "SubmitLine" in " ".join(cmd):   # the submit line of one job
                 jid = cmd[cmd.index("-j") + 1]
                 for s in self.spec:
@@ -665,6 +674,7 @@ class Slurm:
         self.b, self.user = backend, user
         self.timeout, self.gpu_timeout, self.action_timeout = timeout, gpu_timeout, action_timeout
         self._hosts: Dict[str, List[str]] = {}
+        self._sacct_log_paths_supported: Optional[bool] = None
 
     def jobs(self) -> List[Job]:
         out, _ = self.b.run(["squeue", "-u", self.user, "-h", "-o", JOB_FMT], self.timeout)
@@ -727,6 +737,59 @@ class Slurm:
     def details(self, jid: str) -> Dict[str, str]:
         out, _ = self.b.run(["scontrol", "show", "job", "-o", jid], self.timeout)
         return parse_kv(out)
+
+    def historical_details(self, jid: str) -> Dict[str, str]:
+        """Read the selected accounting record's exact log paths, when Slurm stores them.
+
+        Older Slurm versions lack StdOut/StdErr accounting columns. Discover that
+        lazily, without adding incompatible fields to the regular history query
+        or repeatedly submitting an unsupported command for each selected job.
+        JobIDRaw preserves an array task's allocation ID for the %j filename token.
+        """
+        unsupported = "this Slurm version does not expose historical stdout/stderr paths through sacct"
+        if self._sacct_log_paths_supported is False:
+            return {"JobId": jid, "LogPathError": unsupported}
+        try:
+            out, _ = self.b.run(["sacct", "-j", jid, "-X", "-S", "1970-01-01", "-n", "-P", "-o", SACCT_LOG_FIELDS], self.timeout)
+        except CommandError as exc:
+            message = str(exc).lower()
+            if "invalid field" in message and ("stdout" in message or "stderr" in message):
+                self._sacct_log_paths_supported = False
+                return {"JobId": jid, "LogPathError": unsupported}
+            raise
+        self._sacct_log_paths_supported = True
+        if len(out) > MAX_LOG_DETAIL_BYTES or len(out.encode("utf-8")) > MAX_LOG_DETAIL_BYTES:
+            raise CommandError("historical log-path accounting reply exceeds the 1 MiB inspection limit")
+        matches = []
+        for line in out.splitlines():
+            fields = line.split("|")
+            if len(fields) == 8 and fields[-1] == "":
+                fields.pop()
+            # Array parents, siblings, and batch/extern steps must never supply
+            # the selected task's logs. Only the exact parent accounting row does.
+            if fields[0] != jid:
+                continue
+            matches.append(fields)
+            if len(matches) > 1:
+                return {"JobId": jid, "LogPathError": "multiple accounting records match the selected job ID; log paths are ambiguous"}
+        if not matches:
+            return {"JobId": jid, "LogPathError": "the selected job has no matching log-path accounting record"}
+        fields = matches[0]
+        # A literal delimiter in a path cannot be disambiguated in -P output.
+        if len(fields) != 7:
+            return {"JobId": jid, "LogPathError": "the selected job has an ambiguous or incomplete log-path accounting record"}
+        if any(len(value.encode("utf-8")) > 4096 for value in fields):
+            return {"JobId": jid, "LogPathError": "the selected job has an oversized log-path accounting field"}
+        result = {"JobId": jid, "LogPathSource": "sacct"}
+        for key, value in zip(("JobIDRaw", "JobName", "WorkDir", "StdOut", "StdErr", "User"), fields[1:7]):
+            if value and value.lower() not in ("unknown", "n/a", "(null)", "none"):
+                result[key] = value
+        array = re.fullmatch(r"(\d+)_(\d+)", jid)
+        if array:
+            result["ArrayJobId"], result["ArrayTaskId"] = array.groups()
+        if not result.get("StdOut") and not result.get("StdErr"):
+            result["LogPathError"] = "Slurm accounting has no stdout/stderr paths for this job"
+        return result
 
     def finished(self, days: float) -> List[Finished]:
         out, _ = self.b.run(["sacct", "-u", self.user, "-n", "-P", "-S", f"now-{int(days * 24)}hours", "-o", SACCT_FIELDS], max(self.timeout, 20.0))

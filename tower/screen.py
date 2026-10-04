@@ -174,6 +174,8 @@ def run_curses(app, views, sampler, store, actions, cfg):
             pass
         stdscr.timeout(200)
         stdscr.keypad(True)
+        if hasattr(curses, "set_escdelay") and "ESCDELAY" not in os.environ:
+            curses.set_escdelay(200)
         try:
             curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
             curses.mouseinterval(0)
@@ -230,7 +232,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
                     app.click(my, mx, hits, button="right")
                 elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
                     app.click(my, mx, hits, button="left", shift=shift)
-                    if bstate & curses.BUTTON1_DOUBLE_CLICKED and app.tab in ("jobs", "history"):
+                    if bstate & curses.BUTTON1_DOUBLE_CLICKED and (app.tab in ("jobs", "history") or (app.tab == "log" and app.logs.browser)):
                         app.handle("enter")
                 elif bstate & getattr(curses, "BUTTON4_PRESSED", 0):
                     for _ in range(3 if app.tab == "log" else 1):
@@ -242,9 +244,8 @@ def run_curses(app, views, sampler, store, actions, cfg):
             app.handle(name)
             if getattr(app, "want_less", False):
                 app.want_less = False
-                j = app.selected_job()
                 files = views.files
-                path = stdout_path(j, snap["details"].get(j.id, {}), files) if j else ""
+                path = views.pager_path(store.snapshot(), app)
                 if path and files.exists(path):
                     curses.endwin()
                     try:

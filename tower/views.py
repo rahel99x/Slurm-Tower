@@ -47,10 +47,39 @@ def tail_lines(path: str, n: int, max_bytes: int = 131072, files=None) -> List[s
     return [l.replace("\t", "    ") for l in lines[-n:]]
 
 
-def stdout_path(job: Job, kv: dict, files=None, which: str = "StdOut") -> str:
+def stdout_path(job, kv: dict, files=None, which: str = "StdOut") -> str:
     p = kv.get(which, "") if kv else ""
-    if p:
+    if p and p.lower() not in ("(null)", "n/a", "unknown", "none"):
+        # Accounting can retain an unexpanded sbatch filename pattern. Array
+        # %j is the allocation's raw ID, while %A/%a identify parent and task.
+        array = re.fullmatch(r"(\d+)_(\d+)", job.id)
+        raw_id = kv.get("JobIDRaw") or (job.id if not array else "")
+        user = kv.get("User", "") or kv.get("UserId", "").split("(", 1)[0] or getattr(job, "user", "")
+        values = {"j": raw_id, "A": kv.get("ArrayJobId") or (array[1] if array else raw_id),
+                  "a": kv.get("ArrayTaskId") or (array[2] if array else "4294967294"),
+                  "x": kv.get("JobName") or job.name, "u": user, "%": "%"}
+        unresolved = False
+        def expand(match):
+            nonlocal unresolved
+            width, token = match.groups()
+            value = values.get(token, "")
+            if not value or (width and (token not in ("j", "A", "a") or len(width) > 16 or int(width) > 10)):
+                unresolved = True
+                return ""
+            return str(value).zfill(int(width or 0))
+        if kv.get("LogPathSource") == "sacct":
+            p = re.sub(r"%([0-9]*)([A-Za-z%])", expand, p)
+        if unresolved:
+            return ""
+        if not os.path.isabs(p):
+            wd = kv.get("WorkDir") or getattr(job, "workdir", "")
+            if wd and os.path.isabs(wd) and wd.lower() not in ("(null)", "n/a", "unknown", "none"):
+                p = os.path.join(wd, p)
+            elif isinstance(job, Finished) or (files is not None and files.remote):
+                return ""
         return p
+    if isinstance(job, Finished):
+        return ""
     if files is not None and files.remote:
         return ""
     guess = os.path.join("logs", f"{job.name}-{job.id}.{'err' if which == 'StdErr' else 'out'}")
@@ -289,8 +318,8 @@ class Views:
                      ("Pending", str(sum(j.pending for j in jobs)), "yellow"), ("Running", str(len(running)), "green")]
         elif app.tab == "log":
             jid = app.log_job or app.selected_id
-            job = next((j for j in jobs if j.id == jid), None)
-            items = [("Job", jid or "select one", "cyan"), ("Stream", "following" if app.logs.following else "paused", "green" if app.logs.following else "yellow"),
+            job = app.log_target(snap)
+            items = [("Job", jid or "select one", "cyan"), ("Stream", "files" if app.logs.browser else "following" if app.logs.following else "paused", "green" if app.logs.following else "yellow"),
                      ("State", job.state.lower() if job else "waiting", "cyan"), ("Search", app.logs.search or "off", "magenta")]
         elif app.tab == "sources":
             enabled = [h for h in health if h.enabled]
@@ -326,8 +355,9 @@ class Views:
         # Keep help and quit discoverable even when the page has many shortcuts.
         primary = {
             "jobs": f"{k('up')}/{k('down')} select  {k('mark')} mark  {k('details')} details  {k('log')} log  {k('filter')} filter",
-            "history": f"{k('up')}/{k('down')} select  {k('details')} series  {k('sort')} sort  {k('filter')} filter",
-            "log": f"{k('up')}/{k('down')} scroll  {k('follow')} follow  {k('filter')} search  {k('wrap')} wrap  {k('stderr')} stderr",
+            "history": f"{k('up')}/{k('down')} select  {k('log')} log  {k('details')} series  {k('sort')} sort  {k('filter')} filter",
+            "log": (f"{k('up')}/{k('down')} files  Enter open  Esc back  {k('filter')} filter" if app.logs.browser else
+                    f"{k('up')}/{k('down')} scroll  {k('log_files')} files  {k('stderr')} stderr  {k('filter')} search" + ("  Esc files" if app.logs.browse_return else "")),
             "sources": f"{k('up')}/{k('down')} select  {k('source_toggle')} toggle  {k('refresh')} refresh",
             "analytics": f"{k('view_prev')}/{k('view_next')} view  {k('up')}/{k('down')} job  {k('days_more')}/{k('days_less')} days",
             "research": f"{k('view_prev')}/{k('view_next')} view  {k('up')}/{k('down')} job/cohort  PgUp/PgDn scroll  Enter tasks",
@@ -590,14 +620,19 @@ class Views:
         return [(text, style)]
 
     def jobs_tab(self, snap: dict, app, actions, width: int, height: Optional[int]) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
+        self.cfg_tags = snap.get("tags", {})
         rows_d = self.job_rows(snap, app, actions)
         app.visible_ids = [r["id"] for r in rows_d]
+        fin = app.recent_jobs(snap)
+        app.recent_ids = [f.id for f in fin]
+        app.jobs_selection_options = app.jobs_options()
         n = len(rows_d)
-        cur = app.clamp_cursor("jobs", n)
-        app.selected_id = rows_d[cur]["id"] if n else None
-        sel = rows_d[cur]["job"] if n else None
+        ids = app.visible_ids + app.recent_ids
+        cur = app.clamp_cursor("jobs", len(ids))
+        app.selected_id = ids[cur] if ids else None
+        recent_focus = bool(fin) and cur >= n
+        sel = rows_d[cur]["job"] if n and not recent_focus else None
         det = self.selected_panel(snap, sel, width, app.log_lines, app)
-        fin = snap["finished"][:5]
         events = [e for e in snap["events"] if not e.get("old")][-4:] or snap["events"][-4:]
         if height is None:
             trows, _ = table(JOB_COLS, rows_d, width, self.g.ascii, droppable=JOB_DROP, cursor=None, marks=(), mark_char=None)
@@ -610,37 +645,46 @@ class Views:
             out += self.event_rows(events, width)
             return out, []
         budget = height
-        table_h = min(n + 1, max(4, budget // 3)) if n else 2
-        det_h = len(det) + 1 if det else 0
-        fin_h = len(fin) + 2 if fin else 0
-        ev_h = len(events) + 1 if events else 0
-        while table_h + det_h + fin_h + ev_h > budget and (ev_h or fin_h or det_h > 3 or table_h > 2):
-            if ev_h:
-                events = events[:-1]; ev_h = len(events) + 1 if events else 0
-            elif fin_h:
-                fin = fin[:-1]; fin_h = len(fin) + 2 if fin else 0
-            elif det_h > 3:
-                det = det[:-1]; det_h = len(det) + 1
+        vis = min(n, max(1, budget // 3 - 2)) if n else 0
+        fin_vis = len(fin)
+        show_queue = True
+        def used():
+            return ((2 + vis if n else 3) if show_queue else 0) + (len(det) + 1 if det else 0) + \
+                   (fin_vis + 2 if fin_vis else 0) + (len(events) + 1 if events else 0)
+        while used() > budget:
+            if events:
+                events = events[:-1]
+            elif fin_vis > (1 if recent_focus else 0):
+                fin_vis -= 1
+            elif det:
+                det = det[:-1]
+            elif vis > 1:
+                vis -= 1
+            elif recent_focus and show_queue:
+                show_queue = False
             else:
-                table_h -= 1
-        spare = budget - (table_h + det_h + fin_h + ev_h)
-        if spare > 0 and n + 1 > table_h:
-            table_h = min(n + 1, table_h + spare)
-        vis = max(1, table_h - 1)
-        top = app.scroll_to("jobs", cur, vis, n)
+                break
+        if show_queue and n:
+            vis = min(n, vis + max(0, budget - used()))
+        top = app.scroll_to("jobs", min(cur, max(0, n - 1)), max(1, vis), n)
         shown = rows_d[top:top + vis]
         marks = {i for i, r in enumerate(shown) if r["id"] in app.marks}
         for r in shown:
             r["_mark"] = self.g.pin if r.get("pinned") else ""
-        trows, _ = table(JOB_COLS, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=cur - top, marks=marks, mark_char=self.g.mark)
+        trows, _ = table(JOB_COLS, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus else cur - top, marks=marks, mark_char=self.g.mark)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
-        out = [rule(self.g, width, title)] + trows
-        hits = [(1 + i + 1, "job", r["id"]) for i, r in enumerate(shown)]      # rule + header offset
-        if not rows_d:
+        out = [rule(self.g, width, title)] + trows if show_queue else []
+        hits = [(2 + i, "job", r["id"]) for i, r in enumerate(shown)] if show_queue else []
+        if show_queue and not rows_d:
             out.append([("   no jobs match the filter; Esc clears it" if app.filter else "   Your queue is clear. New jobs appear here automatically.", "dim")])
         if det:
             out += [rule(self.g, width, "selected")] + det
-        out += self.finished_rows(fin, width, "recent")
+        if fin_vis:
+            recent_cur = cur - n if recent_focus else 0
+            fin_top = app.scroll_to("recent", recent_cur, fin_vis, len(fin))
+            recent_shown = fin[fin_top:fin_top + fin_vis]
+            hits += [(len(out) + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
+            out += self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus else None)
         out += self.event_rows(events, width)
         return out, hits
 
@@ -668,18 +712,11 @@ class Views:
 
     def history_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         self.cfg_tags = snap.get("tags", {})
-        fin = list(snap["finished"])
+        fin = app.history_jobs(snap)
         key, rev = app.sort.get("history", "end"), app.reverse.get("history", False)
-        keyfn = {"end": lambda f: f.end, "name": lambda f: (f.name, f.end), "state": lambda f: (f.state, f.end), "elapsed": lambda f: secs(f.elapsed) or 0,
-                 "cpu_eff": lambda f: -1 if f.cpu_eff is None else f.cpu_eff, "mem_eff": lambda f: -1 if f.mem_eff is None else f.mem_eff}[key]
-        fin.sort(key=keyfn, reverse=(key == "end") != rev)
-        flt = app.filter.lower()
-        if flt and flt.startswith("#"):
-            fin = [f for f in fin if flt[1:] in [t.lower() for t in self.cfg_tags.get(f.id, {}).get("tags", [])]]
-        elif flt:
-            fin = [f for f in fin if flt in f.name.lower() or flt in f.id.lower() or flt in f.state.lower() or flt in f.partition.lower()]
         n = len(fin)
         cur = app.clamp_cursor("history", n)
+        app.selected_id = fin[cur].id if fin else None
         counts: Dict[str, int] = {}
         for f in fin:
             counts[f.state] = counts.get(f.state, 0) + 1
@@ -948,6 +985,7 @@ class Views:
         acc = snap.get("account", {})
         out: List[Row] = []
         if not jobs:
+            app.group_ids, app.selected_id = [], None
             out.append(rule(g, width, "group"))
             out.append([("   squeue -A has not answered yet (or the account is unknown: --account, or [account] in the config)" if not acc else "   nobody in the account has jobs", "dim")])
             return out, []
@@ -997,6 +1035,7 @@ class Views:
         n = len(rows)
         app.group_ids = [r["id"] for r in rows]
         cur = app.clamp_cursor("group", n)
+        app.selected_id = None
         if n:
             app.selected_id = app.group_ids[cur]
         if height is None:
@@ -1057,6 +1096,7 @@ class Views:
                 app.dep_ids.append(jid)
                 k += 1
             out.append([("", "")])
+        app.selected_id = None
         if app.dep_ids and cur < len(app.dep_ids):
             sel = app.dep_ids[cur]
             app.selected_id = sel
@@ -1086,22 +1126,23 @@ class Views:
         cache = app.logs.candidates.get(j.id)
         if cache and _t.time() - cache[0] < 30:
             return cache[1]
-        base = stdout_path(j, kv, self.files) or stdout_path(j, kv, self.files, "StdErr")
-        out: List[str] = []
-        if base:
-            d = os.path.dirname(base)
-            root = j.id.split("_")[0]
-            try:
-                names = self.files.listdir(d)
-            except OSError:
-                names = []
-            out = sorted(os.path.join(d, n) for n in names if root in n and os.path.join(d, n) not in (stdout_path(j, kv, self.files), stdout_path(j, kv, self.files, "StdErr")))
+        from .log_catalog import build_catalog
+        streams = (stdout_path(j, kv, self.files), stdout_path(j, kv, self.files, "StdErr"))
+        result = build_catalog(j.id, *streams, files=self.files)
+        out = sorted(entry["path"] for entry in result["entries"] if entry["path"] not in streams)
         app.logs.candidates[j.id] = (_t.time(), out)
         return out
 
     def log_path(self, app, j: Job, kv: dict) -> Tuple[str, str]:
         """(the file the Log tab shows, a label): stdout, stderr, or one of the other files."""
-        cands = self.log_candidates(app, j, kv)
+        if app.logs.entry:
+            entry = app.logs.entry
+            if entry["path"] == stdout_path(j, kv, self.files):
+                app.logs.which = "out"
+            elif entry["path"] == stdout_path(j, kv, self.files, "StdErr"):
+                app.logs.which = "err"
+            return entry["path"], entry["label"]
+        cands = app.logs.candidates.get(j.id, (0, []))[1]
         if app.logs.file_index > 0 and cands:
             i = (app.logs.file_index - 1) % len(cands)
             return cands[i], f"file {i + 2}/{len(cands) + 1}"
@@ -1112,12 +1153,97 @@ class Views:
             return err, "stderr (the same file as stdout)" if same else "stderr"
         return stdout_path(j, kv, self.files), "stdout"
 
+    def log_manifest_path(self, app, job, kv):
+        settings = self.cfg["logs"]
+        if not isinstance(settings, dict) or not isinstance(settings.get("manifest_file", ""), str):
+            raise ValueError("logs.manifest_file must be a path string")
+        path = settings.get("manifest_file", "")
+        if not path:
+            return ""
+        path = path.replace("{job_id}", job.id)
+        if os.path.isabs(path):
+            return path
+        research = app.research.settings if app.research else self.cfg["research"]
+        explicit = research.get("workdir", "")
+        wd = explicit or kv.get("WorkDir") or getattr(job, "workdir", "")
+        if not wd or (self.files.remote and not os.path.isabs(wd)) or (not explicit and not os.path.isabs(wd)):
+            raise ValueError("Select --workdir or a known job WorkDir to resolve logs.manifest_file")
+        return os.path.abspath(os.path.join(wd, path)) if not self.files.remote else os.path.normpath(os.path.join(wd, path))
+
+    def pager_path(self, snap, app):
+        """The pager uses the same selected file as the Log view, including stderr and custom locations."""
+        job = app.log_target(snap) if app.tab == "log" else app.job_record(app.selected_id, snap)
+        if job is None:
+            return ""
+        details = snap["details"].get(job.id, {})
+        return self.log_path(app, job, details)[0] if app.tab == "log" else stdout_path(job, details, self.files)
+
+    def log_browser(self, snap, app, job, kv, width, height):
+        from .log_catalog import LogCatalog
+        from .research import clean
+        if app.logs.catalog is None:
+            app.logs.catalog = LogCatalog(self.files)
+        messages = []
+        try:
+            manifest = self.log_manifest_path(app, job, kv)
+        except ValueError as exc:
+            manifest = ""
+            messages.append(str(exc))
+        result = app.logs.catalog.request(job.id, stdout_path(job, kv, self.files),
+                    stdout_path(job, kv, self.files, "StdErr"), manifest_file=manifest,
+                    worker=app.research, wait=height is None)
+        previous = app.log_entries()
+        selected_id = previous[app.logs.browser_cursor]["id"] if 0 <= app.logs.browser_cursor < len(previous) else None
+        grouped = {}
+        for entry in result.get("entries", []):
+            grouped.setdefault(entry["group"], []).append(entry)
+        app.logs.entries = [entry for group in grouped.values() for entry in group]
+        entries = app.log_entries()
+        if selected_id in [entry["id"] for entry in entries]:
+            app.logs.browser_cursor = next(i for i, entry in enumerate(entries) if entry["id"] == selected_id)
+        messages += result.get("messages", [])
+        app.logs.browser_cursor = max(0, min(app.logs.browser_cursor, max(0, len(entries) - 1)))
+        prefix = [rule(self.g, width, clean(f"{job.id} {job.name} {self.g.dot} log files", self.g.ascii)),
+                  [(f" {len(entries)} of {len(app.logs.entries)} files {self.g.dot} Enter opens {self.g.dot} Esc returns {self.g.dot} / filters", "dim")]]
+        for message in messages[:2]:
+            prefix.append([(" " + cut(clean(message, self.g.ascii), max(0, width - 1), self.g.ascii), "yellow")])
+        if not entries:
+            message = "Waiting for the background log index reader." if result.get("status") == "loading" else "No matching log files. Declare extra locations in logs.json; r refreshes."
+            return prefix + [[(" " + message, "dim")]], []
+        groups = {}
+        for index, entry in enumerate(entries):
+            groups.setdefault(entry["group"], []).append((index, entry))
+        body, hits, selected_row = [], [], 0
+        for group, items in groups.items():
+            body.append([(" " + clean(group, self.g.ascii), "cyan+bold")])
+            for index, entry in items:
+                selected = index == app.logs.browser_cursor
+                if selected:
+                    selected_row = len(body)
+                hits.extend([(len(body), "log_file", entry["id"]), (len(body) + 1, "log_file", entry["id"])])
+                marker = "> " if self.g.ascii else "▸ "
+                body.append([("   " + (marker if selected else "  ") + clean(entry["label"], self.g.ascii), "rev+bold" if selected else "")])
+                body.append([("     " + clean(entry["path"], self.g.ascii), "dim")])
+        if height is None:
+            return prefix + body, [(y + len(prefix), kind, key) for y, kind, key in hits]
+        visible = max(1, height - len(prefix))
+        top = app.logs.browser_top
+        if selected_row < top:
+            top = selected_row
+        if selected_row + 1 >= top + visible:
+            top = max(0, selected_row + 2 - visible)
+        top = max(0, min(top, max(0, len(body) - visible)))
+        app.logs.browser_top, app.logs.browser_page = top, max(1, visible // 2)
+        return prefix + body[top:top + visible], [(y - top + len(prefix), kind, key) for y, kind, key in hits if top <= y < top + visible]
+
     def log_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
         jid = app.log_job or app.selected_id
-        j = next((x for x in snap["jobs"] if x.id == jid), None)
+        j = app.log_target(snap)
         if j is None:
-            return [rule(self.g, width, "log"), [("   select a job on the Jobs tab first", "dim")]], []
+            return [rule(self.g, width, "log"), [("   select a job in Jobs, Recents, or History, then press l", "dim")]], []
         kv = snap["details"].get(j.id, {})
+        if app.logs.browser:
+            return self.log_browser(snap, app, j, kv, width, height)
         path, label = self.log_path(app, j, kv)
         g = self.g
         page = max(1, (height - 2) if height else 40)       # the rule and the status line, then the page
@@ -1127,7 +1253,10 @@ class Views:
         head = f"{j.id} {j.name} {g.dot} {label}" + (f" {g.dot} o: {len(cands)} other file{'s' if len(cands) != 1 else ''}" if cands else "") + f" {g.dot} {path or 'path not known yet'}"
         out = [rule(g, width, cut(head, width - 8, g.ascii))]
         if buf is None:
-            return out + [[("   the stdout path comes from scontrol show job; it appears within a few seconds", "dim")]], []
+            app.logs.path, app.logs.match = "", None
+            message = kv.get("LogPathError") or ("Log path unavailable for this finished job; checking its recorded scheduler/accounting paths."
+                                                 if isinstance(j, Finished) else "Log path not known yet; checking scontrol show job.")
+            return out + [[("   " + message, "dim")]], []
         if buf.error:
             return out + [[(f"   {buf.error}", "red")]], []
         lines, start = buf.window(app.logs.top, page)
@@ -1192,7 +1321,7 @@ class Views:
             body = body[-page:] if app.logs.following else body[:page]
         out += body
         if not lines:
-            out.append([("   No output yet. This view updates as the job writes to its log.", "dim")])
+            out.append([("   This log file is empty." if isinstance(j, Finished) else "   No output yet. This view updates as the job writes to its log.", "dim")])
         return out, []
 
     # ---- sources tab ------------------------------------------------------------------------------
@@ -1658,7 +1787,8 @@ class Views:
                     (k("steps"), "details with the steps: sstat per step of a running job (slowest rank, peak memory), sacct -j of a finished one"),
                     (k("cancel"), "cancel (asks first)"), (k("hold"), "hold a pending job, release a held one (asks first)"),
                     (k("requeue"), "requeue a running job (asks first)"), (k("top"), "scontrol top: put a pending job first among your own"),
-                    (k("log"), "the Log tab for the selected job"), (k("less"), "its stdout in less (Shift-F follows, q returns)"),
+                    (k("log"), "the selected job's logs from Jobs, Recents or History"), (k("less"), "the displayed log in less; stdout from a job row (q returns)"),
+                    (k("log_files"), "Log files: grouped browser across scheduler and declared locations; Enter opens, Esc returns, / filters"),
                     (f"{k('follow')} {k('filter')} {k('find_next')} {k('find_prev')}", "Log tab: pause / follow; search (a regular expression, highlighted); next / previous match"),
                     (f"{k('wrap')} {k('stderr')} {k('log_file')} {k('bookmark')} {k('bookmark_next')}", "Log tab: wrap long lines; stdout / stderr; cycle the job's other files (array tasks, steps, the GPU trace); bookmark the current line; jump to the next bookmark"),
                     (f"{k('replay_pause')} {k('replay_back')} {k('replay_fwd')} {k('replay_slower')} {k('replay_faster')}", "replay (--replay FILE): pause / play; 60 s back / forward; half / double the speed (:replay seek 10:30, :replay seek 50%)"),

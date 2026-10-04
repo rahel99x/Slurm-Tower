@@ -297,6 +297,31 @@ For scheduled collection, use absolute paths to the venv's Python, the checkout'
 `tower` directory, and your config. The interactive UI needs a terminal; use
 `--once`, `--json`, or `--report` in automation. No background service is required.
 
+### Active and historical job logs
+
+Select an active Jobs row, a **Recents** row, or any History job and press `l`.
+Logs remains attached to that exact job, including failed jobs. Press `O` for
+the grouped file list; arrows/PgUp/PgDn/Home/End select an entry and Enter opens
+it. Esc returns to the list, then closes the list. Lowercase `o` cycles files;
+`e` switches scheduler stdout/stderr.
+
+For multiple application/worker logs or files in other locations, follow the
+[per-run log-index standard](PROJECT_STANDARD.md#log-locations-logsjson).
+The copyable reporter creates `logs.json`; its `register_log` helper adds exact
+relative or absolute files with stable groups and labels. Configure
+`"logs": {"manifest_file": "logs.json"}` and select the concrete run directory
+with `--workdir /absolute/project/runs/attempt-id`. Without a workdir override,
+a relative index filename uses the selected job's actual scheduler WorkDir.
+Relative entry paths resolve from the index directory, including explicit
+sibling paths. Absolute entries retain their source-machine meaning when moved.
+Tower lists actual stdout/stderr and bounded matching names from both output
+directories alongside the index; it performs no recursive filesystem scan.
+
+Some Slurm accounting installations do not retain historical stdout/stderr or
+WorkDir. Tower keeps controller paths it actually observed, reports absent
+evidence, and never substitutes a running job. Preserve failed-run files and
+indexes, and bind their run directory explicitly when scheduler metadata is gone.
+
 ## 6. Troubleshoot the specific failure
 
 | Symptom | Next step |
@@ -309,6 +334,7 @@ For scheduled collection, use absolute paths to the venv's Python, the checkout'
 | SSH check fails | Verify normal SSH, keys/MFA, host keys, network access, and remote noninteractive `PATH`. |
 | TOML fails on Python 3.10 | Use JSON config or Python 3.11+. |
 | Blank history or budget | Check Sources; `sacct`, `sreport`, or `sacctmgr` may be unavailable or restricted. |
+| Historical logs have no path | Select the job's actual run directory with `--workdir`; configure its `logs.manifest_file` index. Accounting may not retain old paths. |
 | Missing GPU metrics | Start with `--no-gpu`; enable sampling only for allocated GPUs where site policy permits. |
 | Terminal looks broken | Check `$TERM`, widen the terminal, and try `--ascii --no-color`. |
 | Blocks or braille look misaligned | Use a UTF-8 locale and a monospace terminal font with those glyphs, or use `--ascii`. |

@@ -101,9 +101,16 @@
           "minLength": 1,
           "maxLength": 4096,
           "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$"
+        },
+        "log_index": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact relative log index path, normally logs.json. Tower reads its tower.logs/v1 entries when logs.manifest_file is explicitly bound; it does not follow run.json paths automatically."
         }
       },
-      "description": "All paths resolve relative to this run directory. Defaults in the guide are metrics.jsonl, summary.json, outputs, logs, passports. No recursive or glob discovery is implied."
+      "description": "All paths resolve relative to this run directory. Defaults in the guide are metrics.jsonl, summary.json, logs.json (log_index), outputs, logs, passports. No recursive or glob discovery is implied."
     },
     "provenance": {
       "type": "object",

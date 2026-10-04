@@ -10,6 +10,7 @@ files or require a JSON Schema package.
 | --- | --- | --- |
 | [metrics.v1.schema.json](metrics.v1.schema.json) | Each object in `runs/<run_id>/metrics.jsonl` | Native incremental `MetricReader`; Experiment view |
 | [run.v1.schema.json](run.v1.schema.json) | `runs/<run_id>/run.json` | Project-owned descriptive manifest; explicit path binding is required |
+| [logs.v1.schema.json](logs.v1.schema.json) | `runs/<run_id>/logs.json` | Native grouped Logs catalog, bound by `logs.manifest_file` |
 | [summary.v1.schema.json](summary.v1.schema.json) | `runs/<run_id>/summary.json` | Flat fields consumed after aggregation into a planning bundle |
 | [output-contract.v1.schema.json](output-contract.v1.schema.json) | `.tower/contracts/outputs.v1.json` | Native artifact contract loader and bounded validation |
 | [planning.v1.schema.json](planning.v1.schema.json) | `reports/planning.json` | Native planning-file views and file-based analysis commands |
@@ -21,6 +22,8 @@ recipes retain their native `{"version": 1, "kind": "tower.workflow"}` or
 `{"version": 1, "kind": "tower.planning"}`. A run manifest and summary use the
 distinct `schema` markers `tower.run/v1` and `tower.summary/v1`; metric records
 carry no version or schema marker.
+The separate log index uses `tower.logs/v1`; inventory `paths.log_index` describes
+its location, while native `logs.manifest_file` binds it to the selected workdir.
 
 `run.json` and scientific `results` are project-owned metadata. Tower 2.3 does
 not scan for manifests, follow their paths, display arbitrary result objects, or
@@ -93,6 +96,13 @@ also check semantics and bounded I/O. Both apply to portable projects:
   no symlinks or glob expansion. Native validation checks unique paths,
   ordered min/max sizes or row counts, and conflicting exact row counts.
   Passing the contract schema does not mean the outputs exist or passed checks.
+- A log index stays within 256 KiB and 256 entries. Native validation checks
+  unique entry IDs and actual selected `job_id` when recorded. Relative paths
+  resolve from the index directory, including explicitly named sibling files;
+  exact absolute paths may point to other locations. Neither expands globs.
+  Catalog construction deduplicates normalized paths and shows groups/labels;
+  schema validation alone does not establish file availability. These read-only
+  log paths have a different policy from confined artifact-contract outputs.
 - Workflow validation checks unique IDs, known dependencies, no cycles, at
   most 4,096 edges, and `lower <= estimate <= upper`. Resource/topology and
   walltime checks still apply when scripts are prepared.
@@ -107,7 +117,7 @@ also check semantics and bounded I/O. Both apply to portable projects:
 
 Local native file readers reject symlinks/devices and detect files that change
 while being read. Producers should append complete metric records and replace
-manifests, summaries, and aggregates atomically. Keep logs, credentials,
+manifests, log indexes, summaries, and aggregates atomically. Keep logs, credentials,
 datasets, personal shell configuration, and generated run outputs out of the
 public project template.
 

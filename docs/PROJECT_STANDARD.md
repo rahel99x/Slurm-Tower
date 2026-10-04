@@ -29,6 +29,7 @@ my-project/
 ├── runs/
 │   └── <run_id>/                one execution attempt, created exclusively
 │       ├── run.json             identity, lifecycle, and declared file paths
+│       ├── logs.json            grouped index of exact log locations
 │       ├── metrics.jsonl        live numeric measurements and progress
 │       ├── summary.json         final measurements and scientific results
 │       ├── outputs/             tables, models, checkpoints, other results
@@ -84,6 +85,8 @@ Use relative, forward-slash paths in the shared project files. Their bases are:
 | `run.json.provenance.script` | The project root |
 | Output contract entries | The run root passed as `--workdir` or to `validate` |
 | Relative `research.metrics_file` | `research.workdir`, including a CLI override |
+| Relative `logs.manifest_file` | Selected `research.workdir` (`--workdir`), otherwise the selected job's actual WorkDir |
+| Relative `logs.json` entries | The directory containing that log index |
 | Contract/config/planning filenames supplied to Tower | The shell's current directory |
 | A recipe's relative batch script | The explicit planning workdir |
 
@@ -92,7 +95,7 @@ when passing `--workdir`. An artifact contract names exact files, with no globs,
 `..`, absolute paths, or symlink traversal.
 
 Choose a run explicitly. Tower supports `{job_id}` substitution in configured
-metric paths; it does not expand that token in an artifact workdir or discover
+metric and log-index paths; it does not expand that token in an artifact workdir or discover
 an active run from `run.json`. For a project whose directory names are actual
 job IDs, `runs/{job_id}/metrics.jsonl` can follow the selected job with the
 project root as the metric workdir. To validate that job's outputs, select its
@@ -109,13 +112,96 @@ concrete run directory as the artifact workdir.
 | `reports/planning.json` | Explicit aggregation step | Resources, Tradeoffs, Scaling, and optional captured scheduler/workflow evidence |
 | Recipe JSON | Project author | Scaling/workflow analysis and script preflight |
 | Passport JSON | Tower's provenance API | Passport view and immutable evidence comparisons |
-| Job stdout/stderr | Application and batch launcher | Log/Evidence views use the scheduler's reported paths |
+| `logs.json` | Application's run coordinator | Native grouped Logs file browser; explicitly bound through `logs.manifest_file` |
+| Job stdout/stderr | Application and batch launcher | Logs uses paths reported by Slurm or retained from actual controller evidence |
 | `run.json` | Application | Project-owned identity and inventory; declared artifact checks can validate its presence/keys |
 
 `run.json` and `summary.json` are project conventions. Tower reads metrics
 directly, checks declared files through contracts, and analyzes summaries after
 they are placed in a supported planning bundle. The template supplies that
 explicit aggregation step.
+
+## Log locations: `logs.json`
+
+Keep a portable index beside each run's `run.json`. The index describes log
+locations rather than copying or merging their contents. For example:
+
+```json
+{
+  "schema": "tower.logs/v1",
+  "run_id": "fit-20261004T120000Z-a1",
+  "job_id": "12345",
+  "logs": [
+    {"id": "application.stdout", "path": "logs/stdout.log", "label": "Application stdout", "group": "Application"},
+    {"id": "application.stderr", "path": "logs/stderr.log", "label": "Application stderr", "group": "Application"},
+    {"id": "worker.rank-0", "path": "logs/rank-0.log", "label": "Rank 0", "group": "Workers"},
+    {"id": "batch.stderr", "path": "/scratch/my-project/batch/12345.err", "label": "Batch stderr", "group": "Scheduler"}
+  ]
+}
+```
+
+Use the actual `run_id` and scheduler `job_id`, or omit `job_id` for a local run.
+When `job_id` is present, Tower checks it against the selected job; a mismatch
+does not attach another job's logs. `run_id` is descriptive project identity.
+Declare `"log_index": "logs.json"` under `run.json.paths`; the template does so
+automatically. Tower still requires the explicit native configuration binding
+and does not follow the inventory's paths automatically:
+
+```json
+{"logs":{"manifest_file":"logs.json"}}
+```
+
+With `--workdir "$RUN_DIR"`, that index is read from the selected run. Otherwise
+a relative configured index uses the selected scheduler job's actual WorkDir.
+Use `runs/{job_id}/logs.json` from a known project workdir when run directories
+use real scheduler IDs. If no real WorkDir is available, bind the concrete run
+directory rather than relying on the shell's current directory.
+
+| Index field | Rule |
+| --- | --- |
+| `schema` | Exactly `tower.logs/v1` |
+| `logs` | Required array, at most 256 exact file entries |
+| Entry `id` | Unique stable ASCII ID, 1–128 letters/digits/`.`/`_`/`-`, starting with a letter or digit |
+| Entry `path` | Required nonempty printable path, at most 4,096 characters; no globs or backslashes |
+| Entry `label` / `group` | Optional printable text, at most 160 characters each |
+| Entry `description` | Optional printable text, at most 512 characters |
+| `run_id` / `job_id` | Optional actual identities; use the selected job's exact scheduler ID |
+
+Relative entry paths resolve from the **index directory**. Explicit `../`
+locations can name sibling logs; unlike artifact-contract outputs, read-only
+log attachments are not confined to the run root. Prefer relative paths within
+the shared bundle. An absolute path may refer to an actual external file, but
+keeps its source-machine meaning when the project moves. Copy that file into
+the bundle and update its entry, or rebind the external path explicitly.
+
+Publish UTF-8 JSON atomically, with finite values and unique keys, within the
+256 KiB native read budget. Use one coordinator to register entries. The template's
+`register_log(run_dir, id, path, label=..., group=..., description=...)` adds one
+location atomically and refuses duplicate IDs or normalized paths. It never
+reads log contents or scans directories. A declared log may not exist yet;
+Tower reports missing files. Existing local files must be regular files with
+real directory ancestors. Do not point entries at symlinks, pipes, or devices.
+
+In **Jobs**, move to an active row or a **Recents** row and press `l`. In
+**History**, select a job in any state and press `l`. Logs stays attached to
+that exact job rather than switching to a currently running one. Press `O` to
+open the grouped file list, move with arrows/PgUp/PgDn/Home/End, and press Enter
+to open a file. Esc returns from the file to its list, then closes the list;
+select another entry without changing jobs. Lowercase `o` remains quick file
+cycling, and `e` switches scheduler stdout/stderr.
+
+The list combines scheduler stdout/stderr, bounded job-ID-matching files in
+those output directories, and explicit index entries. Different directories
+and groups stay visible. Duplicate resolved locations produce one catalog
+entry. There is no recursive filesystem scan. Catalog work is cached and
+performed by the shared background worker to keep terminal input responsive.
+
+Older Slurm accounting installations may omit stdout/stderr or WorkDir for
+finished jobs. Tower uses actual retained controller paths when available and
+reports missing evidence otherwise. A concrete run workdir and its index allow
+project-owned logs to remain accessible even after scheduler metadata expires.
+Preserve indexes and failure logs when retaining a failed, cancelled, timed-out,
+or otherwise incomplete attempt.
 
 ## Live metrics: `metrics.jsonl`
 
@@ -315,6 +401,8 @@ Example contract:
   "outputs": [
     {"path": "run.json", "required": true, "format": "json", "max_bytes": 65536,
      "required_keys": ["schema", "run_id", "experiment_id", "attempt", "state"]},
+    {"path": "logs.json", "required": true, "format": "json", "max_bytes": 262144,
+     "required_keys": ["schema", "logs"]},
     {"path": "summary.json", "required": true, "format": "json", "max_bytes": 262144,
      "required_keys": ["schema", "id", "name", "state"]},
     {"path": "metrics.jsonl", "required": true, "format": "text", "min_bytes": 1,
@@ -430,9 +518,10 @@ paths for viewing; preserve the passport's contents and checksum.
 Batch stdout/stderr directories must exist before submission because Slurm
 opens them before application startup. Use precreated run log directories when
 the run ID is known before submission, or a precreated project `logs/` directory
-with Slurm job/task tokens. Tower's Log/Evidence views follow `scontrol`'s actual
-`StdOut`/`StdErr` paths. Your own per-run application logs can be declared in the
-artifact contract as exact text files.
+with Slurm job/task tokens. Tower follows the selected job's actual scheduler
+`StdOut`/`StdErr` paths and the explicitly bound `logs.json` index. Declare
+application logs in that index for browsing, and optionally in the artifact
+contract as exact text files for checks. Preserve failure output in either case.
 
 ## Adoption checklist for every new project
 
@@ -443,6 +532,8 @@ artifact contract as exact text files.
 3. Emit complete, finite JSONL metric records with stable names and units.
 4. Publish actual final measurements/results atomically and retain failures.
 5. Declare exact output files and meaningful bounds/checks in the contract.
+   Index application, worker, and external logs in `logs.json` with stable groups
+   and actual job identity, then verify browsing a retained failed attempt.
 6. Record real allocation counts, request semantics, memory scope, and
    scientifically comparable code/input/parameter identities when known.
 7. Export selected run summaries into a bounded planning bundle for analysis.

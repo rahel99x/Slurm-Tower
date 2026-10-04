@@ -17,6 +17,7 @@ DEFAULTS: Dict[str, Any] = {
     "history_days": 2,                   # sacct window of the history tab
     "log_lines": 8,                      # stdout tail under the selected job
     "log_max_mb": 32,                    # the Log tab keeps the last this many MB of a file in memory (read once, then only what is appended)
+    "logs": {"manifest_file": ""},       # optional per-run log index, relative to the selected workdir
     "gpu_sampling": True,                # nvidia-smi inside the job's allocation
     "bell": False,                       # terminal bell when one of your jobs starts
     "intervals": {                       # seconds between samples of each source
@@ -53,7 +54,7 @@ DEFAULTS: Dict[str, Any] = {
         "up": ["up", "k"], "down": ["down", "j"], "page_up": ["pgup"], "page_down": ["pgdn"], "home": ["home", "g"], "end": ["end", "G"],
         "next_tab": ["tab", "]"], "prev_tab": ["btab", "["], "tab_jobs": ["1"], "tab_cluster": ["2"], "tab_history": ["3"], "tab_nodes": ["4"],
         "tab_log": ["5"], "tab_sources": ["6"], "tab_group": ["8"], "tab_deps": ["9"], "steps": ["i"], "pin": ["p"], "resubmit": ["A"],
-        "wrap": ["w"], "stderr": ["e"], "log_file": ["o"], "bookmark": ["m"], "bookmark_next": ["'"],
+        "wrap": ["w"], "stderr": ["e"], "log_file": ["o"], "log_files": ["O"], "bookmark": ["m"], "bookmark_next": ["'"],
         "replay_pause": ["|"], "replay_back": ["<"], "replay_fwd": [">"], "replay_slower": ["{"], "replay_faster": ["}"],
         "mark": ["space"], "mark_all": ["a"], "unmark_all": ["u"],
         "details": ["enter", "d"], "cancel": ["c"], "hold": ["h"], "requeue": ["R"], "top": ["t"],
@@ -91,6 +92,9 @@ theme = "default"               # default | mono | high | cb (colour-blind safe)
 # ssh_opts = ["-J", "bastion"]
 # plugins = ["~/my-tower-plugins"]      # besides ~/.config/tower/plugins/*.py; each file defines setup(api)
 # record = ""                           # record every command and answer to this file (tower --replay FILE plays it back)
+
+[logs]                          # O opens the selected job's grouped log-file browser
+manifest_file = ""              # optional logs.json index; relative to --workdir or the job's WorkDir
 
 [research]                      # local application files; read only while Research is visible
 metrics_file = ""               # e.g. "runs/{job_id}/metrics.jsonl"

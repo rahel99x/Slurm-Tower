@@ -94,7 +94,14 @@ For your own applications, follow the [project reporting standard](docs/PROJECT_
 It defines a portable run directory, live metrics, final measurements, output
 contracts, and planning exports. Copy the [project template](examples/project-template/README.md)
 to instrument a project with the standard-library reporter; [JSON Schemas](docs/schemas/README.md)
-describe the shared formats.
+describe the shared formats. Each run can publish a grouped `logs.json` index for
+application, worker, and scheduler logs across different locations.
+
+Select a job in Jobs, its **Recents** section, or History and press `l` to open
+that job's logs. In Logs, `O` opens the file list; choose with arrows and Enter.
+Esc returns to the list so you can choose another file. Missing historical
+scheduler paths are reported explicitly; a run's log index can retain access to
+its project-owned files.
 
 | View | Get an answer quickly |
 | --- | --- |

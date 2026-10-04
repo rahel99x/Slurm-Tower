@@ -1156,7 +1156,7 @@ def test_log_extras_wrap_stderr_other_files_and_bookmarks(tmp_path):
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         page = app.logs.page
         body = [L.row_text(r) for r in rows if re.match(r"^[ *]line \d", L.row_text(r))]
-        assert len(body) == page and body[-1].strip() == "line 39" and "o: 2 other files" in L.row_text(rows[3])
+        assert len(body) == page and body[-1].strip() == "line 39" and "O files" in L.row_text(rows[-1])
         # wrap: the long line 7 takes two rows and the page still has `page` rows ending at the last line
         app.handle("home")
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
@@ -1182,6 +1182,7 @@ def test_log_extras_wrap_stderr_other_files_and_bookmarks(tmp_path):
         # the other files of the job: array task and the GPU trace; then stderr (the same file here)
         app.handle("o"); assert app.logs.file_index == 1 and app.message.endswith("gpu-util-12480001.csv")
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        assert "o: 2 other files" in L.row_text(rows[3])
         assert "file 2/3" in L.row_text(rows[3]) and any("2026/10/01 06:00:01.000, 0, 50, 100" in L.row_text(r) for r in rows)
         app.handle("o"); rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         assert "file 3/3" in L.row_text(rows[3]) and any(L.row_text(r).strip() == "task zero" for r in rows)
