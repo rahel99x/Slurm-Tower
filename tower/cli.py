@@ -47,6 +47,8 @@ class Session:
         self.backend, self.files, self.api = backend, files, api
 
     def close(self):
+        from .execution_ui import close
+        close(self.app)
         self.app.save()
         if getattr(self.app, "research", None):
             self.app.research.close()

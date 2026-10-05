@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Tower project-owned run manifest v1",
-  "description": "Descriptive project metadata. Tower 2.3 does not discover or parse this manifest automatically; bind its explicit paths through Tower's existing flags or commands.",
+  "description": "Project execution-attempt inventory. Tower 3.0's explicit project/run picker reads bounded direct runs/<run_id>/run.json inventories and binds the selected attempt's declared reports; it does not globally discover or guess an active run. Existing explicit flags/configuration remain supported.",
   "type": "object",
   "required": [
     "schema",
@@ -107,7 +107,7 @@
           "minLength": 1,
           "maxLength": 4096,
           "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
-          "description": "Exact relative log index path, normally logs.json. Tower reads its tower.logs/v1 entries when logs.manifest_file is explicitly bound; it does not follow run.json paths automatically."
+          "description": "Exact relative log index path, normally logs.json. Tower reads its tower.logs/v1 entries when this execution attempt is explicitly selected through the project/run picker, or when logs.manifest_file is explicitly configured."
         }
       },
       "description": "All paths resolve relative to this run directory. Defaults in the guide are metrics.jsonl, summary.json, logs.json (log_index), outputs, logs, passports. No recursive or glob discovery is implied."

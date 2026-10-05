@@ -130,6 +130,11 @@ Try the full dashboard without contacting the cluster:
 Let the demo run briefly to build sample history, then use `Tab` for the ten pages
 and the left/right arrows for each page's alternate views. `T` cycles themes.
 The `mono` theme keeps the glyphs without colors; `reader` uses plain ASCII text.
+`:theme dark` or `:theme light` selects coordinated terminal surfaces;
+`:theme terminal` retains your terminal's background. `:density compact` suits
+small screens, while `comfortable` and `focused` expose independently scrollable
+Main/Details panels. `Ctrl-W` changes focus and `z` maximizes the focused panel
+on non-Logs pages; `:maximize` is available as a command on Logs too.
 `--no-color` or a nonempty `NO_COLOR` environment variable disables color.
 The interactive curses display uses native truecolor when ncurses and the terminal
 description expose direct colors; otherwise it uses 256 or basic colors.
@@ -293,6 +298,14 @@ review them before sharing and use `--fake` for public examples. The regular
 `--report PATH` command replaces its destination. Choose a unique filename to
 retain older reports. Setup's `--report` never replaces a file.
 
+Inside the interactive application, `:export report` runs on the existing
+background worker. It captures scheduler/UI state when requested, reads project
+files during creation, and publishes the complete ASCII report atomically with
+mode `0600`. Ctrl-A / `:activity` shows status and retains the final path; `c`
+there or `:task cancel` stops between pages and bounded chunks without publishing
+a partial report. Its Log page is a selected 40-line window; use `Y` in Logs for
+the entire original file. Scripted `--report` still waits for completion.
+
 For scheduled collection, use absolute paths to the venv's Python, the checkout's
 `tower` directory, and your config. The interactive UI needs a terminal; use
 `--once`, `--json`, or `--report` in automation. No background service is required.
@@ -381,6 +394,80 @@ adopting them.
 
 ## 6. Troubleshoot the specific failure
 
+### Learn the Tower 3.0 workbench
+
+Start with `tower --fake` to try navigation without scheduler access. Press `?`,
+then `/` and a keyword to search the current page's help; arrows and page keys
+scroll all matches. In `:`, edit anywhere with cursor keys, Tab completes supported
+commands/arguments/paths, and PgUp/PgDn recalls command history. Quote paths with
+spaces. Unicode input preserves actual filenames even with ASCII rendering.
+`Ctrl-P` opens the searchable Research picker, `I` inspects the selected
+job, and `Ctrl-B` returns to the previous location. `:activity` retains results
+and export paths during the session.
+
+For a useful recurring table, open History and enter:
+
+```text
+facet state=FAILED,TIMEOUT
+columns
+savedview save failures
+```
+
+Use Space in the column picker to toggle optional columns. `:savedview load failures`
+restores the table, columns, facets, text filter, sort/direction, and day window.
+`:facet clear` clears field filters. `:layout split 50` and `:layout save work`
+save a preferred density/split/focus arrangement separately from table views.
+
+For a project following the reporting standard, run Tower on CARC and enter:
+
+```text
+project /absolute/project
+run select my-run
+workspace experiment
+dashboard pin loss
+chart loss
+outputs
+```
+
+Select the actual run ID. Discovery reads bounded direct run inventories, not
+the entire project tree; the SSH backend cannot perform this local picker.
+The selected attempt binds its declared reports, log index, contract, and
+verified passport. Runs without a scheduler job still expose their project
+metrics, logs, and outputs. `:run clear` restores previous report settings.
+
+Chart arrows choose samples, `+`/`-` zoom, `[`/`]` pan, and Tab changes metric
+at the nearest available timestamp. `:timeline` links observed transitions,
+phases, and evidence; `:diff` compares jobs or passports. In Logs, Left/Right
+pans wide text, `:logpreview on` adds bounded file previews, and
+`:logview split` / `:logview json` changes presentation. Esc returns to original
+lines for logical selection. Failure Evidence now uses that same multi-location
+catalog and reports inspected/omitted/unavailable sources.
+
+Interactive SSH logs use background snapshots, including cold file loads;
+redraw and key handling consume the published buffer rather than waiting for
+SSH. Pending/source errors stay visible. Use refresh to request a fresh remote
+observation, or a noninteractive command when you need to wait for its result.
+
+For batch preparation, `:preflight SCRIPT --workdir DIR` opens an editable local
+form. Enter edits a field, `p` validates and refreshes the command preview, then
+`s` opens explicit submission review. Validation itself does not contact Slurm.
+Ordinary action review scrolls every target and starts on Cancel; Tab and Enter
+choose a control, while `y` explicitly confirms.
+
+The separate `:orchestrate workflow FILE --workdir DIR` or
+`:orchestrate scaling FILE --workdir DIR` prepares a complete batch review.
+Only explicit confirmation starts submissions, using actual scheduler IDs and
+private durable receipts. This requires local cluster operation with state
+enabled; it is unavailable for replay, SSH viewers, or `--no-state`. `c` during
+execution stops further calls while accepted jobs continue. Resume/retry/recovery
+require new reviews; uncertain scheduler outcomes block blind resubmission.
+Read the [execution walkthrough](WORKBENCH.md#execute-a-reviewed-workflow-or-scaling-experiment)
+before adopting it. No real jobs are submitted by setup or development tests;
+live CARC submission/accounting still needs local verification.
+
+The [workbench guide](WORKBENCH.md) covers every feature's bounds and complete
+keys. The low-impact CARC profile remains the starting point for live monitoring.
+
 | Symptom | Next step |
 | --- | --- |
 | Python is too old | Select a Python 3.10+ module/interpreter provided by the site. |
@@ -396,6 +483,12 @@ adopting them.
 | Full log did not reach the clipboard | Read the reported complete `log-full-<uuid>.log` export; the terminal may disable OSC 52 or the full text may exceed its limit. |
 | Log rotated during copying | Open the current file and retry; Tower does not publish an incomplete export. |
 | Selected range changed or expired | Reselect after rotation, truncation, or retained-tail eviction; `y` will not substitute the whole file. |
+| Details seem clipped or arrows move the wrong panel | Use Ctrl-W/F6 to focus Main or Details, then scroll or maximize that panel; `:density compact` restores the compact layout. |
+| Project picker reports no compatible run | Use the actual project root; create direct `runs/<run_id>/run.json` inventories with matching IDs, and inspect `!` notices. Discovery is local and bounded. |
+| Project sources cannot bind | Check selected-run notices and declared paths; missing reports remain missing, identity mismatches and symlink traversal are refused. |
+| Evidence omits a worker log | Inspect reported coverage, preserve/register exact files in the run's `logs.json`, and open omitted sources in Logs directly. |
+| Batch outcome is unknown | Preserve the receipt and verify the scheduler directly; reviewed recovery requires exact SubmitLine and WorkDir evidence, rather than retrying an uncertain submission. |
+| Batch execution refuses `--no-state` | Relaunch with a writable private Tower state directory; durable receipts are required before scheduler calls. |
 | Missing GPU metrics | Start with `--no-gpu`; enable sampling only for allocated GPUs where site policy permits. |
 | Terminal looks broken | Check `$TERM`, widen the terminal, and try `--ascii --no-color`. |
 | Blocks or braille look misaligned | Use a UTF-8 locale and a monospace terminal font with those glyphs, or use `--ascii`. |

@@ -11,6 +11,7 @@ when you need to share the picture.
 **Terminal only | Unicode block visuals | Python 3.10+ | Zero runtime dependencies | MIT**
 
 [Runbook](docs/runbook.md) | [Complete reference](docs/reference.md) |
+[Terminal workbench](docs/WORKBENCH.md) |
 [Research workflows](docs/RESEARCH.md) |
 [Wave two planning](docs/WAVE_TWO.md) |
 [Tests](https://github.com/rahel99x/Slurm-Tower/actions/workflows/tests.yml) |
@@ -65,6 +66,14 @@ Python 3.11+ reads TOML configuration; Python 3.10 uses JSON.
 
 ## Every view answers a question
 
+Tower 3.0 adds a coherent terminal workbench: dark/light/terminal themes, focused
+and expandable panels, saved layouts and job-table views, searchable help and
+commands, breadcrumbs and Back, a unified job inspector, and retained activity
+notices. Press `Ctrl-W` to focus panels, `I` to inspect a job, `Ctrl-P` to search
+Research workspaces, and `Ctrl-B` to return to the previous location.
+The [workbench guide](docs/WORKBENCH.md) maps all twenty UI/UX improvements to
+their actual keys, commands, and operating limits.
+
 Press `0` to open **Research**, then use Left/Right to switch among twelve workspaces:
 application metric curves and progress, array cohorts and failed-task retry plans,
 failure hypotheses with cited evidence, output contracts, immutable run passports,
@@ -89,6 +98,10 @@ The [wave two guide](docs/WAVE_TWO.md) explains prediction evidence and uncertai
 queue forecast calibration, blocker citations, reviewed resource choices, and
 repeatable scaling and workflow recipes. Missing evidence remains unknown;
 scaling plans and workflow plans prepare commands for review without submitting jobs.
+The separate `:orchestrate workflow FILE` or `:orchestrate scaling FILE` command
+opens a complete interactive batch review. Only explicit confirmation submits;
+private execution receipts preserve real IDs and partial/unknown outcomes for
+reviewed recovery. This requires local cluster operation and persistent state.
 
 For your own applications, follow the [project reporting standard](docs/PROJECT_STANDARD.md).
 It defines a portable run directory, live metrics, final measurements, output
@@ -96,6 +109,10 @@ contracts, and planning exports. Copy the [project template](examples/project-te
 to instrument a project with the standard-library reporter; [JSON Schemas](docs/schemas/README.md)
 describe the shared formats. Each run can publish a grouped `logs.json` index for
 application, worker, and scheduler logs across different locations.
+Use `:project /absolute/project` and choose an attempt to bind its reports, logs,
+contract, and verified passport together. `:outputs` browses declared results
+with bounded previews. Discovery is explicit and limited to direct run inventory
+directories; local project runs work without attaching an unrelated Slurm job.
 
 Select a job in Jobs, its **Recents** section, or History and press `l` to open
 that job's logs. In Logs, `O` opens the file list; choose with arrows and Enter.
@@ -141,6 +158,10 @@ Tower falls back automatically on limited output encodings and dumb terminals.
 Color adds emphasis, while labels and shapes keep the dashboard useful
 without it. Use `--no-color` or `NO_COLOR=1` to suppress colors, and `T` to cycle
 accessible themes. The `reader` theme uses plain ASCII text.
+`:theme dark`, `:theme light`, and `:theme terminal` suit different terminal
+backgrounds. Choose `:density comfortable`, `compact`, or `focused`, then save a
+useful layout. Metric cards can be pinned, reordered, hidden, expanded, and
+colored; `:chart METRIC` adds exact-sample inspection and zoom/pan.
 
 Preview the visuals without connecting to Slurm:
 
@@ -164,7 +185,8 @@ Preview the visuals without connecting to Slurm:
 
 Use `Tab` to switch views, arrows to move, `/` to filter, `Enter` for details,
 `?` for help, and `q` to quit. The `:` command palette exposes export, profiles,
-and job actions. Actions such as cancel, hold, and resubmit ask for confirmation;
+and job actions, with editable input, fuzzy suggestions, quoted paths, and
+command history. Help searches and scrolls. Actions such as cancel, hold, and resubmit ask for confirmation;
 scripted actions require `--yes`.
 
 ## Make it yours

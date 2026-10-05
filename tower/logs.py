@@ -1,9 +1,13 @@
-"""An incremental log buffer: the file is read once (its last ``max_bytes`` when larger), then only the bytes
-appended since, so following costs one stat per frame; a shrunken or replaced file reloads.  Windows are taken by
-absolute line index and always bounded, so a page is a page whatever the scroll position."""
+"""Bounded incremental log snapshots and logical source-line selection.
+
+Local and explicit noninteractive reads are synchronous. Interactive remote
+reads publish immutable snapshots through the existing research worker, so
+network latency never blocks terminal rendering or keyboard navigation.
+"""
 from __future__ import annotations
 
 import codecs
+import copy
 import re
 import time
 from typing import List, Optional, Tuple
@@ -31,6 +35,18 @@ class LogBuffer:
         self._retained_bytes = 0
         self._count_key = None
         self._count_value = 0
+        self.loading = False
+        # A worker snapshot is a new Python object, while its logical retained
+        # line identities survive append-only refreshes.
+        self._session_token = object()
+
+    def _worker_copy(self):
+        """Copy mutable containers on the worker, never on a terminal frame."""
+        clone = copy.copy(self)
+        clone.lines = self.lines[:]
+        clone.raw_lines = self.raw_lines[:]
+        clone._line_bytes = self._line_bytes[:]
+        return clone
 
     # ---- reading ----------------------------------------------------------------------------------
     def _reset(self):
@@ -225,6 +241,10 @@ class LogSession:
         self.entry = None
         self.entries = []
         self.catalog = None
+        self._async_pending = None
+        self._async_active = None
+        self._async_generation = 0
+        self._async_attempts = {}
 
     # ---- bookmarks ------------------------------------------------------------------------------
     def toggle_bookmark(self, path: str, index: int) -> bool:
@@ -261,8 +281,17 @@ class LogSession:
             return self.last_bookmark
         return start if self.top is not None else start + len(lines) - 1
 
-    def buffer(self, path: str) -> Optional[LogBuffer]:
+    def buffer(self, path: str, *, worker=None, background=False) -> Optional[LogBuffer]:
+        """Get a current local buffer or a published interactive SSH snapshot.
+
+        ``worker`` follows ResearchHub's start_task/poll_task contract: completion
+        executes on the UI thread. No remote I/O occurs here when background is
+        true, including on cold loads or while the shared worker is busy.
+        """
         if not path:
+            if self._async_active is not None:
+                self._async_generation += 1
+                self._async_active = None
             self.sync_buffer(None)
             return None
         if path != self.path:
@@ -270,15 +299,113 @@ class LogSession:
             self.clear_selection(reset_cursor=True)
             self._buffer_token = None
         buf = self.buffers.get(path)
-        if buf is None:
+        if buf is None or buf.files is not self.files or buf.max_bytes != max(1, int(self.max_bytes)):
             buf = self.buffers[path] = LogBuffer(path, self.max_bytes, self.files)
             if len(self.buffers) > 8:                      # keep a few; drop the oldest
                 oldest = next(iter(self.buffers))
                 if oldest != path:
                     del self.buffers[oldest]
-        buf.refresh()
+        if background and getattr(self.files, "remote", False):
+            self._request_remote(path, buf, worker)
+            # Publication may happen only in worker.poll_task, outside this
+            # function. A cold snapshot is visibly loading, never an empty file.
+            buf = self.buffers[path]
+        else:
+            buf.loading = False
+            buf.refresh()
         self.sync_buffer(buf)
         return buf
+
+    def invalidate_remote(self):
+        """Explicit refresh discards pending publications and polling deadlines."""
+        self._async_generation += 1
+        self._async_attempts.clear()
+
+    def _request_remote(self, path, base, worker):
+        files = self.files
+        key = (id(files), path, base.max_bytes)
+        if key != self._async_active:
+            self._async_active = key
+            self._async_generation += 1
+        if base.ident is None and not base.error:
+            base.loading = True
+        interval = max(1.5, float(getattr(files, "min_refresh", 0)))
+        now = time.monotonic()
+        if worker is None or self._async_pending is not None or now - self._async_attempts.get(key, -interval) < interval:
+            return
+        token = (self._async_generation, key)
+        self._async_pending = token
+
+        def metadata():
+            if hasattr(files, "snapshot_stat"):
+                result = files.snapshot_stat(path)
+                size, ident = result.get("size"), result.get("ident")
+            else:
+                size, ident = files.stat(path)
+                result = {"size": size, "ident": ident}
+            if type(size) is not int or size < 0 or not isinstance(ident, (tuple, list)) or len(ident) != 2 or any(type(v) is not int or v < 0 for v in ident):
+                raise ValueError("Invalid remote log metadata")
+            return dict(result, ident=tuple(ident))
+
+        def read():
+            clone = base._worker_copy()
+            clone.loading = False
+            try:
+                before = metadata()
+                class SnapshotFiles:
+                    # LogBuffer uses this exact target snapshot rather than a
+                    # second SSH stat (which could describe a symlink instead).
+                    min_refresh = 0.0
+                    remote = True
+                    def stat(_self, _path):
+                        return before["size"], before["ident"]
+                    def read(_self, selected, offset, length):
+                        return files.read(selected, offset, length)
+                clone.files = SnapshotFiles()
+                changed = clone.refresh()
+                if clone.error:
+                    raise OSError(clone.error)
+                if changed:
+                    after = metadata()
+                    if after["ident"] != before["ident"] or after["size"] < before["size"] or (after["size"] == before["size"] and after.get("updated") != before.get("updated")):
+                        raise ValueError("Remote log changed during inspection; refresh to retry")
+                    if clone.size != before["size"]:
+                        raise ValueError("Remote log read was incomplete; refresh to retry")
+            except Exception as exc:
+                # Keep the previous complete bytes, and mark them unavailable
+                # for selection rather than publish a half-refreshed buffer.
+                clone = base._worker_copy()
+                clone.loading, clone.error = False, str(exc)[:512]
+            finally:
+                clone.files = files
+            return clone
+
+        def complete(result):
+            if self._async_pending == token:
+                self._async_pending = None
+            if token != (self._async_generation, self._async_active) or self.path != path or self.files is not files or self.buffers.get(path) is not base:
+                return
+            if isinstance(result, Exception):
+                # Ordinary backend errors are handled on the worker. Keep this
+                # exceptional completion path constant-time on the UI thread.
+                error = str(result)[:512]
+                result = LogBuffer(path, base.max_bytes, files)
+                result._session_token, result.ident = base._session_token, base.ident
+                result.loading, result.error = False, error
+            self.buffers[path] = result
+            self.sync_buffer(result)
+
+        try:
+            admitted = worker.start_task(read, complete)
+        except Exception:
+            self._async_pending = None
+            raise
+        if not admitted:
+            self._async_pending = None
+            return
+        self._async_attempts[key] = now
+        if len(self._async_attempts) > 8:
+            del self._async_attempts[next(iter(self._async_attempts))]
 
     # ---- logical cursor and line selection -------------------------------------------------------
     def clear_selection(self, reset_cursor: bool = False):
@@ -309,7 +436,7 @@ class LogSession:
             self.path, self.top, self.match, self.last_bookmark = buf.path, None, None, None
             self.clear_selection(reset_cursor=True)
             self._buffer_token = None
-        token = (id(buf), buf.ident, buf.reloads, buf.skipped_bytes)
+        token = (buf._session_token, buf.ident, buf.reloads, buf.skipped_bytes)
         if self._buffer_token is not None and token != self._buffer_token:
             self.clear_selection(reset_cursor=True)
             self.top, self.match, self.last_bookmark = None, None, None

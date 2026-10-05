@@ -21,11 +21,28 @@ PALETTE = {
     "cyan": "#67e8f9", "magenta": "#c4b5fd", "blue": "#93c5fd",
     "white": "#e2e8f0", "black": "#0b1020", "muted": "#94a3b8",
     "faint": "#475569", "surface": "#172033", "border": "#334155",
+    "canvas": "#0b1020", "surface-raised": "#202c42", "surface-sunken": "#101827",
+    "border-strong": "#64748b", "text-secondary": "#b8c7da", "track": "#24445b",
+    "chart-1": "#67e8f9", "chart-2": "#c4b5fd", "chart-3": "#6ee7b7",
+    "chart-4": "#fbbf24", "chart-5": "#fb7185", "chart-6": "#93c5fd",
 }
+LIGHT_PALETTE = {
+    "green": "#166534", "yellow": "#854d0e", "red": "#be123c",
+    "cyan": "#0e7490", "magenta": "#6d28d9", "blue": "#1d4ed8",
+    "white": "#172033", "black": "#ffffff", "muted": "#475569",
+    "faint": "#64748b", "surface": "#f1f5f9", "border": "#94a3b8",
+    "canvas": "#ffffff", "surface-raised": "#e2e8f0", "surface-sunken": "#f8fafc",
+    "border-strong": "#64748b", "text-secondary": "#334155", "track": "#cbd5e1",
+    "chart-1": "#0e7490", "chart-2": "#6d28d9", "chart-3": "#166534",
+    "chart-4": "#854d0e", "chart-5": "#be123c", "chart-6": "#1d4ed8",
+}
+# Terminal inherits the emulator's canvas. The selected row uses reverse video,
+# making it legible on an unknown light or dark default terminal background.
+THEME_NAMES = ("default", "dark", "light", "terminal", "mono", "high", "cb", "reader")
 ALIASES = {
     "accent": "cyan", "success": "green", "warning": "yellow", "warn": "yellow",
     "danger": "red", "error": "red", "text": "white", "info": "blue",
-    "cool": "blue", "hot": "red",
+    "cool": "blue", "hot": "red", "heading": "accent", "secondary": "text-secondary",
 }
 CB_MAP = {"green": "blue", "red": "yellow", "yellow": "magenta"}
 FLAGS = {"bold": "1", "dim": "2", "rev": "7", "under": "4"}
@@ -102,12 +119,33 @@ class Style:
     background: Optional[RGB] = None
 
 
+def theme_tokens(theme: str = "default") -> dict[str, str]:
+    """A fresh semantic token map; callers cannot mutate the global palette."""
+    return dict(LIGHT_PALETTE if theme == "light" else PALETTE)
+
+
+def chart_colors(theme: str = "default") -> tuple[str, ...]:
+    """Ordered, contrasting chart colours shared by legends and plots."""
+    tokens = theme_tokens(theme)
+    return tuple(tokens[f"chart-{n}"] for n in range(1, 7))
+
+
+def _alias(token: str) -> str:
+    for _ in range(3):
+        replacement = ALIASES.get(token, token)
+        if replacement == token:
+            break
+        token = replacement
+    return token
+
+
 @lru_cache(maxsize=4096)
 def resolve(style: str, theme: str = "default") -> Style:
     """Resolve semantic, custom and accessibility styles once for both painters."""
     flags: list[str] = []
     foreground = background = None
     plain = theme in ("mono", "reader")
+    tokens = LIGHT_PALETTE if theme == "light" else PALETTE
     colored = False
     for token in style.split("+"):
         if token in FLAGS:
@@ -115,31 +153,39 @@ def resolve(style: str, theme: str = "default") -> Style:
             continue
         if token == "sel":
             flags.append("bold")
-            if plain:
+            if plain or theme == "terminal":
                 flags.append("rev")
             else:
-                foreground, background = rgb(PALETTE["white"]), rgb("#1e3a5f")
+                foreground = rgb(tokens["white"])
+                background = rgb("#dbeafe" if theme == "light" else "#1e3a5f")
                 colored = True
             continue
-        token = ALIASES.get(token, token)
+        token = _alias(token)
         if plain:
             if token in ("red", "yellow", "magenta"):
                 flags.append("bold")
+            continue
+        if theme == "terminal" and token in ("white", "text-secondary", "muted", "faint"):
+            foreground = None
+            if token in ("muted", "faint"):
+                flags.append("dim")
             continue
         background_token = token.startswith("bg:")
         if token.startswith(("fg:", "bg:")):
             value = token[3:]
             try:
-                value_rgb = rgb(PALETTE.get(value, value))
+                if theme == "terminal" and background_token and value in ("canvas", "surface", "surface-raised", "surface-sunken"):
+                    continue
+                value_rgb = rgb(tokens.get(_alias(value), value))
             except ValueError:
                 continue
             if theme == "cb":
                 value_rgb = _cb_rgb(value_rgb)
         else:
             token = CB_MAP.get(token, token) if theme == "cb" else token
-            if token not in PALETTE:
+            if token not in tokens:
                 continue
-            value_rgb = rgb(PALETTE[token])
+            value_rgb = rgb(tokens[token])
         if background_token:
             background = value_rgb
         else:

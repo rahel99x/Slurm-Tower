@@ -57,7 +57,10 @@ def test_report_clears_only_private_filter_and_renders_every_job_series():
     app.logs.bookmarks = {'/nonexistent/log.out': [2, 9]}
     app.logs.candidates = {'7': (1000, [])}
     app_before = vars(app).copy()
-    mutable_before = {key: copy.deepcopy(value) for key, value in vars(app).items()
+    # Worker primitives retain identity; all mutable presentation data must be isolated.
+    primitives = (app.execution_state["cancel"], app.execution_state["progress"])
+    memo = {id(value): value for value in primitives}
+    mutable_before = {key: copy.deepcopy(value, memo.copy()) for key, value in vars(app).items()
                       if isinstance(value, (dict, list, set))}
     log_before = copy.deepcopy(vars(app.logs), memo={id(app.logs.files): app.logs.files})
     views_before = vars(views).copy()

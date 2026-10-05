@@ -85,7 +85,7 @@ def test_sources_scroll_to_selected_row_and_use_replay_clock(dashboard, monkeypa
     selected = next(y for y, kind, name in hits if kind == "source" and name == "source49")
     assert "source49" in L.row_text(rows[selected])
     assert "1m 40s ago" in L.row_text(rows[selected])
-    assert all(style == "rev" for _, style in rows[selected])
+    assert all("sel" in style.split("+") for _, style in rows[selected])
     assert len(hits) <= 6
 
 
@@ -97,7 +97,7 @@ def test_dependency_cursor_remains_visible_when_chain_is_taller_than_screen(dash
     assert app.selected_id == "19"
     selected = next(y for y, kind, jid in hits if kind == "dep" and jid == "19")
     assert "stage19" in L.row_text(rows[selected])
-    assert all(style == "rev" for _, style in rows[selected])
+    assert all("sel" in style.split("+") for _, style in rows[selected])
 
 
 def test_replay_tab_mouse_coordinates_follow_inserted_scrub_bar(dashboard):

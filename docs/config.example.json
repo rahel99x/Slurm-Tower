@@ -31,5 +31,10 @@
     }
   },
   "ascii": false,
-  "animations": true
+  "animations": true,
+  "theme": "dark",
+  "workspace": {
+    "density": "comfortable",
+    "split": 45
+  }
 }

@@ -94,9 +94,16 @@ Launch the documented commands from the project root. Use an absolute run root
 when passing `--workdir`. An artifact contract names exact files, with no globs,
 `..`, absolute paths, or symlink traversal.
 
-Choose a run explicitly. Tower supports `{job_id}` substitution in configured
-metric and log-index paths; it does not expand that token in an artifact workdir or discover
-an active run from `run.json`. For a project whose directory names are actual
+Choose a run explicitly. In Tower 3.0, `:project /absolute/project` discovers
+bounded direct `runs/<run_id>/run.json` inventories, and selecting an attempt
+binds its declared reports and logs. It does not guess an active run or scan the
+rest of the project. `run_id` must match the directory and `attempt` must identify
+that execution attempt. Run this picker locally on CARC; SSH file backends cannot
+verify confined project discovery.
+
+The existing explicit configuration workflow also works. Tower supports
+`{job_id}` substitution in configured metric and log-index paths; it does not
+expand that token in an artifact workdir. For a project whose directory names are actual
 job IDs, `runs/{job_id}/metrics.jsonl` can follow the selected job with the
 project root as the metric workdir. To validate that job's outputs, select its
 concrete run directory as the artifact workdir.
@@ -112,12 +119,12 @@ concrete run directory as the artifact workdir.
 | `reports/planning.json` | Explicit aggregation step | Resources, Tradeoffs, Scaling, and optional captured scheduler/workflow evidence |
 | Recipe JSON | Project author | Scaling/workflow analysis and script preflight |
 | Passport JSON | Tower's provenance API | Passport view and immutable evidence comparisons |
-| `logs.json` | Application's run coordinator | Native grouped Logs file browser; explicitly bound through `logs.manifest_file` |
+| `logs.json` | Application's run coordinator | Grouped Logs/Evidence catalog; bound through the selected inventory or explicit `logs.manifest_file` |
 | Job stdout/stderr | Application and batch launcher | Logs uses paths reported by Slurm or retained from actual controller evidence |
-| `run.json` | Application | Project-owned identity and inventory; declared artifact checks can validate its presence/keys |
+| `run.json` | Application | Project/run picker validates identity and binds declared report paths; contracts can also check its presence/keys |
 
-`run.json` and `summary.json` are project conventions. Tower reads metrics
-directly, checks declared files through contracts, and analyzes summaries after
+Tower reads and validates `run.json` through the explicit project picker, reads metrics
+directly, checks declared files through contracts, and analyzes `summary.json` after
 they are placed in a supported planning bundle. The template supplies that
 explicit aggregation step.
 
@@ -142,10 +149,12 @@ locations rather than copying or merging their contents. For example:
 
 Use the actual `run_id` and scheduler `job_id`, or omit `job_id` for a local run.
 When `job_id` is present, Tower checks it against the selected job; a mismatch
-does not attach another job's logs. `run_id` is descriptive project identity.
+does not attach another job's logs. The project picker also checks a supplied
+`run_id` against the explicitly selected inventory.
 Declare `"log_index": "logs.json"` under `run.json.paths`; the template does so
-automatically. Tower still requires the explicit native configuration binding
-and does not follow the inventory's paths automatically:
+automatically. Selecting the run through `:project PATH` / `:run select RUN_ID`
+binds that declared index. Without the picker, use the explicit configuration
+binding:
 
 ```json
 {"logs":{"manifest_file":"logs.json"}}
@@ -514,7 +523,39 @@ runtime estimate. Use actual submission/start events and issued predictions.
 
 ## Open and inspect a project
 
-From the project root, after creating a run:
+For Tower 3.0's integrated workbench, launch locally on CARC, then enter these
+commands after `:`:
+
+```text
+project /absolute/project
+run select my-run
+workspace experiment
+outputs
+```
+
+The project picker reads only direct attempt directories beneath the chosen
+`runs/`: at most 256 attempts, 4,096 entries, 64 KiB per inventory, and 8 MiB
+combined inventory bytes. It reports invalid, omitted, or unsafe entries and
+revalidates an inventory on selection. `/` filters, Enter selects, `r` refreshes,
+and `!` opens notices. `:runs` revisits the picker, and `:run clear` restores the
+original report bindings. A missing or omitted `job_id` remains a local project
+run, without attaching reports to an unrelated scheduler job.
+
+Selection binds declared metrics/log paths relative to the selected run, the
+standard project output contract, and a verified passport when only one actual
+record is available. For multiple passports, use
+`:run passport passports/actual-record.json`. Artifact/inventory paths stay
+confined, exact, and relative without symlink traversal. Explicit sibling or
+absolute files inside `logs.json` remain valid read-only log declarations and
+are identified as external; copying a run does not relocate those absolute paths.
+
+`:outputs` browses only declared contract results and previews stable text,
+JSON, or CSV prefixes (64 KiB, up to 256 lines), with missing/invalid states and
+visible limits. Evidence consumes the same selected log catalog, with source
+coverage and cited-file drilldown. See the [workbench guide](WORKBENCH.md) for
+navigation, metrics, and bounded inspection details.
+
+For the explicit configuration workflow, from the project root after creating a run:
 
 ```bash
 RUN_DIR="$PWD/runs/my-run"

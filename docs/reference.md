@@ -1,6 +1,6 @@
 # Slurm Tower: complete reference
 
-[Quick start](../README.md) · [Runbook](runbook.md)
+[Quick start](../README.md) · [Runbook](runbook.md) · [Terminal workbench](WORKBENCH.md)
 
 This reference describes the terminal dashboard and its underlying metrics.
 Unicode block visuals are the normal terminal presentation, with portable ASCII
@@ -55,7 +55,9 @@ when `COLORTERM` is `truecolor` or `24bit`, or `$TERM` names a direct-color term
 otherwise it selects 256 or basic colors. Labels, axis values, and state names convey
 the metrics without relying on color alone. `--no-color` and a nonempty
 `NO_COLOR` environment variable suppress colors. `T` or `:theme NAME` selects
-`default`, `mono`, `high`, `cb`, or `reader`: `mono` retains the graphics without
+`default`, `dark`, `light`, `terminal`, `mono`, `high`, `cb`, or `reader`:
+`dark` and `light` provide matching surfaces and readable semantic colors;
+`terminal` retains the terminal's background. `mono` retains the graphics without
 colors; `cb` uses the color-blind palette; `reader` forces plain ASCII text.
 
 Charts use collected measurements. Unavailable metrics and gaps remain unknown,
@@ -65,6 +67,40 @@ portable plain text regardless of the live dashboard's glyph preference.
 Roomier terminals reveal resource cards, node heatmaps, and additional charts;
 compact terminals retain the essential tables and labels. These visuals reuse
 the existing snapshot and sample history without increasing Slurm polling.
+
+## Workbench navigation and layout
+
+`Ctrl-W` or F6 focuses Main/Details panels; arrows/page keys scroll a focused
+Details panel and `z` maximizes it on non-Logs pages. `:maximize` supplies the
+layout action on any page. `:density comfortable|compact|focused` changes
+information density; `:layout split 20..80` controls Main's percentage on wide
+screens. `:layout save NAME`, `load NAME`, `delete NAME`, and `list` manage up to
+16 layouts. UI preferences persist when ordinary state is enabled.
+
+`Ctrl-B`, Alt-Left, or `:back` returns to the prior location and restores its
+selected identity, filters, table options, panel context, and retained log
+position. Breadcrumbs make the current job/workspace/file visible. `Ctrl-P` or
+`:workspaces` opens the searchable Research picker; `:workspace NAME` opens one
+directly. `I` or `:inspect [JOBID]` opens the shared active/recent/historical job
+inspector. Tab changes sections, `l` opens logs, and `e` opens Evidence.
+
+Help (`?` or `:help WORDS`) is contextual, searchable with `/`, and scrollable
+with arrows/page keys. The command palette supports cursor editing, quoted
+arguments, fuzzy selectable suggestions, and supported argument/path completion.
+Up/Down chooses suggestions, Tab completes, and PgUp/PgDn recalls command history.
+Ordinary action confirmations scroll through every target, with visible Cancel
+and Confirm controls selected by Tab and activated by Enter; `y` confirms and
+`n`/Esc cancels.
+
+`Ctrl-A` or `:activity` opens retained session notices and available task status;
+`y` copies a selected notice/export path. `:task cancel` or `c` there requests
+cancellation of a running full-log copy, large-selection copy, or interactive
+report export. Other background
+readers display busy status when numerical progress is unavailable. Batch
+execution uses its separate `c` cancellation control.
+
+See the [workbench guide](WORKBENCH.md) for all twenty improvements, bounded
+project discovery, graph inspection, log presentation, and execution recovery.
 
 ## Tabs
 
@@ -151,9 +187,13 @@ without motion or pulses. One-frame reports are static as well.
 | `n` `b` `r` `x` | GPU sampling on/off; bell on start on/off; sample every source now; Sources tab: enable / disable the selected source |
 | `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys extend a selection; right-click or shift-click extends to a row. |
 | `Y` | Logs: copy the entire exact selected file, independent of displayed lines, search, scrolling, or wrapping |
+| `I` | structured job inspector for the exact active, recent, or historical job; Tab changes sections, `l` opens logs, `e` opens Evidence |
+| `Ctrl-W` / F6, `z` | focus Main/Details; maximize the focused panel (`:maximize` supplies this action on Logs) |
+| `Ctrl-B` / Alt-Left | Back to the previous location, selected identity, filters, and retained scroll context |
+| `Ctrl-P`, `Ctrl-A` | searchable Research workspace picker; retained activity/task results |
 | `E` `C` `J` | export the tab as text; its table as CSV; the marked or selected jobs with their recorded series as JSON |
 | `:` | the command palette (Tab completes): `cancel 123 456`, `hold marked`, `filter rb2`, `sort name`, `days 7`, `tab history`, `view timeline`, `export csv`, `copy 5 12`, `gpu off`, `source sinfo off`, `theme mono`, `log 123`, `profile carc`, `eval n_pending`, and every plugin command |
-| `T` | cycle the theme: default, mono, high contrast, cb (colour-blind safe: blue / orange / magenta for green / red / yellow), reader (no colour, no glyphs: plain text for screen readers and dumb terminals) |
+| `T` | cycle the theme: default, dark, light, terminal, mono, high contrast, cb (colour-blind safe: blue / orange / magenta for green / red / yellow), reader (no colour, no glyphs: plain text for screen readers and dumb terminals) |
 | `?` `q` | help; quit (Esc closes an overlay, cancels a selection, clears the filter or the marks) |
 
 The mouse works too: a click selects a row or switches tabs, a double-click opens the details (Jobs) or the series
@@ -229,12 +269,27 @@ group usage, logs, and source health. Tables, resource bars, trend charts, and
 timelines use terminal-renderable characters. Read it with `less report.txt` or
 attach it as plain text. JSON and CSV exports remain available for scripts.
 
+Interactive `:export report` captures a private frozen scheduler/UI snapshot
+and renders on the existing background worker. Navigation continues while
+project files are read for the report. The complete ASCII file is published
+atomically with mode `0600`; Ctrl-A / `:activity` retains the result path, and
+`c` there or `:task cancel` stops between pages and bounded chunks without
+publishing an incomplete report. The Log page contains a selected 40-line
+window; use `Y` in Logs to copy the whole original file. Scripted `--report`
+continues to wait for its result.
+
 ## Remote mode and profiles
 
 `--host login.example` (or `host = ...` in the config) runs every Slurm command on that machine over ssh with a
 ControlMaster connection (`~/.ssh/tower-*`), so a command costs one round trip after the first; stdout and the GPU
 traces are read there too (`stat` and offset reads, so following a log costs one stat every 1.5 s), and `L`
 opens `less` over `ssh -t`.  Actions go the same way.  `ssh_user` and `ssh_opts` (`["-J", "bastion"]`) complete it.
+
+Interactive selected-log reads publish immutable background snapshots; frames
+and key actions consume the last published buffer, including visible loading or
+source errors, without performing SSH reads. Explicit noninteractive reads can
+wait for their requested data. Unicode command input preserves actual paths
+independently of ASCII display rendering.
 
 A profile is a named set of configuration keys, one per cluster or per way of looking at one:
 
@@ -398,6 +453,9 @@ log of every transition and every action (an audit trail: what was cancelled, he
 Slurm accepted it).  `--no-state` reads and writes neither.
 
 ## The twenty features at a glance
+
+This table describes the original monitoring features. The twenty new UI/UX
+improvements in Tower 3.0 have their own [workbench map](WORKBENCH.md#the-twenty-improvements).
 
 | | feature | where |
 |---|---|---|

@@ -59,7 +59,7 @@ def _cancelled(cancel):
 
 
 def copy_full_log(path, state_dir=None, *, files=None, use_osc52=True, use_tools=True,
-                  tty_path="/dev/tty", cancel=None) -> dict:
+                  tty_path="/dev/tty", cancel=None, progress=None) -> dict:
     """Stream all initial bytes into a private unique export, then copy that file.
 
     Active logs may grow: the export is the initial byte range and says so. A
@@ -90,6 +90,8 @@ def copy_full_log(path, state_dir=None, *, files=None, use_osc52=True, use_tools
         else:
             before = _snapshot(files, path)
         result["snapshot_bytes"] = before["size"]
+        if progress:
+            progress(0, before["size"])
         export_base = os.path.abspath(os.path.join(state_dir, "exports") if state_dir else os.path.join(os.getcwd(), "tower-exports"))
         os.makedirs(export_base, mode=0o700, exist_ok=True)
         directory_fd = os.open(export_base, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
@@ -115,6 +117,8 @@ def copy_full_log(path, state_dir=None, *, files=None, use_osc52=True, use_tools
                 last_byte = data[-1:]
                 offset += len(data)
                 result["bytes"] = offset
+                if progress:
+                    progress(offset, before["size"])
                 _cancelled(cancel)
             current = _snapshot(files, path)
             last_size = _check_snapshot(before, current, last_size)
@@ -181,7 +185,7 @@ def copy_full_log(path, state_dir=None, *, files=None, use_osc52=True, use_tools
 
 
 def copy_log_selection(chunks, state_dir=None, *, source_path="", use_osc52=True,
-                       use_tools=True, tty_path="/dev/tty", cancel=None) -> dict:
+                       use_tools=True, tty_path="/dev/tty", cancel=None, progress=None) -> dict:
     """Export a pinned selection's immutable raw byte references on the worker.
 
     ``chunks`` contains the original selected line bytes and any exact newline
@@ -220,6 +224,8 @@ def copy_log_selection(chunks, state_dir=None, *, source_path="", use_osc52=True
                     block = view[offset:offset + CHUNK_BYTES]
                     output.write(block)
                     result["bytes"] += len(block)
+                    if progress:
+                        progress(result["bytes"], None)
                     _cancelled(cancel)
                 result["lines"] += chunk.count(b"\n")
                 if chunk:

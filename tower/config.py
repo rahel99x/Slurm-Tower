@@ -21,6 +21,7 @@ DEFAULTS: Dict[str, Any] = {
     "gpu_sampling": True,                # nvidia-smi inside the job's allocation
     "bell": False,                       # terminal bell when one of your jobs starts
     "animations": True,                  # short completion motion and two History pulses (reader is static)
+    "workspace": {"density": "comfortable", "split": 45},
     "intervals": {                       # seconds between samples of each source
         "jobs": 2.0, "starts": 10.0, "live": 10.0, "gpu": 5.0, "nodes": 15.0, "partitions": 60.0, "finished": 60.0,
         "share": 120.0, "account": 30.0, "details": 20.0, "weather": 120.0, "budget": 600.0, "trace": 60.0, "fin_details": 5.0,
@@ -59,6 +60,7 @@ DEFAULTS: Dict[str, Any] = {
         "replay_pause": ["|"], "replay_back": ["<"], "replay_fwd": [">"], "replay_slower": ["{"], "replay_faster": ["}"],
         "mark": ["space"], "mark_all": ["a"], "unmark_all": ["u"],
         "details": ["enter", "d"], "cancel": ["c"], "hold": ["h"], "requeue": ["R"], "top": ["t"],
+        "inspector": ["I"],
         "log": ["l"], "less": ["L"], "follow": ["f"], "sort": ["s"], "reverse": ["S"], "filter": ["/"], "clear": ["esc"],
         "gpu_toggle": ["n"], "bell_toggle": ["b"], "log_lines": ["+"], "log_lines_less": ["-"], "source_toggle": ["x"],
         "tab_analytics": ["7"], "tab_research": ["0"], "view_prev": ["left", ","], "view_next": ["right", "."], "days_more": ["="], "days_less": ["_"],
@@ -87,13 +89,17 @@ gpu_types = ["a100", "a40", "a30", "v100", "l40s", "p100"]
 
 series_keep = 4000              # samples kept per job for the analytics tab (also appended to state/series/<job>.jsonl)
 analytics_days = [1, 2, 7, 14, 30]
-theme = "default"               # default | mono | high | cb (colour-blind safe) | reader (plain text, no glyphs)
+theme = "default"               # default | dark | light | terminal | mono | high | cb | reader
 
 # host = "login.example.edu"    # remote mode: every Slurm command runs there over ssh (a ControlMaster connection is reused)
 # ssh_user = "me"
 # ssh_opts = ["-J", "bastion"]
 # plugins = ["~/my-tower-plugins"]      # besides ~/.config/tower/plugins/*.py; each file defines setup(api)
 # record = ""                           # record every command and answer to this file (tower --replay FILE plays it back)
+
+[workspace]
+density = "comfortable"         # comfortable | compact | focused; :density changes this live
+split = 45                      # percentage reserved for the main panel on wide terminals
 
 [logs]                          # O opens the selected job's grouped log-file browser
 manifest_file = ""              # optional logs.json index; relative to --workdir or the job's WorkDir

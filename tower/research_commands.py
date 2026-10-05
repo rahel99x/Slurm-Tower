@@ -218,6 +218,8 @@ def execute(app, cmd, args, *, ready=None):
                 hub.configure()
                 app.research_view = "submit"
             elif cmd == "passport":
+                from .research import detach_manual_source
+                detach_manual_source(app)
                 if "passport" in result:
                     hub.passport = result["passport"]
                 elif "differences" in result:
@@ -227,6 +229,8 @@ def execute(app, cmd, args, *, ready=None):
                 hub.configure(passport="")
                 app.research_view = "passport"
             elif cmd == "validate":
+                from .research import detach_manual_source
+                detach_manual_source(app)
                 hub.configure(contract=args[0], workdir=args[1])
                 app.research_view = "artifacts"
             if code:
@@ -237,6 +241,8 @@ def execute(app, cmd, args, *, ready=None):
         elif cmd in ("metrics", "artifacts"):
             if len(args) != (1 if cmd == "metrics" else 2):
                 raise ValueError("metrics FILE" if cmd == "metrics" else "artifacts CONTRACT ROOT")
+            from .research import detach_manual_source
+            detach_manual_source(app)
             hub.configure(**({"metrics_file": args[0]} if cmd == "metrics" else {"contract": args[0], "workdir": args[1]}))
             app.research_view = "experiment" if cmd == "metrics" else "artifacts"
             app.say(f"{cmd}: attached")
@@ -245,7 +251,8 @@ def execute(app, cmd, args, *, ready=None):
                 raise ValueError("investigate JOBID")
             if args[0] not in {j.id for j in app.store.jobs + app.store.finished}:
                 raise ValueError("job is not present in the current Jobs or History snapshot")
-            app.research_job_id, app.research_view = args[0], "evidence"
+            from .research import select_job
+            select_job(app, args[0], view="evidence")
             app.say(f"investigating {args[0]}")
         elif cmd == "array":
             hub.plan = ready if ready is not None else array_plan(args, app.store.jobs, app.store.finished)

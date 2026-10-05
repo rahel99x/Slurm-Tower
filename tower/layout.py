@@ -285,6 +285,47 @@ def clip_row(row: Row, width: int) -> Row:
     return out
 
 
+def fill_row(row: Row, width: int, style: str = "bg:surface") -> Row:
+    """Fit a row and fill its entire canvas, preserving explicit cell colours."""
+    width = max(0, width)
+    fitted = clip_row(row, width)
+    out = [(text, "+".join(part for part in (style, cell_style) if part))
+           for text, cell_style in fitted]
+    gap = width - vlen(row_text(fitted))
+    if gap:
+        out.append((" " * gap, style))
+    return out
+
+
+def panel_title(g: Glyphs, title: str, width: int, focused: bool = False,
+                position: Optional[Tuple[int, int, int]] = None) -> Row:
+    """A restrained panel heading with a visible focus and scrolling affordance."""
+    if width <= 0:
+        return []
+    marker = (">" if g.ascii else "▸") if focused else " "
+    style = "accent+bold+bg:surface-raised" if focused else "secondary+bold+bg:surface"
+    title = " " + marker + " " + title
+    suffix = ""
+    if position is not None:
+        start, end, count = position
+        if count > max(0, end - start):
+            suffix = f" {start + 1 if count else 0}-{end}/{count} "
+    if vlen(suffix) >= width:
+        suffix = ""
+    return fill_row([(pad(cut(title, width - vlen(suffix), g.ascii), width - vlen(suffix)), style),
+                     (suffix, "muted+bg:surface-raised" if focused else "muted+bg:surface")], width, "")
+
+
+def scroll_window(rows: Sequence[Row], hits: Sequence[Tuple[int, str, str]], width: int,
+                  height: int, top: int = 0) -> Tuple[List[Row], List[Tuple[int, str, str]], int]:
+    """Slice a panel without changing hit identities or borrowing adjacent rows."""
+    height, width = max(0, height), max(0, width)
+    top = max(0, min(int(top), max(0, len(rows) - height)))
+    window = [clip_row(row, width) for row in rows[top:top + height]]
+    visible_hits = [(y - top, kind, key) for y, kind, key in hits if top <= y < top + height]
+    return window, visible_hits, top
+
+
 ANSI = {"bold": "1", "dim": "2", "rev": "7", "under": "4", "green": "32", "yellow": "33", "red": "31", "cyan": "36", "magenta": "35", "blue": "34", "white": "37"}
 
 

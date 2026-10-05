@@ -72,9 +72,12 @@ project, also put deterministic code-tree, dataset, environment, and scientific
 configuration digests in `parameters`; exclude timestamps, run paths, and retry
 identifiers. Do not pool runs after changing work or inputs.
 
-`run.json` and `summary.json` are reporting conventions. Tower does not discover
-run directories or load their manifests automatically. The config binds native
-metrics, output checks, and an explicit planning aggregate.
+`run.json` and `summary.json` are reporting conventions. Tower 3.0's explicit
+`:project /absolute/project` and `:runs` picker discovers bounded direct run
+inventories; `:run select RUN_ID` attaches the selected attempt's metrics, logs,
+and output contract without borrowing another job's identity. Tower does not
+scan arbitrary folders or choose an active run automatically. The config also
+supports explicit metrics, output checks, and a selected planning aggregate.
 The config also binds the native `logs.json` index, so application logs can be
 opened independently of the scheduler's launch stdout/stderr.
 

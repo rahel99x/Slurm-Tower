@@ -144,8 +144,14 @@ class CursesPalette:
         return result
 
 
-def key_name(ch: int, curses) -> Optional[str]:
-    """A curses key code -> the name the controller and the config use."""
+def key_name(ch, curses) -> Optional[str]:
+    """A wide character or curses key code -> the controller's key name."""
+    if isinstance(ch, str):
+        if len(ch) != 1:
+            return None
+        if ord(ch) > 127:
+            return ch if ch.isprintable() else None
+        ch = ord(ch)
     if ch == -1:
         return None
     if ch == curses.KEY_RESIZE:
@@ -157,8 +163,20 @@ def key_name(ch: int, curses) -> Optional[str]:
              9: "tab", 10: "enter", 13: "enter", 27: "esc", 32: "space", 127: "backspace", 8: "backspace"}
     if ch in table:
         return table[ch]
+    if ch in (1, 2, 16, 21, 23):
+        return {1: "ctrl-a", 2: "ctrl-b", 16: "ctrl-p", 21: "ctrl-u", 23: "ctrl-w"}[ch]
+    if ch == getattr(curses, "KEY_F6", -2):
+        return "f6"
+    if hasattr(curses, "KEY_DC") and ch == curses.KEY_DC:
+        return "delete"
     if 33 <= ch < 127:
         return chr(ch)
+    if ch > 127:
+        try:
+            if curses.keyname(ch) == b"kLFT3":
+                return "alt-left"
+        except (curses.error, ValueError):
+            pass
     return None
 
 
@@ -219,7 +237,10 @@ def run_curses(app, views, sampler, store, actions, cfg):
             rung = started
             stdscr.noutrefresh()
             curses.doupdate()
-            ch = stdscr.getch()
+            try:
+                ch = stdscr.get_wch()
+            except curses.error:
+                continue
             name = key_name(ch, curses)
             if name is None or name == "resize":
                 continue

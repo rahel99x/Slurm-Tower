@@ -130,11 +130,19 @@ def test_history_mouse_click_uses_displayed_order_not_raw_store_order(dashboard)
     app = dashboard.app
     app.handle("3")
     app.sort["history"] = "name"
-    text, rows, hits = dashboard.render()
-    assert text.index("alpha-success") < text.index("mu-cancelled") < text.index("zeta-failed")
+    _, rows, hits = dashboard.render()
+    finished_hits = sorted((y, job_id) for y, kind, job_id in hits if kind == "fin")
+    assert [job_id for _, job_id in finished_hits] == ["701", "702", "700"]
+    assert all(job_id in row_text(rows[y]) for y, job_id in finished_hits)
     hit = next(hit for hit in hits if hit[1:] == ("fin", "701"))
     assert "701" in row_text(rows[hit[0]])
     app.click(hit[0], 1, hits)
+    assert app.selected_id == "701"
+    app.run_command("inspect 701")
+    inspector_rows = dashboard.views.overlay(dashboard.store.snapshot(), app, 150, 45)
+    assert "alpha-success" in "\n".join(row_text(row) for _, _, row in inspector_rows)
+    app.handle("esc")
+    assert app.tab == "history" and app.selected_id == "701"
     app.handle("l")
     dashboard.assert_log("701")
 
@@ -199,9 +207,11 @@ def test_jobs_recent_mouse_selects_and_highlights_exact_job(dashboard):
     recent_hit = next(hit for hit in hits if hit[1:] == ("recent", "701"))
     assert "701" in row_text(rows[recent_hit[0]])
     dashboard.app.click(recent_hit[0], 1, hits)
-    _, rows, _ = dashboard.render()
-    selected = next(row for row in rows if "701" in row_text(row) and "alpha-success" in row_text(row))
-    assert any("rev" in style for _, style in selected)
+    _, rows, hits = dashboard.render()
+    selected_hit = next(hit for hit in hits if hit[1:] == ("recent", "701"))
+    selected = rows[selected_hit[0]]
+    assert dashboard.app.selected_id == "701"
+    assert any("701" in text and "sel" in style.split("+") for text, style in selected)
     dashboard.app.handle("l")
     dashboard.assert_log("701")
 
@@ -240,7 +250,7 @@ def test_recent_focus_is_visible_on_a_small_terminal(dashboard):
     recent_hit = next(hit for hit in hits if hit[1:] == ("recent", "700"))
     selected_row = rows[recent_hit[0]]
     assert "700" in row_text(selected_row)
-    assert any("rev" in style for _, style in selected_row)
+    assert any("700" in text and "sel" in style.split("+") for text, style in selected_row)
     dashboard.app.handle("l")
     dashboard.assert_log("700")
 

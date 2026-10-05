@@ -8,7 +8,7 @@ import math
 import os
 from typing import Dict, List, Optional, Sequence
 
-from . import clipboard, export
+from . import clipboard, export, workbench
 from .logs import LogSession
 from .actions import Actions
 from .model import Job, Store, secs
@@ -20,7 +20,7 @@ from .transitions import CompletionFeedback
 KEY_LABELS = {"up": "↑", "down": "↓", "pgup": "PgUp", "pgdn": "PgDn", "home": "Home", "end": "End", "tab": "Tab", "btab": "S-Tab", "enter": "Enter",
               "esc": "Esc", "space": "Space"}
 KEY_LABELS_ASCII = dict(KEY_LABELS, up="Up", down="Down")
-THEMES = ["default", "mono", "high", "cb", "reader"]
+THEMES = ["default", "mono", "high", "cb", "reader", "dark", "light", "terminal"]
 
 
 class App:
@@ -96,6 +96,7 @@ class App:
         self.last_history_options = None
         self.log_selection_expected = False
         self.log_render_token = None
+        workbench.initialize(self)
         self.restore(store.load_ui())
         self.labels = KEY_LABELS_ASCII if self.theme == "reader" or ascii_ else KEY_LABELS
 
@@ -109,6 +110,8 @@ class App:
             self.tab = ui["tab"]
         if isinstance(ui.get("sort"), dict):
             self.sort.update({k: v for k, v in ui["sort"].items() if v in SORTS.get(k, [])})
+        if isinstance(ui.get("reverse"), dict):
+            self.reverse.update({k: bool(v) for k, v in ui["reverse"].items() if k in SORTS})
         if ui.get("theme") in THEMES:
             self.theme = ui["theme"]
         if ui.get("analytics_view") in dict(ANALYTICS_VIEWS):
@@ -120,6 +123,7 @@ class App:
         if isinstance(ui.get("bookmarks"), dict):
             self.logs.bookmarks = {k: sorted(int(i) for i in v) for k, v in ui["bookmarks"].items() if isinstance(v, list)}
         self.logs.wrap = bool(ui.get("log_wrap", False))
+        workbench.restore(self, ui.get("workbench", {}))
 
     def save(self):
         forecast_state = None
@@ -127,7 +131,7 @@ class App:
             forecast_state = dict(version=1, scope=dict(self.forecast_scope), observations=self.research.forecasts.observations())
         self.store.save_ui(dict(tab=self.tab, log_lines=self.log_lines, gpu=self.gpu, bell=self.bell, sort=self.sort, theme=self.theme, analytics_view=self.analytics_view,
                                 nodes_view=self.nodes_view, research_view=self.research_view, bookmarks=self.logs.bookmarks, log_wrap=self.logs.wrap,
-                                forecast_state=forecast_state))
+                                forecast_state=forecast_state, workbench=workbench.save(self), reverse=self.reverse))
 
     def analytics_days_value(self) -> float:
         return float(self.days_options[self.days_index])
@@ -163,13 +167,15 @@ class App:
         self.top[tab] = top
         return top
 
-    def say(self, text: str):
+    def say(self, text: str, *, level="info", path=""):
         self.message, self.message_t = text, time.time()
+        if hasattr(self, "activity"):
+            self.activity.post(text, level, path)
 
     def fail(self, text: str):
         """Report a command failure independently of its human-readable wording."""
         self.command_ok = False
-        self.say(text)
+        self.say(text, level="error")
 
     def tick(self):
         """Housekeeping before each frame: expire the message, tell the sampler which job is selected."""
@@ -178,11 +184,13 @@ class App:
         if self.research:
             self.research.poll_task()
         if self.sampler:
-            jid = (self.log_job or self.selected_id) if self.tab == "log" else self.detail_id if self.mode == "details" else self.selected_id if self.tab == "jobs" and self.selected_job() else None
+            inspector = self.mode == "analysis" and getattr(self, "analysis_state", {}).get("modal") == "inspect"
+            detail_mode = self.mode == "details" or inspector
+            jid = self.detail_id if detail_mode else (self.log_job or self.selected_id) if self.tab == "log" else self.selected_id if self.tab == "jobs" and self.selected_job() else None
             self.sampler.select(jid)
             self.sampler.gpu_sampling = self.gpu
             self.sampler.marks = set(self.marks)
-            self.sampler.select_fin(self.detail_id if (self.mode == "details" and self.detail_id and not self.store.job(self.detail_id)) else None)
+            self.sampler.select_fin(self.detail_id if (detail_mode and self.detail_id and not self.store.job(self.detail_id)) else None)
             self.sampler.select_trace(self.analytics_job if (self.tab == "analytics" and self.analytics_view == "job") else None)
 
     @property
@@ -198,6 +206,10 @@ class App:
         return next((j for j in snap["jobs"] + snap["finished"] + list(snap.get("departed_jobs", {}).values()) + snap.get("group", []) if j.id == jid), None)
 
     def log_target(self, snap=None):
+        from .project_ui import selected_binding
+        binding = selected_binding(self)
+        if binding and not binding.get("job_id"):
+            return None
         jid = self.log_job or self.selected_id
         record = self.job_record(jid, snap)
         if record is not None and self.log_job:
@@ -208,6 +220,8 @@ class App:
         """The same sorted/filtered accounting records drive rendering and every row action."""
         snap = self.store.snapshot() if snap is None else snap
         fin = list(snap["finished"])
+        from .table_ui import matches
+        fin = [record for record in fin if matches(self, "jobs" if recent else "history", record, snap)]
         if recent:
             active = {j.id for j in snap["jobs"]}
             fin = [f for f in fin if f.id not in active]
@@ -231,7 +245,8 @@ class App:
     def sync_history_selection(self, snap=None):
         fin = self.history_jobs(snap)
         ids = [f.id for f in fin]
-        options = self.filter, self.sort.get("history", "end"), self.reverse.get("history", False)
+        from .table_ui import fingerprint
+        options = self.filter, self.sort.get("history", "end"), self.reverse.get("history", False), fingerprint(self, "history")
         previous = self.last_history_ids
         if (previous is not None and ids != previous and options == self.last_history_options
                 and self.selected_id in ids and self.selected_id in previous
@@ -245,6 +260,8 @@ class App:
         snap = self.store.snapshot() if snap is None else snap
         active = {j.id for j in snap["jobs"]}
         pending = [j for j in reversed(list(snap.get("departed_jobs", {}).values())) if j.id not in active]
+        from .table_ui import matches
+        pending = [j for j in pending if matches(self, "jobs", j, snap)]
         flt = self.filter.casefold()
         if flt.startswith("#"):
             pending = [j for j in pending if flt[1:] in [t.casefold() for t in snap.get("tags", {}).get(j.id, {}).get("tags", [])]]
@@ -261,6 +278,10 @@ class App:
             snap = self.store.snapshot()
             job = self.log_target(snap)
             if job is None:
+                from .project_ui import selected_binding, resolve_log_entry
+                if selected_binding(self):
+                    entry = resolve_log_entry(self)
+                    return entry.get("path", "") if entry else ""
                 return ""
             return self.views_ref.log_path(self, job, snap["details"].get(job.id, {}))[0]
         return self.logs.path
@@ -270,10 +291,17 @@ class App:
         if not path:
             self.logs.clear_selection(reset_cursor=True)
             return None
-        return self.logs.buffer(path)
+        return self.read_log_buffer(path)
+
+    def read_log_buffer(self, path):
+        if self.interactive and getattr(self.logs.files, "remote", False) and self.research is None:
+            from .research import ResearchHub
+            self.research = ResearchHub(self.cfg, self.logs.files)
+        return self.logs.buffer(path, worker=self.research, background=self.interactive)
 
     def jobs_options(self):
-        return self.filter, self.sort.get("jobs", "state"), self.reverse.get("jobs", False)
+        from .table_ui import fingerprint
+        return self.filter, self.sort.get("jobs", "state"), self.reverse.get("jobs", False), fingerprint(self, "jobs")
 
     def open_log(self, jid=None):
         self.sync_selection()
@@ -284,6 +312,12 @@ class App:
         if record is None:
             self.fail("no job selected for logs")
             return
+        from .navigation_ui import record as remember
+        remember(self, "log", force=self.tab == "log" and jid != self.log_job)
+        from .project_ui import selected_binding, clear_binding
+        binding = selected_binding(self)
+        if binding and binding.get("job_id") != jid:
+            clear_binding(self)
         if jid != self.log_job:
             self.logs.clear_selection(reset_cursor=True)
             self.log_selection_expected = False
@@ -299,14 +333,18 @@ class App:
 
     def log_entries(self):
         flt = self.logs.file_filter.casefold()
-        return [entry for entry in self.logs.entries if not flt or
-                any(flt in str(entry.get(key, "")).casefold() for key in ("label", "group", "path", "description"))]
+        from .log_workbench import visible_entries
+        entries = [entry for entry in self.logs.entries if not flt or
+                   any(flt in str(entry.get(key, "")).casefold() for key in ("label", "group", "path", "description"))]
+        return visible_entries(self, entries)
 
     def select_log_file(self):
         entries = self.log_entries()
         if not entries:
             self.say("no log file selected")
             return False
+        from .navigation_ui import record
+        record(self, "log", force=True)
         self.logs.browser_cursor = max(0, min(self.logs.browser_cursor, len(entries) - 1))
         entry = entries[self.logs.browser_cursor]
         if not self.logs.entry or self.logs.entry["path"] != entry["path"]:
@@ -372,6 +410,8 @@ class App:
     def handle(self, key: str) -> None:
         """``key`` is a name: a-z A-Z 0-9 punctuation, or up down pgup pgdn home end tab btab enter esc space backspace."""
         self.sync_selection()
+        if workbench.handle_key(self, key):
+            return
         if self.mode == "confirm":
             self.finish_confirm(key in ("y", "Y"))
             return
@@ -392,7 +432,7 @@ class App:
                 if self.tab == "log":                      # on the Log tab the prompt is the search
                     self.logs.search, self.mode = self.filter_edit, "main"
                     self.logs.match = None
-                    buf = self.logs.buffer(self.logs.path) if self.logs.path else None
+                    buf = self.read_log_buffer(self.logs.path) if self.logs.path else None
                     i = self.logs.find_next(buf, backwards=True) if self.logs.search else None
                     self.say(f"{buf.count(self.logs.search) if buf and self.logs.search else 0} lines match '{self.logs.search}'" if self.logs.search else "search cleared")
                     return
@@ -462,6 +502,7 @@ class App:
         elif action == "help":
             self.mode, self.scroll = "help", 0
         elif action == "refresh":
+            self.logs.invalidate_remote()
             if self.sampler:
                 self.sampler.refresh_all()
             if self.research:
@@ -584,7 +625,7 @@ class App:
                 self.say("following")
         elif action in ("find_next", "find_prev"):
             if self.tab == "log":
-                buf = self.logs.buffer(self.logs.path) if self.logs.path else None
+                buf = self.read_log_buffer(self.logs.path) if self.logs.path else None
                 i = self.logs.find_next(buf, backwards=(action == "find_prev"))
                 self.say(f"match at line {i + 1}" if i is not None else (f"no match for '{self.logs.search}'" if self.logs.search else "no search: / sets one"))
         elif action == "wrap":
@@ -600,6 +641,11 @@ class App:
                 self.say(f"showing {'stderr' if self.logs.which == 'err' else 'stdout'}")
         elif action == "log_file":
             if self.tab == "log":
+                from .project_ui import selected_binding, cycle_log_entry
+                if selected_binding(self):
+                    entry = cycle_log_entry(self)
+                    self.say("Showing " + entry.get("label", entry["path"]) if entry else "This run has no declared log files")
+                    return
                 jid = self.log_job or self.selected_id
                 if self.views_ref:
                     snap = self.store.snapshot()
@@ -618,7 +664,7 @@ class App:
                     self.say("stdout" if self.logs.file_index == 0 else f"file {self.logs.file_index + 1}/{len(cands) + 1}: {cands[self.logs.file_index - 1]}")
         elif action == "bookmark":
             if self.tab == "log" and self.logs.path:
-                buf = self.logs.buffer(self.logs.path)
+                buf = self.read_log_buffer(self.logs.path)
                 i = self.logs.current_line(buf)
                 if i is not None:
                     self.logs.last_bookmark = None
@@ -626,7 +672,7 @@ class App:
                     self.say(f"bookmark {'set' if on else 'removed'} at line {i + 1}")
         elif action == "bookmark_next":
             if self.tab == "log" and self.logs.path:
-                buf = self.logs.buffer(self.logs.path)
+                buf = self.read_log_buffer(self.logs.path)
                 i = self.logs.next_bookmark(self.logs.path, self.logs.current_line(buf))
                 if i is None:
                     self.say("no bookmarks in this file (m sets one)")
@@ -716,7 +762,8 @@ class App:
                     ids = list(dict.fromkeys(j.id for j in self.store.jobs + self.store.finished))
                 cur = ids.index(self.research_job_id) if self.research_job_id in ids else 0
                 if ids:
-                    self.research_job_id = ids[max(0, min(len(ids) - 1, cur + delta))]
+                    from .research import select_job
+                    select_job(self, ids[max(0, min(len(ids) - 1, cur + delta))])
                 self.research_scroll = 0
             elif self.research_view == "arrays":
                 self.cursor["research"] = max(0, min(len(self.research_groups) - 1, self.cursor.get("research", 0) + delta))
@@ -760,6 +807,8 @@ class App:
 
     def enter_tab(self, name: str):
         """Switch tabs; entering Analytics from Jobs or History carries the job under the cursor along."""
+        from .navigation_ui import record
+        record(self, name)
         if name == "analytics" and self.tab == "jobs" and self.selected_id:
             self.analytics_job = self.selected_id
         elif name == "analytics" and self.tab == "history":
@@ -768,7 +817,12 @@ class App:
                 self.analytics_job = ids[self.clamp_cursor("history", len(ids))]
         if name == "research" and self.tab in ("jobs", "history"):
             ids = self.target_ids()
-            self.research_job_id = ids[0] if ids else self.selected_id
+            chosen = ids[0] if ids else self.selected_id
+            from .project_ui import selected_binding, clear_binding
+            binding = selected_binding(self)
+            if binding and chosen and binding.get("job_id") != chosen:
+                clear_binding(self)
+            self.research_job_id = chosen
         self.tab = name
         self.sel_anchor = None
         self.click_row = None
@@ -870,7 +924,8 @@ class App:
         cb = dict(self.cfg["clipboard"])
         self.start_log_copy(lambda service: copy_full_log(path, self.state_dir, files=files,
             use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)),
-            cancel=lambda: service.closed), path, f"Copying entire log: {path}")
+            cancel=lambda: service.closed or self.copy_task["cancel"].is_set(),
+            progress=lambda done, total: self.activity.progress(self.copy_task, done, total)), path, f"Copying entire log: {path}")
 
     def copy_selected_log(self, buf):
         """Pin immutable retained line bytes; large/invalid text never blocks the UI."""
@@ -888,16 +943,23 @@ class App:
         cb = dict(self.cfg["clipboard"])
         self.start_log_copy(lambda service: copy_log_selection(chunks(), self.state_dir, source_path=path,
             use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)),
-            cancel=lambda: service.closed), path, f"Copying log lines {lo + 1}-{hi + 1}: {path}")
+            cancel=lambda: service.closed or self.copy_task["cancel"].is_set(),
+            progress=lambda done, total: self.activity.progress(self.copy_task, done, total)), path, f"Copying log lines {lo + 1}-{hi + 1}: {path}")
 
     def start_log_copy(self, task, path, message):
         if self.research is None:
             from .research import ResearchHub
             self.research = ResearchHub(self.cfg, self.logs.files)
         service = self.research
+        if getattr(service, "closed", False) or getattr(service, "pending", None):
+            self.fail("A background command is still running; retry copy when it finishes")
+            return
         selected_range = (self.logs.selection_path, self.logs.selection_anchor, self.logs.selection_end, self.logs.selection_all)
         selected_token = self.logs._buffer_token, self.logs.selection_generation
+        copy_task = self.activity.start(message, path)
+        self.copy_task = copy_task
         def finished(result):
+            self.activity.finish(copy_task, "error" if isinstance(result, Exception) else result.get("status", "error"))
             if isinstance(result, Exception):
                 self.fail(f"Log copy failed: {result}")
                 return
@@ -906,7 +968,7 @@ class App:
                 self.fail(message)
                 return
             self.store.event("copy", message)
-            self.say(message)
+            self.say(message, level="warning" if result.get("status") == "partial" else "success", path=result.get("export_path", ""))
             current_range = (self.logs.selection_path, self.logs.selection_anchor, self.logs.selection_end, self.logs.selection_all)
             current_token = self.logs._buffer_token, self.logs.selection_generation
             if self.logs.path == path and current_range == selected_range and current_token == selected_token:
@@ -916,11 +978,15 @@ class App:
         if accepted:
             self.say(message)
         else:
+            self.activity.finish(copy_task, "not started")
             self.fail("A background command is still running; retry copy when it finishes")
 
     def export(self, kind: str):
         if not self.views_ref:
             self.fail("export needs the screen")
+            return
+        if kind == "report" and self.interactive:
+            self.export_report_background()
             return
         snap = self.store.snapshot()
         name = f"{kind}-{self.tab}-{export.stamp()}"
@@ -950,7 +1016,39 @@ class App:
             self.fail(f"export failed: {e}")
             return
         self.store.event("export", f"exported {kind} to {path}")
-        self.say(f"exported {path}")
+        self.say(f"exported {path}", level="success", path=path)
+
+    def export_report_background(self):
+        from . import report
+        if self.research is None:
+            from .research import ResearchHub
+            self.research = ResearchHub(self.cfg, self.logs.files)
+        service = self.research
+        if service.closed or service.pending:
+            self.fail("A background command is still running; retry report when it finishes")
+            return
+        try:
+            prepared = report.prepare_export(self.store.snapshot(), self, self.views_ref, self.actions)
+        except (OSError, ValueError, TypeError) as exc:
+            self.fail(f"report snapshot failed: {exc}")
+            return
+        task = self.activity.start("Exporting complete terminal report")
+        state_dir, name = self.state_dir, f"report-{export.stamp()}.txt"
+        def finished(value):
+            if isinstance(value, Exception):
+                cancelled = isinstance(value, report.ReportCancelled)
+                self.activity.finish(task, "cancelled" if cancelled else "error")
+                self.fail(str(value) if cancelled else f"report export failed: {value}")
+                return
+            self.activity.finish(task, "ready")
+            self.store.event("export", f"exported report to {value}")
+            self.say(f"exported {value}", level="success", path=value)
+        if service.start_task(lambda: prepared.write(state_dir, name,
+                cancel=lambda: service.closed or task["cancel"].is_set()), finished):
+            self.say("Exporting report in the background; Ctrl-A shows progress, c cancels")
+        else:
+            self.activity.finish(task, "not started")
+            self.fail("A background command is still running; retry report when it finishes")
 
     # ---- the command palette -----------------------------------------------------------------------
     COMMANDS = ["cancel", "hold", "release", "requeue", "top", "filter", "sort", "days", "tab", "view", "export", "copy", "gpu", "bell", "source",
@@ -959,7 +1057,7 @@ class App:
                 "predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow", "choose"]
 
     def commands(self) -> List[str]:
-        return self.COMMANDS + sorted(self.plugins.commands) if self.plugins else self.COMMANDS
+        return list(dict.fromkeys(self.COMMANDS + workbench.command_names() + (sorted(self.plugins.commands) if self.plugins else [])))
 
     def palette_hint(self) -> str:
         word = self.palette_edit.split(" ")[0]
@@ -1036,6 +1134,12 @@ class App:
             except ValueError as exc:
                 self.fail(f"command failed: {exc}")
                 return
+        try:
+            if workbench.run_command(self, [cmd] + args):
+                return
+        except (ValueError, OSError, TypeError, KeyError) as exc:
+            self.fail(f"{cmd} failed: {exc}")
+            return
         if self.plugins and cmd in self.plugins.commands:
             fn = self.plugins.commands[cmd][0]
             try:
@@ -1261,7 +1365,7 @@ class App:
                 self.fail("Open a log with Enter before searching its contents")
                 return
             self.logs.search, self.logs.match = " ".join(args), None
-            buf = self.logs.buffer(self.logs.path) if self.logs.path else None
+            buf = self.read_log_buffer(self.logs.path) if self.logs.path else None
             i = self.logs.find_next(buf, backwards=True) if self.logs.search else None
             self.say(f"{buf.count(self.logs.search) if buf and self.logs.search else 0} lines match" if self.logs.search else "search cleared")
         elif cmd == "help":
@@ -1361,6 +1465,8 @@ class App:
     def click(self, y: int, x: int, hits: Sequence, button: str = "left", shift: bool = False) -> None:
         """A mouse click: on the tab bar switches tabs, on a row selects it; a right or shift click extends the
         line selection from the last click to this row."""
+        if workbench.handle_mouse(self, y, x, button, shift):
+            return
         self.last_hits = list(hits)
         if self.tab == "log" and not self.logs.browser:
             line = next((int(key) for hy, kind, key in hits if hy == y and kind == "log_line"), None)
@@ -1401,6 +1507,19 @@ class App:
                     ids = [entry["id"] for entry in self.log_entries()]
                     if key in ids:
                         self.logs.browser_cursor = ids.index(key)
+                elif kind == "log_group":
+                    from .log_workbench import run_command
+                    self.log_workbench_state["current_group"] = key
+                    run_command(self, ["loggroup", key])
+                elif kind == "research_evidence":
+                    ids = self.analysis_state.get("evidence_ids", [])
+                    if key in ids:
+                        self.analysis_state["evidence_cursor"] = ids.index(key)
+                        from .analysis_ui import handle_key
+                        handle_key(self, "enter")
+                elif kind == "research_metric":
+                    from .analysis_ui import run_command
+                    run_command(self, ["chart", key])
                 elif kind == "fin":
                     ids = [f.id for f in self.history_jobs()]
                     if key in ids:
@@ -1545,7 +1664,11 @@ class App:
         ok, out = self.actions.run(self.confirm["action"], self.confirm["jobs"])
         self.command_ok = ok
         ids = ", ".join(j.id for j in self.confirm["jobs"][:4]) + (" ..." if len(self.confirm["jobs"]) > 4 else "")
-        self.say(f"{self.confirm['action']} {ids}: " + ("sent" if ok else f"failed: {out}"))
+        pending = ""
+        if ok:
+            from .actions import VERBS
+            pending = " / " + VERBS[self.confirm["action"]][1].upper() + "; awaiting scheduler"
+        self.say(f"{self.confirm['action']} {ids}: " + ("sent" + pending if ok else f"failed: {out}"))
         if ok:
             self.marks.difference_update(j.id for j in self.confirm["jobs"])
         if self.sampler:

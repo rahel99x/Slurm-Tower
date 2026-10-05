@@ -226,13 +226,13 @@ def test_controller_filter_sort_tabs_overlays_and_mouse(tmp_path):
 
 def test_flags_thresholds_and_once_outputs(tmp_path):
     backend, store, sampler, actions, views, app = make_app(tmp_path)
-    text = screen.once_text(app, views, store, actions, 160, False, tab="jobs")
+    text = screen.once_text(app, views, store, actions, 180, False, tab="jobs")
     row = next(l for l in text.splitlines() if l.startswith(" 12477369"))
     assert "!cpu" in row and "!mem" in row and " 95 " in row                 # a GPU job at 30 % cpu, 19 % memory after 17 min
     row = next(l for l in text.splitlines() if l.startswith(" 12480003"))
     assert "dep" in row and "Dependency" in row
     head = next(l for l in text.splitlines() if l.startswith(" JOBID"))
-    assert head.split() == ["JOBID", "NAME", "PART", "ST", "NODES", "CPU", "GPU", "ELAPSED/LIMIT", "LEFT/WAIT", "CPU%", "EFF", "MEM%", "GPU%", "FLAGS", "INFO"]
+    assert head.split() == ["JOBID", "NAME", "PART", "ST", "^", "NODES", "CPU", "GPU", "ELAPSED/LIMIT", "LEFT/WAIT", "CPU%", "EFF", "MEM%", "GPU%", "FLAGS", "TAGS", "INFO"]
     narrow = screen.once_text(app, views, store, actions, 100, False, tab="jobs")
     head = next(l for l in narrow.splitlines() if l.startswith(" JOBID"))
     assert "FLAGS" not in head and "INFO" in head and all(L.vlen(l) <= 100 for l in narrow.splitlines())
@@ -734,16 +734,16 @@ def test_themes_map_styles_and_reader_mode_drops_glyphs(tmp_path):
     app = App(store, sampler, actions, cfg, "alex")
     app.views_ref = views
     seen = []
-    for _ in range(5):
+    for _ in range(8):
         app.handle("T"); seen.append(app.theme)
-    assert seen == ["mono", "high", "cb", "reader", "default"]
+    assert seen == ["mono", "high", "cb", "reader", "dark", "light", "terminal", "default"]
     app.run_command("theme reader")
     assert views.g.ascii and views.g.full == "#"
     text = screen.once_text(app, views, store, actions, 150, False, tab="jobs")
     assert "─" not in text and "█" not in text and "·" not in text
     app.run_command("theme default")
     assert not views.g.ascii
-    app.run_command("theme nope"); assert app.message.startswith("theme <default|mono|high|cb|reader>")
+    app.run_command("theme nope"); assert app.message.startswith("theme <default|mono|high|cb|reader|dark|light|terminal>")
 
 
 # ------------------------------------------------------------------------------------------------ layer B: group, queue weather, allocation, node map, steps, GPU trace
@@ -780,6 +780,7 @@ def test_group_weather_budget_map_steps_and_trace_through_the_dashboard(tmp_path
         (tmp_path / "logs").mkdir()
         (tmp_path / "logs" / "gpu-util-12477369.csv").write_text("".join(f"2026/10/01 06:{i:02d}:01.000, 0, {80 if i % 3 else 5}, 12000\n" for i in range(30)))
         backend, store, sampler, actions, views, app = make_rich_app(tmp_path, rounds=2)
+        app.run_command("density compact")  # Full-width scientific metadata remains available.
         W, H = 150, 44
         # the account's jobs
         assert len(store.group) == 10 and {j.user for j in store.group} == {"alex", "bob", "carol"} and store.account["running"] == 5 and store.account["cpus"] == 136
@@ -964,6 +965,7 @@ def test_dependency_graph_tab_and_chain_actions(tmp_path):
 
 def test_tags_pins_notes_filter_and_compare(tmp_path):
     backend, store, sampler, actions, views, app = make_rich_app(tmp_path, rounds=3)
+    app.run_command("density compact")  # Optional tag columns fit the full-width table.
     W, H = 190, 44
     views.compose(store.snapshot(), app, W, H, actions)
     app.run_command("tag 12480001 urgent paper"); assert app.message == "tagged 12480001: #urgent #paper"
@@ -1091,6 +1093,9 @@ def test_terminal_report_from_the_screen_and_the_command_line(tmp_path):
     assert "allocation of lab_01" in page and "cluster map" in page and "afterok -> 12480003" in page and "#paper" in page and "advisor" in page
     assert "<script" not in page and "<svg" not in page and "\x1b" not in page
     app.run_command("export report")
+    assert "background" in app.message and app.research.pending
+    app.research.pending[0].result(timeout=30)
+    app.tick()
     path = app.message.split()[-1]
     assert path.endswith(".txt") and "09 / SOURCES" in Path(path).read_text() and [e for e in store.events if e["kind"] == "export"][-1]["text"].endswith(path)
     env = dict(os.environ, COLUMNS="150", USER="alex")
@@ -1169,17 +1174,19 @@ def test_log_extras_wrap_stderr_other_files_and_bookmarks(tmp_path):
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         assert any(L.row_text(r).rstrip().endswith("~") or "x" * 60 in L.row_text(r) for r in rows) and not any(L.row_text(r).strip() == "x" * 50 for r in rows)
         app.handle("w"); assert app.logs.wrap and app.message == "long lines wrapped"
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        body = [L.row_text(r) for r in rows[5:5 + page]]
-        assert len(body) == page and L.row_text(rows[5][:-1]).strip() == "line 0" and rows[5][-1] == (">", "cyan+bold") and sum(1 for b in body if b.startswith(" x")) >= 1 and "wrapped" in L.row_text(rows[4])
+        rows, hits = views.compose(store.snapshot(), app, W, H, actions)
+        first = next(y for y, kind, value in hits if kind == "log_line" and value == "0")
+        body = [L.row_text(r) for r in rows[first:first + page]]
+        assert len(body) == page and L.row_text(rows[first][:-1]).strip() == "line 0" and rows[first][-1] == (">", "cyan+bold") and sum(1 for b in body if b.startswith(" x")) >= 1 and "wrapped" in L.row_text(rows[first - 1])
         app.handle("end"); rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         assert L.row_text(rows[-2]).strip() == "line 39" and app.logs.following
         app.handle("w"); assert not app.logs.wrap
         # bookmarks: on the current line, then jump, then persisted
         app.handle("m"); assert app.message == "bookmark set at line 40" and app.logs.bookmarks[str(path)] == [39]
         app.handle("home"); app.handle("m"); assert app.logs.bookmarks[str(path)] == [0, 39]
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        assert L.row_text(rows[5]).startswith("*line 0") and "2 bookmarks" in L.row_text(rows[4])
+        rows, hits = views.compose(store.snapshot(), app, W, H, actions)
+        first = next(y for y, kind, value in hits if kind == "log_line" and value == "0")
+        assert L.row_text(rows[first]).startswith("*line 0") and "2 bookmarks" in L.row_text(rows[first - 1])
         app.handle("'"); assert app.message == "bookmark at line 40" and not app.logs.following and app.logs.top == 39 - page + 1 or app.logs.top is not None
         app.handle("'"); assert app.message == "bookmark at line 1" and app.logs.top == 0             # wraps around
         app.handle("m"); assert app.logs.bookmarks[str(path)] == [39] and app.message == "bookmark removed at line 1"
@@ -1189,14 +1196,14 @@ def test_log_extras_wrap_stderr_other_files_and_bookmarks(tmp_path):
         # the other files of the job: array task and the GPU trace; then stderr (the same file here)
         app.handle("o"); assert app.logs.file_index == 1 and app.message.endswith("gpu-util-12480001.csv")
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        assert "o: 2 other files" in L.row_text(rows[3])
-        assert "file 2/3" in L.row_text(rows[3]) and any("2026/10/01 06:00:01.000, 0, 50, 100" in L.row_text(r) for r in rows)
+        assert any("o: 2 other files" in L.row_text(r) for r in rows)
+        assert any("file 2/3" in L.row_text(r) for r in rows) and any("2026/10/01 06:00:01.000, 0, 50, 100" in L.row_text(r) for r in rows)
         app.handle("o"); rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        assert "file 3/3" in L.row_text(rows[3]) and any(L.row_text(r).strip() == "task zero" for r in rows)
+        assert any("file 3/3" in L.row_text(r) for r in rows) and any(L.row_text(r).strip() == "task zero" for r in rows)
         app.handle("o"); assert app.logs.file_index == 0
         app.handle("e"); assert app.logs.which == "err"
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        assert "stderr (the same file as stdout)" in L.row_text(rows[3])
+        assert any("stderr (the same file as stdout)" in L.row_text(r) for r in rows)
         app.handle("e"); assert app.logs.which == "out"
         app.run_command("wrap"); assert app.logs.wrap
         app.handle("home"); app.run_command("bookmark"); assert app.logs.bookmarks[str(path)] == [0, 39]

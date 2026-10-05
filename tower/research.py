@@ -24,12 +24,40 @@ def clean(value, ascii_=False, limit=4096):
     return text.encode("ascii", "backslashreplace").decode("ascii") if ascii_ else text
 
 
+def select_job(app, jid, *, view=None, record_back=True):
+    """Select an explicit job without retaining a different project's sources."""
+    from .project_ui import selected_binding, clear_binding
+    binding = selected_binding(app)
+    changed = getattr(app, "research_job_id", None) != jid
+    mismatch = binding is not None and binding.get("job_id") != jid
+    if record_back and (changed or mismatch):
+        from .navigation_ui import record
+        record(app, "research", force=True)
+    if mismatch:
+        # Restore the pre-project settings before assigning the new identity.
+        clear_binding(app)
+    app.research_job_id = jid
+    if view is not None:
+        app.research_view = view
+    app.research_scroll = 0
+
+
+def detach_manual_source(app):
+    """Explicit file attachment leaves run binding before configuring its path."""
+    from .project_ui import selected_binding, clear_binding
+    if selected_binding(app) is not None:
+        from .navigation_ui import record
+        record(app, "research", force=True)
+        clear_binding(app)
+
+
 class ResearchHub:
     def __init__(self, cfg, files=None, *, demo=False, settings=None, slurm=None):
         self.files = files or LocalFiles()
         self.slurm = slurm
         self.demo = demo
         self.settings = dict(cfg.get("research", {}) or {})
+        self.log_settings = dict(cfg.get("logs", {}) or {})
         self.settings.update({k: v for k, v in (settings or {}).items() if v is not None})
         for key in ("metrics_file", "contract", "workdir", "passport", "planning_file"):
             if not isinstance(self.settings.get(key, ""), str):
@@ -89,15 +117,27 @@ class ResearchHub:
         pending[1](result)
 
     def context(self, snap, app):
-        jid = getattr(app, "research_job_id", None) or app.selected_id
-        jobs = snap.get("jobs", []) + snap.get("finished", [])
+        project_state = getattr(app, "project_state", {}) or {}
+        binding = project_state.get("binding") if isinstance(project_state, dict) else None
+        jid = binding.get("job_id") if isinstance(binding, dict) else getattr(app, "research_job_id", None) or app.selected_id
+        jobs = snap.get("jobs", []) + snap.get("finished", []) + list(snap.get("departed_jobs", {}).values())
         job = next((j for j in jobs if j.id == jid), None)
-        if job is None and not jid and jobs:
+        if job is None and not jid and jobs and not binding:
             job = jobs[0]
             jid = job.id
+        project_logs = None
+        if binding:
+            from .project_ui import log_entries
+            project_logs = [dict(entry) for entry in log_entries(app)]
         return {"view": getattr(app, "research_view", "experiment"), "jid": jid,
                 "explicit_jid": getattr(app, "research_job_id", None),
                 "job": job, "snap": snap, "settings": dict(self.settings),
+                "log_settings": dict(getattr(app, "cfg", {}).get("logs", self.log_settings)),
+                "run_id": binding.get("run_id") if binding else None,
+                "run_root": binding.get("run_root") if binding else None,
+                "binding": dict(binding) if binding else None,
+                "project_logs": project_logs,
+                "project_warnings": list(project_state.get("run_warnings", [])) if binding else [],
                 "generation": self.generation}
 
     def _key(self, context):
@@ -198,30 +238,122 @@ class ResearchHub:
             from .investigate import investigate
             job = context["job"]
             if job is None:
-                return {"status": "empty", "summary": "Select a job in Jobs or History, then open Evidence."}
+                return {"status": "empty", "summary": "The selected run has no visible scheduler record; its project logs remain available in Logs."
+                        if context.get("binding") else "Select a job in Jobs or History, then open Evidence."}
             details = snap.get("details", {}).get(job.id, {})
             if not details and self.slurm is not None:
                 details = self.slurm.details(job.id)
-            logs = {}
-            errors = []
-            for key, option in (("stdout", "StdOut"), ("stderr", "StdErr")):
-                path = details.get(option, "")
-                if not path:
-                    errors.append(f"{option} path not available")
-                    continue
-                try:
-                    data, size = self._tail(path, 131072)
-                    logs[key] = {"text": data.decode("utf-8", "replace"), "path": path, "truncated": size > len(data)}
-                except (OSError, ValueError) as exc:
-                    errors.append(f"{option}: {clean(exc)}")
+            logs, additional, errors, coverage = self._evidence_logs(context, details)
             artifact_result = None
             if settings.get("contract"):
                 artifact_result = self._read(dict(context, view="artifacts"))
             result = investigate(job, details=details, live=snap.get("live", {}).get(job.id), events=snap.get("events", []),
-                                 artifact_results=artifact_result, **logs)
+                                 artifact_results=artifact_result, logs=additional, **logs)
             result.setdefault("limitations", []).extend(errors)
+            result["coverage"] = coverage
             return result
         return {"status": "error", "summary": "Unknown research view."}
+
+    def _evidence_logs(self, context, details):
+        """Use the same job-scoped catalog as Logs on the existing worker.
+
+        Minimal embedding adapters with only ``tail`` retain the scheduler-only
+        interface. Real local/SSH backends and full adapters discover registered
+        and job-scoped directory logs; reads are bounded across all sources.
+        """
+        from .investigate import MAX_LOG_BYTES, MAX_LOG_SOURCES, MAX_TOTAL_LOG_BYTES
+        from .log_catalog import build_catalog
+        from .views import stdout_path
+        job, settings = context["job"], context["settings"]
+        binding = context.get("binding") or {}
+        paths = {"stdout": binding.get("stdout") or stdout_path(job, details, self.files),
+                 "stderr": binding.get("stderr") or stdout_path(job, details, self.files, "StdErr")}
+        if not self.files.remote:
+            # Explicit legacy research adapters may supply relative paths;
+            # retain their original semantics rather than inventing a root.
+            for key, option in (("stdout", "StdOut"), ("stderr", "StdErr")):
+                if not paths[key] and details.get(option):
+                    paths[key] = details[option]
+        errors = [f"{option} path not available" for key, option in (("stdout", "StdOut"), ("stderr", "StdErr")) if not paths[key]]
+        manifest = binding.get("log_manifest") or context.get("log_settings", self.log_settings).get("manifest_file", "")
+        if manifest:
+            manifest = str(manifest).replace("{job_id}", job.id)
+            if not os.path.isabs(manifest):
+                root = settings.get("workdir") or details.get("WorkDir") or getattr(job, "workdir", "")
+                if not root or (self.files.remote and not os.path.isabs(root)):
+                    errors.append("Log manifest unavailable: selected job workdir is unknown.")
+                    manifest = ""
+                else:
+                    manifest = os.path.join(root, manifest)
+        if binding:
+            # The picker has already validated confinement. Re-reading its
+            # manifest here could reintroduce rejected external declarations.
+            entries = context.get("project_logs") or []
+            errors.extend(clean(warning) for warning in context.get("project_warnings", [])[:64])
+        elif hasattr(self.files, "stat") and hasattr(self.files, "read"):
+            catalog = build_catalog(job.id, paths["stdout"], paths["stderr"], manifest_file=manifest, files=self.files)
+            errors.extend(catalog.get("messages", []))
+            entries = catalog.get("entries", [])
+        else:
+            entries = [{"id": "scheduler." + key, "path": path, "label": key, "group": "Scheduler", "source": "scheduler"}
+                       for key, path in paths.items() if path]
+            if manifest:
+                errors.append("This file adapter cannot inspect the registered log manifest.")
+        logs, additional, used, inspected = {}, [], 0, 0
+        failures = []
+        # Preserve stdout/stderr ordering for simple adapters. Additional rank
+        # and application logs are explicit and never borrow another job's paths.
+        for entry in entries[:MAX_LOG_SOURCES]:
+            remaining = MAX_TOTAL_LOG_BYTES - used
+            if remaining <= 0:
+                break
+            path, limit = entry["path"], min(MAX_LOG_BYTES, remaining)
+            try:
+                before, metadata_error = None, None
+                if hasattr(self.files, "snapshot_stat"):
+                    try:
+                        before = self.files.snapshot_stat(path)
+                    except OSError as exc:
+                        metadata_error = exc
+                data, size = self._tail(path, limit)
+                if metadata_error is not None:
+                    raise metadata_error
+                if not isinstance(data, bytes) or len(data) > limit:
+                    raise ValueError("file adapter returned an oversized or invalid log excerpt")
+                after = self.files.snapshot_stat(path) if before is not None else None
+                if before is not None and before != after:
+                    raise ValueError("log changed during inspection; refresh Evidence")
+                if isinstance(size, bool) or not isinstance(size, int) or size < len(data):
+                    raise ValueError("invalid log size metadata")
+                used += len(data)
+                inspected += 1
+                truncated = size > len(data)
+                if truncated:
+                    # A tail can begin inside a physical line. Remove the
+                    # incomplete prefix instead of citing it as a full line.
+                    newline = data.find(b"\n")
+                    if newline >= 0:
+                        data = data[newline + 1:]
+                excerpt = {"text": data, "path": path, "truncated": truncated,
+                           "first_line": None if truncated else 1,
+                           "file_identity": before, "label": entry["label"], "group": entry["group"]}
+                key = "stdout" if path == paths["stdout"] else "stderr" if path == paths["stderr"] else None
+                if key:
+                    logs[key] = excerpt
+                else:
+                    additional.append(dict(excerpt, source="log:" + entry["id"]))
+            except (OSError, ValueError, TypeError) as exc:
+                message = f"{entry['label']}: {clean(exc)}"
+                failures.append(path)
+                errors.append(message)
+        omitted = max(0, len(entries) - inspected - len(failures))
+        if omitted:
+            errors.append(f"{omitted} catalogued log files were omitted by the {MAX_LOG_SOURCES}-file / 1 MiB inspection budget.")
+        coverage = {"catalog_files": len(entries), "inspected_files": inspected, "omitted_files": omitted,
+                    "unavailable_files": len(failures), "bytes_examined": used,
+                    "budget_bytes": MAX_TOTAL_LOG_BYTES, "max_files": MAX_LOG_SOURCES,
+                    "manifest_file": manifest}
+        return logs, additional, errors, coverage
 
     def _planning(self, context):
         from .planning import analyze, demo_source, record, select_job

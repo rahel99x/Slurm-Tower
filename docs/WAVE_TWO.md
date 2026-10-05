@@ -8,11 +8,15 @@ There are no extra scheduler queries per chart redraw.
 
 The [project reporting standard](PROJECT_STANDARD.md) defines how another
 application should organize its runs and export compatible planning evidence.
+Tower 3.0's [terminal workbench](WORKBENCH.md) adds interactive graph inspection,
+visual comparisons, a run picker, and a separately reviewed execution handoff.
 
 The new planners never submit jobs, change allocations, release holds, or execute
 batch scripts. A tradeoff choice can prepare one ordinary submission plan; the
 existing Submit view then requires a separate, explicit confirmation. Scaling
-and workflow commands produce review documents rather than bulk submission.
+and workflow planning commands produce review documents rather than bulk submission.
+The separate interactive `:orchestrate` command opens a complete execution
+review; only explicit confirmation of that review submits a batch.
 
 ## Try the terminal views
 
@@ -500,8 +504,56 @@ Any script preflight error prevents returning partial plans. Repeated identical
 script preflights reuse one detached snapshot. Individual plans retain
 `symbolic_dependencies`; they do **not** insert fake scheduler job IDs. These
 plans are sealed, marked `submittable: false`, and refused by the submission
-layer. Tower does not orchestrate the DAG. Actual workflow execution needs
-real scheduler receipts and reviewed dependency IDs from an orchestrator.
+layer. The separate Tower 3.0 orchestration workbench creates concrete plans
+only after real upstream scheduler IDs exist, while leaving the offline
+planner's sealed documents unchanged.
+
+## Explicit execution handoff and receipts
+
+Run Tower locally on the cluster with persistent state, then enter these
+commands after `:`:
+
+```text
+orchestrate workflow /absolute/project/workflow.json --workdir /absolute/project
+orchestrate scaling /absolute/project/scaling.json --workdir /absolute/project
+```
+
+Preparation remains local and offline. The execution review lists every
+node/repeat, effective resources, command, and dependency. Arrows/page keys
+navigate, Enter or `d` opens details, and Tab focuses visible Cancel/Confirm
+controls. Enter on Confirm explicitly starts submissions. SSH viewers, replay,
+and `--no-state` cannot start batch execution.
+
+Execution is bounded to 64 reviewed jobs and 16 recorded attempts per node,
+with 16 MiB metadata receipts. Workflow dependencies use actual accepted IDs in
+`afterok`; scaling repeats keep their original scientific identity. Changed
+scripts are revalidated before any new submission. Private receipts under
+Tower state `executions/` record durable launching intent before each scheduler
+call, actual accepted IDs, definitive rejection, and unknown outcomes. A
+failure or uncertain response stops later calls. While running, `c` stops
+further submissions; already accepted jobs keep running.
+
+```text
+execution /absolute/path/to/receipt.json
+execution collect
+execution resume
+execution retry NODE
+execution recover NODE REAL_JOB_ID
+```
+
+Collect uses the currently observed queue/accounting records. Missing data stays
+missing, and failed measured attempts remain censored in scaling analysis.
+Resume, Retry, and Recover each require a new explicit review. Resume submits
+only unattempted nodes; an unknown outcome blocks it. Retry permits only a
+definitively rejected/not-submitted node, with dependency protection for already
+accepted descendants. Recovery checks a supplied real scheduler job against the
+exact reviewed submit command and working directory in accounting. If the
+required evidence is unavailable, it refuses to infer acceptance or retry.
+
+This handoff does not execute batch scripts on the login node, automatically
+rerun failed accepted jobs, or turn duration estimates into measurements. Keep
+the receipt for interrupted-session recovery. See the
+[workbench execution walkthrough](WORKBENCH.md#execute-a-reviewed-workflow-or-scaling-experiment).
 
 ## Bounds, persistence, and direct APIs
 
@@ -515,6 +567,7 @@ real scheduler receipts and reviewed dependency IDs from an orchestrator.
 | Tradeoffs | 64 candidates and 10,000 records per historical source; caches repeated cohort models. |
 | Scaling | 10,000 analysis records, 8 MiB aggregate metadata; at most 128 configurations/runs, 20 repeats, and recipe `max_runs` defaults to 64. |
 | Workflow | 512 nodes, 4,096 edges, 2,048 parameter values per node, depth 8, 128 KiB parameter text per node. |
+| Explicit execution | 64 reviewed jobs, 16 attempts per node, 16 MiB receipts; separate interactive confirmation and persistent private state. |
 
 The direct `scaling.load` API allows an 8 MiB file with depth 16; CLI recipe
 loading keeps the smaller shared file bound. Reaching a bound is reported as a

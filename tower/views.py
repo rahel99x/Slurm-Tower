@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections import OrderedDict
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import clock
@@ -92,6 +93,8 @@ class Views:
         self.th = cfg["thresholds"]
         self.gpu_types = cfg["gpu_types"]
         self.files = files or LocalFiles()
+        self._preview_cache = OrderedDict()
+        self._preview_pending = set()
         self.plugins = plugins                             # PluginAPI or None: extra tabs and flags
         self.extra_tabs: Dict[str, object] = {}
         for key, title, render in (plugins.tabs if plugins else []):
@@ -243,6 +246,14 @@ class Views:
         bad = [h for h in snap.get("health", {}).values() if h.error and h.enabled]
         if bad:
             rows.append([(" sources: " + "; ".join(f"{h.name}: {cut(h.error, 60, self.g.ascii)}" for h in bad[:3]), "red")])
+        from .navigation_ui import breadcrumb
+        from .table_ui import chips
+        trail = breadcrumb(app, width, self.g.ascii)
+        if trail:
+            rows.append(trail)
+        fields = chips(app, app.tab, width, self.g.ascii)
+        if fields:
+            rows.append(fields)
         return rows
 
     def tab_bar(self, snap: dict, app, width: int):
@@ -419,9 +430,12 @@ class Views:
         return out
 
     def job_rows(self, snap: dict, app, actions=None) -> List[dict]:
+        from .table_ui import matches
         live, gpu = snap["live"], snap["gpu"]
         rows = []
         for j in snap["jobs"]:
+            if not matches(app, "jobs", j, snap):
+                continue
             lv = live.get(j.id)
             g = gpu.get(j.id) or []
             mark = actions.mark(j) if actions else ""
@@ -484,7 +498,8 @@ class Views:
                 rows = [r for r in rows if flt[1:] in r["tags"].lower().split()]
             else:
                 rows = [r for r in rows if flt in r["name"].lower() or flt in r["id"].lower() or flt in r["part"].lower() or flt in r["info"].lower() or flt in r["tags"].lower()]
-        return rows
+        from .table_ui import group_rows
+        return group_rows(app, rows)
 
     def selected_panel(self, snap: dict, j: Optional[Job], width: int, log_lines: int, app) -> List[Row]:
         if j is None:
@@ -578,13 +593,46 @@ class Views:
         rows += self.tag_rows(snap, j.id)
         if log_lines > 0:
             path = stdout_path(j, kv, self.files)
-            lines = tail_lines(path, log_lines, files=self.files)
+            lines = self.log_preview(app, path, log_lines)
             rows.append([(f"   log {cut(path or '(stdout path not known yet)', width - 10, g_.ascii)}", "magenta")])
             for l in lines:
                 rows.append([("     " + cut(l, width - 6, g_.ascii), "")])
             if path and not lines:
                 rows.append([("     (empty)", "dim")])
         return rows
+
+    def log_preview(self, app, path, count):
+        """Reuse pane previews; remote tails never block an interactive redraw."""
+        if not path or count <= 0:
+            return []
+        key = (id(self.files), path, count)
+        entry = self._preview_cache.get(key)
+        remote = bool(getattr(self.files, "remote", False))
+        ttl = 5.0 if remote else .5
+        now = time.monotonic()
+        if entry and now - entry[0] < ttl:
+            self._preview_cache.move_to_end(key)
+            return list(entry[1])
+        def publish(lines):
+            self._preview_pending.discard(key)
+            if isinstance(lines, Exception):
+                return
+            self._preview_cache[key] = (time.monotonic(), tuple(lines))
+            self._preview_cache.move_to_end(key)
+            while len(self._preview_cache) > 16:
+                self._preview_cache.popitem(last=False)
+        if remote and app.interactive:
+            if app.research is None:
+                from .research import ResearchHub
+                app.research = ResearchHub(app.cfg, self.files)
+            if key not in self._preview_pending:
+                self._preview_pending.add(key)
+                if not app.research.start_task(lambda: tail_lines(path, count, files=self.files), publish):
+                    self._preview_pending.discard(key)
+            return list(entry[1]) if entry else ["(waiting for the background log preview)"]
+        lines = tail_lines(path, count, files=self.files)
+        publish(lines)
+        return lines
 
     def tag_rows(self, snap: dict, jid: str) -> List[Row]:
         rec = snap.get("tags", {}).get(jid)
@@ -631,9 +679,11 @@ class Views:
                 style = "yellow"
         return [(text, style)]
 
-    def jobs_tab(self, snap: dict, app, actions, width: int, height: Optional[int]) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
+    def jobs_tab(self, snap: dict, app, actions, width: int, height: Optional[int], *, prepared_rows=None) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
+        from .table_ui import columns
+        job_columns = columns(app, "jobs", JOB_COLS)
         self.cfg_tags = snap.get("tags", {})
-        rows_d = self.job_rows(snap, app, actions)
+        rows_d = self.job_rows(snap, app, actions) if prepared_rows is None else prepared_rows
         app.visible_ids = [r["id"] for r in rows_d]
         fin = app.recent_jobs(snap)
         app.recent_ids = [f.id for f in fin]
@@ -648,15 +698,17 @@ class Views:
         recent_focus = bool(fin) and cur >= n
         sel = rows_d[cur]["job"] if n and not recent_focus else None
         det = self.selected_panel(snap, sel, width, app.log_lines, app)
+        if recent_focus:
+            det = self.finished_summary(fin[cur - n], width)
         events = [e for e in snap["events"] if not e.get("old")][-4:] or snap["events"][-4:]
         if height is None:
-            trows, _ = table(JOB_COLS, rows_d, width, self.g.ascii, droppable=JOB_DROP, cursor=None, marks=(), mark_char=None)
+            trows, _ = table(job_columns, rows_d, width, self.g.ascii, droppable=JOB_DROP, cursor=None, marks=(), mark_char=None)
             out = [rule(self.g, width, "jobs")] + trows
             if not rows_d:
                 out.append([("   no jobs match the filter; Esc clears it" if app.filter else "   Your queue is clear. New jobs appear here automatically.", "dim")])
             if det:
                 out += [rule(self.g, width, "selected")] + det
-            out += self.finished_rows(fin, width, "recent")
+            out += self.finished_rows(fin, width, "recent", app=app)
             out += self.event_rows(events, width)
             return out, []
         budget = height
@@ -694,7 +746,7 @@ class Views:
         marks = {i for i, r in enumerate(shown) if r["id"] in app.marks}
         for r in shown:
             r["_mark"] = self.g.pin if r.get("pinned") else ""
-        trows, _ = table(JOB_COLS, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus else cur - top, marks=marks, mark_char=self.g.mark)
+        trows, _ = table(job_columns, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus else cur - top, marks=marks, mark_char=self.g.mark)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
         out = [rule(self.g, width, title)] + trows if show_queue else []
         hits = [(2 + i, "job", r["id"]) for i, r in enumerate(shown)] if show_queue else []
@@ -708,7 +760,7 @@ class Views:
             fin_top = app.scroll_to("recent", recent_cur, fin_vis, len(fin))
             recent_shown = fin[fin_top:fin_top + fin_vis]
             hits += [(len(out) + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
-            out += self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus else None)
+            out += self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus else None, app=app)
         out += self.event_rows(events, width)
         return out, hits
 
@@ -718,11 +770,13 @@ class Views:
                 Column("me", "MEM EFF", 7, 7, ">"), Column("rss", "PEAK MEM", 8, 10, ">"), Column("start", "STARTED", 5, 12), Column("end", "ENDED", 5, 12),
                 Column("exit", "EXIT", 4, 6), Column("nodes", "NODES", 5, 16, flex=True), Column("tags", "TAGS", 4, 14)]
 
-    def finished_rows(self, fin: Sequence[Finished], width: int, title: str, cursor: Optional[int] = None) -> List[Row]:
+    def finished_rows(self, fin: Sequence[Finished], width: int, title: str, cursor: Optional[int] = None, app=None) -> List[Row]:
         if not fin:
             return []
         data = [self.finished_dict(f) for f in fin]
-        rows, _ = table(self.FIN_COLS, data, width, self.g.ascii, indent="   ", droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cursor)
+        from .table_ui import columns
+        cols = columns(app, "history", self.FIN_COLS) if app else self.FIN_COLS
+        rows, _ = table(cols, data, width, self.g.ascii, indent="   ", droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cursor)
         return [rule(self.g, width, title)] + rows
 
     def finished_dict(self, f: Finished) -> dict:
@@ -740,7 +794,28 @@ class Views:
                     tags=" ".join(self.cfg_tags.get(f.id, {}).get("tags", [])) if hasattr(self, "cfg_tags") else "",
                     _styles={"state": style, "ce": ("red" if ce is not None and ce < self.th["cpu"] else ""), "me": ("yellow" if me is not None and me < self.th["mem"] else "")})
 
+    def finished_summary(self, record, width):
+        from .research import clean
+        metadata = getattr(self, "cfg_tags", {}).get(record.id, {})
+        tags = " ".join(metadata.get("tags", []))
+        title = f"{record.id} {record.name}" + (f" / {tags}" if tags else "")
+        rows = [[(" " + clean(title, self.g.ascii), "heading+bold")]]
+        if metadata.get("note"):
+            rows.append([(" Note: " + clean(metadata["note"], self.g.ascii), "dim")])
+        if isinstance(record, Job):
+            rows.append([(" Awaiting accounting; the final outcome is not known yet", "yellow")])
+            rows.append([(" " + clean(f"Last observed {record.state} / {record.partition} / {record.elapsed}", self.g.ascii), "dim")])
+        else:
+            rows.append([(" " + clean(f"{record.state} / {record.partition} / elapsed {record.elapsed} / exit {record.exit or 'unknown'}", self.g.ascii),
+                          "green" if record.state == "COMPLETED" else "yellow")])
+            rows.append([(" " + clean(f"{record.cpus} CPUs / {record.gpus} GPUs / {record.nodes} nodes", self.g.ascii), "dim")])
+            rows.append([(" Peak task RSS " + (human(record.rss) if record.rss else "unknown"), "dim")])
+        rows.append([(" I inspector | l logs | :investigate " + str(record.id), "accent")])
+        return [L.clip_row(row, width) for row in rows]
+
     def history_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
+        from .table_ui import columns
+        fin_columns = columns(app, "history", self.FIN_COLS)
         self.cfg_tags = snap.get("tags", {})
         fin = app.sync_history_selection(snap)
         key, rev = app.sort.get("history", "end"), app.reverse.get("history", False)
@@ -762,18 +837,20 @@ class Views:
             prefix += self.composition([(state.lower(), count, "green" if state == "COMPLETED" else "yellow" if state.startswith("CANCEL") else "red")
                                         for state, count in sorted(counts.items(), key=lambda pair: -pair[1])], width)
         if height is None:
-            rows = self.finished_rows(fin, width, "history")
+            rows = self.finished_rows(fin, width, "history", app=app)
             return prefix + rows, []
         vis = max(1, height - len(prefix) - 2)
         top = app.scroll_to("history", cur, vis, n)
         shown = fin[top:top + vis]
         data = [self.finished_dict(f) for f in shown]
-        trows, _ = table(self.FIN_COLS, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top)
+        trows, _ = table(fin_columns, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top)
         title = f"history {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "history"
         out = prefix + [rule(self.g, width, title)] + trows
         if not fin:
             out.append([("   nothing matches the filter; Esc clears it" if app.filter else "   No completed runs yet. Finished jobs and efficiency appear here.", "dim")])
         hits = [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
+        if fin:
+            out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
         return out, hits
 
     # ---- cluster tab ------------------------------------------------------------------------------
@@ -1204,11 +1281,18 @@ class Views:
         """The pager uses the same selected file as the Log view, including stderr and custom locations."""
         job = app.log_target(snap) if app.tab == "log" else app.job_record(app.selected_id, snap)
         if job is None:
-            return ""
+            return app.resolve_log_path() if app.tab == "log" else ""
         details = snap["details"].get(job.id, {})
         return self.log_path(app, job, details)[0] if app.tab == "log" else stdout_path(job, details, self.files)
 
     def log_browser(self, snap, app, job, kv, width, height):
+        from .log_workbench import render_browser
+        if job is None:
+            from .project_ui import selected_binding, log_entries
+            binding = selected_binding(app) or {}
+            app.logs.entries = log_entries(app)
+            prefix = [rule(self.g, width, f"Run {binding.get('run_id', '?')} log files")]
+            return render_browser(self, snap, app, width, height, prefix, [])
         from .log_catalog import LogCatalog
         from .research import clean
         if app.logs.catalog is None:
@@ -1239,7 +1323,7 @@ class Views:
             prefix.append([(" " + cut(clean(message, self.g.ascii), max(0, width - 1), self.g.ascii), "yellow")])
         if not entries:
             message = "Waiting for the background log index reader." if result.get("status") == "loading" else "No matching log files. Declare extra locations in logs.json; r refreshes."
-            return prefix + [[(" " + message, "dim")]], []
+            return render_browser(self, snap, app, width, height, prefix + [[(" " + message, "dim")]], [])
         groups = {}
         for index, entry in enumerate(entries):
             groups.setdefault(entry["group"], []).append((index, entry))
@@ -1255,7 +1339,7 @@ class Views:
                 body.append([("   " + (marker if selected else "  ") + clean(entry["label"], self.g.ascii), "rev+bold" if selected else "")])
                 body.append([("     " + clean(entry["path"], self.g.ascii), "dim")])
         if height is None:
-            return prefix + body, [(y + len(prefix), kind, key) for y, kind, key in hits]
+            return render_browser(self, snap, app, width, height, prefix + body, [(y + len(prefix), kind, key) for y, kind, key in hits])
         visible = max(1, height - len(prefix))
         top = app.logs.browser_top
         if selected_row < top:
@@ -1264,24 +1348,36 @@ class Views:
             top = max(0, selected_row + 2 - visible)
         top = max(0, min(top, max(0, len(body) - visible)))
         app.logs.browser_top, app.logs.browser_page = top, max(1, visible // 2)
-        return prefix + body[top:top + visible], [(y - top + len(prefix), kind, key) for y, kind, key in hits if top <= y < top + visible]
+        return render_browser(self, snap, app, width, height, prefix + body[top:top + visible], [(y - top + len(prefix), kind, key) for y, kind, key in hits if top <= y < top + visible])
 
     def log_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
         jid = app.log_job or app.selected_id
         j = app.log_target(snap)
-        if j is None:
+        from .project_ui import selected_binding, log_entries, resolve_log_entry
+        from .log_workbench import apply_citation, display_line as pan_line, status_label
+        binding = selected_binding(app) if j is None else None
+        if j is None and not binding:
             return [rule(self.g, width, "log"), [("   select a job in Jobs, Recents, or History, then press l", "dim")]], []
-        kv = snap["details"].get(j.id, {})
+        kv = snap["details"].get(j.id, {}) if j else {}
         if app.logs.browser:
             return self.log_browser(snap, app, j, kv, width, height)
-        path, label = self.log_path(app, j, kv)
+        if j is None:
+            entries = log_entries(app)
+            app.logs.entries = entries
+            chosen = resolve_log_entry(app)
+            path, label = (chosen["path"], chosen.get("label", "Log")) if chosen else ("", "Log")
+        else:
+            path, label = self.log_path(app, j, kv)
         g = self.g
         page = max(1, (height - 2) if height else 40)       # the rule and the status line, then the page
         app.logs.page = page
-        buf = app.logs.buffer(path) if path else None
-        app.log_render_token = (app.logs.path, app.logs._buffer_token) if buf is not None and not buf.error else None
-        cands = app.logs.candidates.get(j.id, (0, []))[1]
-        head = f"{j.id} {j.name} {g.dot} {label}" + (f" {g.dot} o: {len(cands)} other file{'s' if len(cands) != 1 else ''}" if cands else "") + f" {g.dot} {path or 'path not known yet'}"
+        buf = app.read_log_buffer(path) if path else None
+        if buf is not None and not getattr(buf, "loading", False):
+            apply_citation(app, buf)
+        app.log_render_token = (app.logs.path, app.logs._buffer_token) if buf is not None and not buf.error and not getattr(buf, "loading", False) else None
+        cands = app.logs.candidates.get(j.id, (0, []))[1] if j else []
+        identity = f"{j.id} {j.name}" if j else f"Run {binding['run_id']} / " + (f"job {binding['job_id']} (accounting unavailable)" if binding.get("job_id") else "job not recorded")
+        head = f"{identity} {g.dot} {label}" + (f" {g.dot} o: {len(cands)} other file{'s' if len(cands) != 1 else ''}" if cands else "") + f" {g.dot} {path or 'path not known yet'}"
         out = [rule(g, width, cut(head, width - 8, g.ascii))]
         if buf is None:
             app.logs.path, app.logs.match = "", None
@@ -1290,6 +1386,8 @@ class Views:
             return out + [[("   " + message, "dim")]], []
         if buf.error:
             return out + [[(f"   {buf.error}", "red")]], []
+        if getattr(buf, "loading", False):
+            return out + [[("   Reading the selected remote log in the background.", "dim")]], []
         lines, start = buf.window(app.logs.top, page)
         total = buf.total
         search = app.logs.search
@@ -1307,6 +1405,9 @@ class Views:
                        (f" {g.dot} following", "green") if app.logs.following else (f" {g.dot} paused (End or f follows)", "yellow")]
         if app.logs.wrap:
             status.append((f" {g.dot} wrapped", "dim"))
+        extra_status = status_label(app)
+        if extra_status:
+            status.append((f" {g.dot} {extra_status}", "dim"))
         if buf.truncated:
             status.append((f" {g.dot} the first {buf.skipped_bytes / 1024 ** 2:.0f} MB are not loaded (log_max_mb)", "yellow"))
         if search:
@@ -1323,6 +1424,7 @@ class Views:
             content_width = max(1, width - (number_width + 5 if numbers else 2))
             for i, line in enumerate(source_lines):
                 idx = first + i
+                line = pan_line(app, line)
                 display_budget = max(1, content_width * page * 2)
                 clipped_prefix = app.logs.wrap and app.logs.following and len(line) > display_budget
                 display_line = line[-display_budget:] if clipped_prefix else line[:display_budget]
@@ -1737,16 +1839,22 @@ class Views:
             return [], []
         head = self.header(snap, app, width)
         body_h = None if height is None else max(0, height - len(head) - 1)
-        fn = {"jobs": lambda: self.jobs_tab(snap, app, actions, width, body_h), "history": lambda: self.history_tab(snap, app, width, body_h),
-              "cluster": lambda: self.cluster_tab(snap, app, width, body_h), "nodes": lambda: self.nodes_tab(snap, app, width, body_h),
-              "log": lambda: self.log_tab(snap, app, width, body_h), "sources": lambda: self.sources_tab(snap, app, width, body_h),
-              "analytics": lambda: self.analytics_tab(snap, app, width, body_h), "group": lambda: self.group_tab(snap, app, width, body_h),
-              "deps": lambda: self.deps_tab(snap, app, width, body_h),
-              "research": lambda: self.research_tab(snap, app, width, body_h)}.get(app.tab)
-        if fn is None:
-            body, hits = self.plugin_tab(snap, app, width, body_h), []
-        else:
-            body, hits = fn()
+        prepared_jobs = None
+        def jobs_renderer(panel_width, panel_height):
+            nonlocal prepared_jobs
+            if prepared_jobs is None:
+                prepared_jobs = self.job_rows(snap, app, actions)
+            return self.jobs_tab(snap, app, actions, panel_width, panel_height, prepared_rows=prepared_jobs)
+        def default_renderer(panel_width, panel_height):
+            fn = {"jobs": lambda: jobs_renderer(panel_width, panel_height), "history": lambda: self.history_tab(snap, app, panel_width, panel_height),
+                  "cluster": lambda: self.cluster_tab(snap, app, panel_width, panel_height), "nodes": lambda: self.nodes_tab(snap, app, panel_width, panel_height),
+                  "log": lambda: self.log_tab(snap, app, panel_width, panel_height), "sources": lambda: self.sources_tab(snap, app, panel_width, panel_height),
+                  "analytics": lambda: self.analytics_tab(snap, app, panel_width, panel_height), "group": lambda: self.group_tab(snap, app, panel_width, panel_height),
+                  "deps": lambda: self.deps_tab(snap, app, panel_width, panel_height),
+                  "research": lambda: self.research_tab(snap, app, panel_width, panel_height)}.get(app.tab)
+            return (self.plugin_tab(snap, app, panel_width, panel_height), []) if fn is None else fn()
+        from .workspace_layout import render_body
+        body, hits = render_body(self, snap, app, width, body_h, actions, default_renderer)
         hits = [(y + len(head), kind, key) for y, kind, key in hits]
         if height is None:
             return [L.clip_row(r, width) for r in head + body], hits
@@ -1813,6 +1921,10 @@ class Views:
         return render(self, snap, app, width, height)
 
     def overlay(self, snap: dict, app, width: int, height: int):
+        from .workbench import overlay
+        enhanced = overlay(self, snap, app, width, height)
+        if enhanced is not None:
+            return enhanced
         g = self.g
         if app.mode == "confirm" and app.confirm.get("action") == "submit":
             from .research import clean

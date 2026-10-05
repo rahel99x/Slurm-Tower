@@ -21,7 +21,10 @@ MAX_EVIDENCE = 80
 MAX_EVENTS = 200
 MAX_EVENT_INPUT = 2000
 MAX_EXCERPT_CHARS = 900
+MAX_LOG_SOURCES = 32
+MAX_TOTAL_LOG_BYTES = 1024 * 1024
 _ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[ -/]*[@-~]")
+_LOG_TIMESTAMP = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))(?!\d)")
 _FAILURE_STATES = {"FAILED", "OUT_OF_MEMORY", "TIMEOUT", "NODE_FAIL", "BOOT_FAIL", "PREEMPTED", "CANCELLED", "DEADLINE"}
 _RULES = (
     ("gpu_oom", re.compile(r"(?:CUDA|HIP|GPU|cuDNN).{0,80}(?:out[ -]of[ -]memory|memory allocation fail)|(?:torch\.cuda\.OutOfMemoryError|CUDA_ERROR_OUT_OF_MEMORY)", re.I)),
@@ -139,7 +142,7 @@ def _log_excerpt(value: Any, source: str) -> tuple[list[str], dict]:
     first_line = meta.get("first_line")
     if not isinstance(first_line, int) or isinstance(first_line, bool) or not 1 <= first_line <= 10 ** 12:
         first_line = None
-    path = _text(meta.get("path"), 500)
+    path = _text(meta.get("path"), 4096)
     truncated = meta.get("truncated") is True
     # A UTF-8 character occupies at least one byte: taking a bounded suffix first
     # avoids allocating an encoded copy of an arbitrarily large caller string.
@@ -163,15 +166,24 @@ def _log_excerpt(value: Any, source: str) -> tuple[list[str], dict]:
         truncated = True
     if parts and parts[-1] == "":
         parts.pop()
+    identity = meta.get("file_identity")
+    if not isinstance(identity, Mapping):
+        identity = None
+    else:
+        identity = {key: list(value) if isinstance(value, tuple) else value
+                    for key, value in identity.items() if key in {"size", "ident", "updated"}
+                    and (type(value) is int or isinstance(value, (list, tuple))
+                         and len(value) <= 6 and all(type(item) is int or isinstance(item, str) and len(item) <= 200 for item in value))}
     return parts, {"source": source, "path": path, "first_line": first_line,
                    "line_basis": "original" if first_line is not None else "tail-relative",
                    "truncated": truncated, "bytes_examined": len(raw), "lines_examined": len(parts),
-                   "present": bool(raw)}
+                   "present": bool(raw), "file_identity": identity,
+                   "label": _text(meta.get("label"), 160), "group": _text(meta.get("group"), 160)}
 
 
 def investigate(job: Any, *, details: Mapping | None = None, live: Any = None,
                 events: Iterable = (), stdout: Any = "", stderr: Any = "",
-                artifact_results: Any = None) -> dict:
+                artifact_results: Any = None, logs: Iterable = ()) -> dict:
     """Build a JSON-safe investigation with ranked, evidence-linked hypotheses.
 
     ``job`` accepts Tower Job/Finished records or a mapping with ``id``/``JobId``.
@@ -260,8 +272,33 @@ def investigate(job: Any, *, details: Mapping | None = None, live: Any = None,
     # error in the selected stderr excerpt, then stdout, then event history.
     log_sources = []
     first_error = None
-    for source, supplied in (("stderr", stderr), ("stdout", stdout)):
+    if isinstance(logs, (str, bytes, Mapping)) or not isinstance(logs, Iterable):
+        raise TypeError("logs must be an iterable of excerpt records")
+    supplied_logs = [("stderr", stderr), ("stdout", stdout)]
+    additional = list(itertools.islice(logs, MAX_LOG_SOURCES + 1))
+    if len(additional) > MAX_LOG_SOURCES:
+        limitations.append(f"Additional log inspection reached the {MAX_LOG_SOURCES}-source limit; remaining sources were omitted.")
+    for index, value in enumerate(additional[:MAX_LOG_SOURCES]):
+        if not isinstance(value, Mapping):
+            raise TypeError("additional logs must contain excerpt mappings")
+        supplied_logs.append((_text(value.get("source"), 160) or f"log:{index + 1}", value))
+    log_bytes = 0
+    for source, supplied in supplied_logs:
+        if log_bytes >= MAX_TOTAL_LOG_BYTES:
+            limitations.append("Combined log inspection reached its 1 MiB budget; remaining sources were omitted.")
+            break
         lines, meta = _log_excerpt(supplied, source)
+        remaining = MAX_TOTAL_LOG_BYTES - log_bytes
+        if meta["bytes_examined"] > remaining:
+            # Keep the budget exact without attributing a shortened window to
+            # its former original line numbers.
+            raw = "\n".join(lines).encode("utf-8", "replace")[-remaining:]
+            newline = raw.find(b"\n")
+            if newline >= 0:
+                raw = raw[newline + 1:]
+            lines, meta = _log_excerpt(dict(text=raw, path=meta["path"], truncated=True,
+                                           file_identity=meta["file_identity"], label=meta["label"], group=meta["group"]), source)
+        log_bytes += meta["bytes_examined"]
         log_sources.append(meta)
         if not meta["present"]:
             limitations.append(f"No {source} excerpt was supplied; application health is unverified.")
@@ -283,7 +320,13 @@ def investigate(job: Any, *, details: Mapping | None = None, live: Any = None,
             location = f"{meta['path'] or source}:{number}" if meta["line_basis"] == "original" else f"{meta['path'] or source} (tail-relative line {number})"
             start = max(0, min(found.start() for key, found in matches if key in keys) - 120)
             excerpt = ("... " if start else "") + line[start:start + MAX_EXCERPT_CHARS - (4 if start else 0)]
-            eid = add(source, location, excerpt, line=number, line_basis=meta["line_basis"], excerpt_offset=start)
+            stamp_match = _LOG_TIMESTAMP.search(line[:160])
+            log_stamp = _epoch(stamp_match.group(1)) if stamp_match else None
+            timestamp_fields = {"timestamp": log_stamp, "t": log_stamp} if log_stamp is not None else {}
+            eid = add(source, location, excerpt, line=number, line_basis=meta["line_basis"], excerpt_offset=start,
+                      path=meta["path"], file_identity=meta["file_identity"],
+                      excerpt_line=line[:MAX_EXCERPT_CHARS], first_line=meta["first_line"],
+                      tail_distance=len(lines) - index - 1, job=job_id, **timestamp_fields)
             if eid is None:
                 break
             if first_error is None:
