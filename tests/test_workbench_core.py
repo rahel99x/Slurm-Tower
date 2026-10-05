@@ -145,3 +145,25 @@ def test_f6_decoder_reaches_panel_focus():
 def test_every_feature_module_is_required_and_registered():
     assert {module.__name__.removeprefix('tower.') for module in workbench.modules()} == set(workbench.FEATURES)
     assert {'dashboard', 'preflight', 'orchestrate', 'project', 'savedview', 'logview', 'workspaces'} <= set(workbench.command_names())
+
+
+@pytest.mark.parametrize('tab', ['log', 'research'])
+def test_native_page_keys_work_after_leaving_a_focused_details_panel(dashboard, tmp_path, tab):
+    app, views, store = dashboard
+    app.run_command('focus details')
+    assert app.layout_state.focus == 'details' and 'details' in app.layout_state.available
+    if tab == 'log':
+        path = tmp_path / 'actual.log'
+        path.write_bytes(b'first\tcolumn\r\nsecond\r\nthird\n')
+        store.details['101_0'] = {'StdOut': str(path)}
+        app.open_log('101_0')
+        # These keys can arrive before the first native page frame.
+        app.handle('home')
+        app.handle('v')
+        app.handle('down')
+        assert app.logs.selection_bytes(app.prepare_log()) == b'first\tcolumn\r\nsecond\r\n'
+    else:
+        app.enter_tab('research')
+        app.research_view, app.research_job_id = 'experiment', '101_1'
+        app.handle('up')
+        assert app.research_job_id == '101_0'

@@ -170,7 +170,8 @@ def handle_key(app, key: str) -> bool:
         state.maximized = False
         _persist(app)
         return True
-    if state.focus == "details" and "details" in state.available and key in ("up", "down", "pgup", "pgdn", "home", "end"):
+    if (getattr(app, "tab", "") not in ("log", "research") and state.focus == "details" and
+            "details" in state.available and key in ("up", "down", "pgup", "pgdn", "home", "end")):
         _scroll(app, key)
         return True
     if state.focus == "main" and enabled(app) and getattr(app, "tab", "") not in ("log", "research") and _key(app) in state.sizes:
