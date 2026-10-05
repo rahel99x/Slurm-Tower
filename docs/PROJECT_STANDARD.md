@@ -190,6 +190,37 @@ to open a file. Esc returns from the file to its list, then closes the list;
 select another entry without changing jobs. Lowercase `o` remains quick file
 cycling, and `e` switches scheduler stdout/stderr.
 
+Inside a file, arrows move the logical line cursor before `v` starts selection.
+Arrows/page keys/Home/End then extend the selected source-line range across
+pages. The right edge shows `›` for the cursor and orange `◆` for selected lines
+(`>` and `*` in ASCII). `y` copies original UTF-8 text, preserving tabs and CRLF
+endings without display headers, line numbers, wrapping, or search decorations.
+Ranges above 256 KiB or 4,096 lines, and any non-UTF-8 range, run on the shared
+worker. Those copies pin the selected exact bytes and save a private
+`state/exports/log-selected-<uuid>.log` file before clipboard delivery. Invalid
+UTF-8 skips text clipboard transport instead of replacing bytes.
+Small valid UTF-8 ranges keep the immediate atomic `clipboard.txt` fallback.
+With `--no-state`, exports use `./tower-exports/`. If rotation, truncation, or
+retained-tail eviction invalidates a selection, `y` asks for reselection rather
+than silently copying a whole file; stale mouse targets are rejected too.
+
+`V` then `y`, `Y`, `:copy all`, or `y` without a line selection reads the whole
+exact selected log through the shared worker rather than copying the retained
+tail. Tower streams its initial byte range in 1 MiB chunks to a unique private
+`state/exports/log-full-<uuid>.log` file (mode `0600`), or `./tower-exports/` with
+`--no-state`. Later appends are excluded and reported. Detected rotation,
+replacement, truncation, in-place change, or short reads fail without publishing
+a partial copy. This does not lock the producer or establish an application
+checkpoint. Treat exports as generated private evidence, outside public Git;
+ignore `tower-exports/` if using the no-state fallback within your project.
+
+The complete raw export survives clipboard limitations. OSC 52 is requested
+only for complete UTF-8 text that fits its limit; no prefix is silently copied.
+Terminal acceptance cannot be confirmed. Large or non-UTF-8 files keep their
+exact export with skipped transport reported. A local clipboard tool can accept
+larger text when available; small valid source-line selections additionally keep
+the private atomic `clipboard.txt` fallback.
+
 The list combines scheduler stdout/stderr, bounded job-ID-matching files in
 those output directories, and explicit index entries. Different directories
 and groups stay visible. Duplicate resolved locations produce one catalog
@@ -202,6 +233,18 @@ reports missing evidence otherwise. A concrete run workdir and its index allow
 project-owned logs to remain accessible even after scheduler metadata expires.
 Preserve indexes and failure logs when retaining a failed, cancelled, timed-out,
 or otherwise incomplete attempt.
+
+If a job leaves the live queue before accounting confirms its outcome, Jobs'
+Recents preserves it as **awaiting accounting**. Tower expedites a bounded
+accounting refresh and adds its real terminal record to History when available.
+Queue absence does not relabel the project attempt as `COMPLETED` and does not
+finalize `run.json` or `summary.json` for your application. Keep the reporting
+lifecycle truthful while reconciliation is pending. Completion motion and two
+brief History pulses are optional; `animations = false` or the `reader` theme
+retains static notices and the unread badge.
+Requeued IDs start a new scheduler attempt: Tower discards old cached details
+and requests fresh metadata while respecting source backoff. Keep your own
+unique attempt directory and reports separate even when Slurm reuses its job ID.
 
 ## Live metrics: `metrics.jsonl`
 

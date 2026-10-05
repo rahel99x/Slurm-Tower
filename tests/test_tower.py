@@ -331,7 +331,8 @@ def test_selection_copy_and_exports(tmp_path):
     app.click(y0 + 2, 3, hits, button="right")                         # right click: extend to the third
     assert (app.sel_anchor, app.sel_end) == (y0, y0 + 2)
     rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-    assert all(s == "sel" for _, s in rows[y0]) and all(s == "sel" for _, s in rows[y0 + 2]) and not any(s == "sel" for _, s in rows[y0 + 3])
+    assert all(s == "sel" for _, s in rows[y0][:-1]) and all(s == "sel" for _, s in rows[y0 + 2][:-1]) and not any(s == "sel" for _, s in rows[y0 + 3])
+    assert rows[y0][-1] == ("*", "fg:#fb923c+bold") and L.vlen(L.row_text(rows[y0])) == W
     app.handle("down")                                                 # arrows extend the selection
     assert app.sel_end == y0 + 3
     app.handle("y")
@@ -480,12 +481,16 @@ def test_log_tab_pages_scroll_and_search_through_the_controller(tmp_path):
             app.handle("up")
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         body = [L.row_text(r) for r in rows if L.row_text(r).startswith(" window")]
-        assert len(body) == page and body[0] == f" window {301 - page - 5} done" and not app.logs.following   # a full page, shifted by five
+        assert len(body) == page - 1 and body[0] == f" window {301 - page} done" and not app.logs.following
+        assert app.logs.cursor == 295  # arrows move the logical cursor before scrolling at the viewport edge
+        cursor_row = next(r for r in rows if r[-1] == (">", "cyan+bold"))
+        assert L.row_text(cursor_row[:-1]).strip() == "window 295 done"
         app.handle("pgup"); app.handle("pgup")
         app.handle("home")
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         body = [L.row_text(r) for r in rows if L.row_text(r).startswith(" window")]
-        assert len(body) == page and body[0] == " window 0 done" and app.logs.top == 0
+        assert len(body) == page and body[0].rstrip().endswith(">") and app.logs.top == 0
+        assert L.row_text(next(r for r in rows if r[-1] == (">", "cyan+bold"))[:-1]).strip() == "window 0 done"
         for _ in range(50):
             app.handle("up")                                          # bounded at the top
         assert app.logs.top == 0
@@ -503,7 +508,7 @@ def test_log_tab_pages_scroll_and_search_through_the_controller(tmp_path):
         assert app.logs.search == "window 12 done" and app.message.startswith("1 lines match")
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         hl = [r for r in rows if any(s == "sel" for _, s in r)]
-        assert len(hl) == 1 and L.row_text(hl[0]).strip() == "window 12 done" and not app.logs.following
+        assert len(hl) == 1 and L.row_text(hl[0][:-1]).strip() == "window 12 done" and not app.logs.following
         app.handle("f")
         assert app.logs.following
         app.handle("f")
@@ -514,7 +519,9 @@ def test_log_tab_pages_scroll_and_search_through_the_controller(tmp_path):
         app.handle("enter")
         assert app.logs.match == 300
         for _ in range(400):
-            app.handle("down")                                        # bounded at the bottom: following again
+            app.handle("down")                                        # bounded cursor while paused
+        assert app.logs.cursor == 301 and not app.logs.following
+        app.handle("end")
         assert app.logs.following
     finally:
         os.chdir(cwd)
@@ -1164,7 +1171,7 @@ def test_log_extras_wrap_stderr_other_files_and_bookmarks(tmp_path):
         app.handle("w"); assert app.logs.wrap and app.message == "long lines wrapped"
         rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         body = [L.row_text(r) for r in rows[5:5 + page]]
-        assert len(body) == page and body[0].strip() == "line 0" and sum(1 for b in body if b.startswith(" x")) >= 1 and "wrapped" in L.row_text(rows[4])
+        assert len(body) == page and L.row_text(rows[5][:-1]).strip() == "line 0" and rows[5][-1] == (">", "cyan+bold") and sum(1 for b in body if b.startswith(" x")) >= 1 and "wrapped" in L.row_text(rows[4])
         app.handle("end"); rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         assert L.row_text(rows[-2]).strip() == "line 39" and app.logs.following
         app.handle("w"); assert not app.logs.wrap

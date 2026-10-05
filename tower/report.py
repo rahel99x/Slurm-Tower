@@ -49,6 +49,9 @@ def build(snap: dict, app, views, actions=None, title: str = "", width: int = 13
     """
     width = max(60, min(240, int(width)))
     local = _ui_copy(app)
+    from .transitions import CompletionFeedback
+    local.completion = CompletionFeedback(snap)
+    local.interactive = False
     display = _ui_copy(views)
     display.g = layout.Glyphs(True)
     local.labels = KEY_LABELS_ASCII
@@ -60,10 +63,12 @@ def build(snap: dict, app, views, actions=None, title: str = "", width: int = 13
     local.cursor = {key: 0 for key, _ in TABS}
     local.top = {key: 0 for key, _ in TABS}
     local.logs = _ui_copy(app.logs)
+    local.logs.clear_selection(reset_cursor=True)
     local.logs.browser = False
     # A new buffer cache avoids mutating the interactive reader or copying its
     # potentially large retained files. The normal bounded file reader is reused.
     local.logs.buffers = {}
+    local.logs._buffer_token = None
     selected_log = app.log_job or app.selected_id
     now = clock.now()
     generated = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now))

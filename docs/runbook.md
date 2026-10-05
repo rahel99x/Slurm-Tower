@@ -297,6 +297,20 @@ For scheduled collection, use absolute paths to the venv's Python, the checkout'
 `tower` directory, and your config. The interactive UI needs a terminal; use
 `--once`, `--json`, or `--report` in automation. No background service is required.
 
+### Queue departures and completion notices
+
+If a job disappears from a successful live queue refresh, Tower retains its
+last observed record in Jobs' Recents as **awaiting accounting** and requests
+a bounded accounting refresh. It adds the matching record to History when Slurm
+confirms a terminal state. Queue disappearance is never treated as proof of
+successful completion; delayed or unavailable accounting remains visible.
+
+The terminal shows a short block-particle departure motion and two brief History
+pulses for a confirmed arrival, then retains a static unread badge until History
+is opened. Set `"animations": false` in JSON (`animations = false` in TOML), or
+use the `reader` theme, to keep static notices without animation. This changes
+visual feedback rather than scheduler polling or accounting evidence.
+
 ### Active and historical job logs
 
 Select an active Jobs row, a **Recents** row, or any History job and press `l`.
@@ -322,6 +336,49 @@ WorkDir. Tower keeps controller paths it actually observed, reports absent
 evidence, and never substitutes a running job. Preserve failed-run files and
 indexes, and bind their run directory explicitly when scheduler metadata is gone.
 
+### Select and copy original log contents
+
+In the open log file, arrows move the line cursor before `v` begins selection.
+Arrows/PgUp/PgDn/Home/End then extend it across pages; Esc cancels it. A right-edge
+`›` marks the cursor, and orange `◆` marks selected lines (`>` and `*` in ASCII).
+Press `y` to copy the original selected text, preserving tabs and CRLF endings
+for UTF-8 logs, without Tower headers, row numbers, or wrapping.
+
+Ranges above 256 KiB or 4,096 lines run on the shared worker, as do non-UTF-8
+ranges. These copies save the pinned exact bytes as
+`state/exports/log-selected-<uuid>.log` (or `./tower-exports/` with `--no-state`)
+before clipboard delivery; non-UTF-8 skips text transport. Small valid UTF-8
+ranges keep the immediate private `clipboard.txt` fallback.
+If rotation, truncation, or tail eviction invalidates a range, `y` asks you to
+reselect instead of copying the whole file. A stale mouse click also asks for
+a fresh selection rather than choosing a changed screen row.
+
+Use `V` then `y`, `Y`, or `:copy all` for the entire exact selected file. `y`
+without a line selection in Logs also copies the entire file. This reads through
+the selected local/SSH backend on the shared worker, independent of the retained
+tail, search, scrolling, or wrapping. The private, unique export is
+`~/.local/state/tower/exports/log-full-<uuid>.log`, honoring `XDG_STATE_HOME`.
+With `--no-state`, use the reported file under `./tower-exports/` instead. Files
+are mode `0600` and stream in 1 MiB chunks with bounded memory.
+
+The copy captures the source's initial bytes; later appends are excluded and
+reported. Detected rotation, replacement, truncation, mutation, or a short read
+fails without publishing a partial file; retry the current log. An active writer
+is not locked, so the exported byte range is not an application checkpoint.
+
+Clipboard transport depends on your terminal and display. Tower sends OSC 52
+only when the complete UTF-8 text fits its limit, never a shortened prefix.
+The status reports a request rather than confirmed terminal acceptance. Large
+or non-UTF-8 logs retain their complete raw export even if clipboard delivery is
+skipped. A usable local clipboard tool may accept larger text files. Small valid
+line selections keep the private `clipboard.txt` fallback; full-file copies use
+the unique export so previous copies survive.
+
+Completion and full-copy behavior have automated simulation, local-file, and
+SSH-adapter coverage. Live CARC verification of these flows remains outstanding;
+check the site's accounting delay and your terminal's clipboard settings when
+adopting them.
+
 ## 6. Troubleshoot the specific failure
 
 | Symptom | Next step |
@@ -335,6 +392,10 @@ indexes, and bind their run directory explicitly when scheduler metadata is gone
 | TOML fails on Python 3.10 | Use JSON config or Python 3.11+. |
 | Blank history or budget | Check Sources; `sacct`, `sreport`, or `sacctmgr` may be unavailable or restricted. |
 | Historical logs have no path | Select the job's actual run directory with `--workdir`; configure its `logs.manifest_file` index. Accounting may not retain old paths. |
+| Job stays "awaiting accounting" | Check the accounting source in Sources; queue absence alone cannot establish its terminal state. |
+| Full log did not reach the clipboard | Read the reported complete `log-full-<uuid>.log` export; the terminal may disable OSC 52 or the full text may exceed its limit. |
+| Log rotated during copying | Open the current file and retry; Tower does not publish an incomplete export. |
+| Selected range changed or expired | Reselect after rotation, truncation, or retained-tail eviction; `y` will not substitute the whole file. |
 | Missing GPU metrics | Start with `--no-gpu`; enable sampling only for allocated GPUs where site policy permits. |
 | Terminal looks broken | Check `$TERM`, widen the terminal, and try `--ascii --no-color`. |
 | Blocks or braille look misaligned | Use a UTF-8 locale and a monospace terminal font with those glyphs, or use `--ascii`. |

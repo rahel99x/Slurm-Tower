@@ -204,6 +204,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
             height, width = stdscr.getmaxyx()
             app.width = width
             rows, hits = views.compose(snap, app, width, height, actions)
+            stdscr.timeout(100 if app.animations_enabled and app.completion.active else 200)
             app.last_hits = hits
             stdscr.erase()
             for y, segs in enumerate(rows[:height]):

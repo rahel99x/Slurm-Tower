@@ -7,7 +7,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from typing import Any, Deque, Dict, List, Optional, Sequence
 
 from . import clock
@@ -360,6 +360,18 @@ def to_plain(obj):
     return obj
 
 
+# Only these accounting states establish that an individual attempt ended. Queue
+# disappearance, requeue states, and unknown future Slurm states do not.
+TERMINAL_STATES = frozenset(("COMPLETED", "FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL",
+                             "PREEMPTED", "CANCELLED", "DEADLINE", "REVOKED"))
+COMPLETION_KEEP = 256
+TRANSITION_KEEP = 128
+
+
+def terminal_state(state: str) -> str:
+    return str(state or "").split()[0].rstrip("+").upper() if str(state or "").strip() else ""
+
+
 # ------------------------------------------------------------------------------------------------ the store
 class Store:
     """Everything the screen reads; updated by the sampler under a lock.  ``snapshot()`` is a shallow copy."""
@@ -373,6 +385,17 @@ class Store:
         self.partitions: List[Partition] = []
         self.gpu_inventory: Dict[str, Dict[str, int]] = {}
         self.finished: List[Finished] = []
+        # An exact copy of the last queue observation, never a synthetic COMPLETED
+        # record. These IDs remain usable for selection and logs while sacct lags.
+        self.departed_jobs: Dict[str, Job] = {}
+        self.job_transitions: Deque[dict] = collections.deque(maxlen=TRANSITION_KEEP)
+        self.history_revision = 0
+        self._transition_seq = 0
+        self._jobs_loaded = False
+        self._accounting_jobs: Dict[str, Finished] = {}
+        self._recent_finished: Dict[str, Finished] = {}
+        self._stale_finished: Dict[str, tuple] = {}
+        self._job_attempts: Dict[str, int] = {}
         self.share: List[dict] = []
         self.account: dict = {}
         self.group: List[Job] = []                         # everyone's jobs in the account
@@ -507,8 +530,25 @@ class Store:
         out = []
         with self.lock:
             now = {j.id: j for j in jobs}
-            first = not self.seen and not self.names
+            first = not self._jobs_loaded
+            previous_jobs = {j.id: j for j in self.jobs}
+            self._jobs_loaded = True
             for j in jobs:
+                if j.id in self.departed_jobs or j.id in self._recent_finished:
+                    prior = self._accounting_jobs.get(j.id) or self._recent_finished.get(j.id)
+                    if prior is not None:
+                        self._stale_finished[j.id] = self._finished_identity(prior)
+                        self._bound(self._stale_finished)
+                    self.departed_jobs.pop(j.id, None)
+                    self._recent_finished.pop(j.id, None)
+                    self._accounting_jobs.pop(j.id, None)
+                    transition = self._transition("returned", j, j.state)
+                    self._job_attempts[j.id] = transition["seq"]
+                    # Paths and metadata belong to an attempt, even when Slurm
+                    # reuses the ID. Keep them through departure/confirmation,
+                    # then require a fresh scheduler record when it returns.
+                    self.details.pop(j.id, None)
+                    self.fin_steps.pop(j.id, None)
                 prev = self.seen.get(j.id)
                 if prev is None and not first:
                     out.append(self.event("queued" if j.pending else "started", f"{'queued' if j.pending else 'started'} {j.id} {j.name}", j))
@@ -528,7 +568,17 @@ class Store:
                     continue
                 if jid not in now:
                     kind = "finished" if st != "PENDING" else "left"
-                    out.append(self.event(kind, f"{'finished' if kind == 'finished' else 'left queue'} {jid} {self.names.get(jid, '')}", job_id=jid, name=self.names.get(jid, "")))
+                    # Keep the historic event kind for plugins, but mark absence
+                    # unconfirmed and never describe it as successful completion.
+                    out.append(self.event(kind, f"left queue {jid} {self.names.get(jid, '')}", job_id=jid,
+                                          name=self.names.get(jid, ""), confirmed=False, state="ACCOUNTING"))
+                    previous = previous_jobs.get(jid)
+                    # Compressed pending array ranges are presentation groups, not
+                    # accounting job identities; splitting a range is not a finish.
+                    if previous is not None and "[" not in jid:
+                        self.departed_jobs[jid] = replace(previous, hosts=list(previous.hosts))
+                        self._bound(self.departed_jobs)
+                        self._transition("departed", previous, "ACCOUNTING")
                     del self.seen[jid]
                     self.seen.pop(jid + ":held", None)
                     self.live.pop(jid, None)
@@ -543,8 +593,124 @@ class Store:
                 if not j.est_start:
                     j.est_start = old.get(j.id, "")
             self.jobs = list(jobs)
+            confirmed = False
+            for jid in list(self.departed_jobs):
+                candidate = self._accounting_jobs.get(jid)
+                if candidate is not None:
+                    confirmed = self._confirm_departure(jid, candidate) or confirmed
+            # Accounting can arrive before the next queue poll. Active IDs stay
+            # exclusively in Jobs until the scheduler actually removes them.
+            # Do not rebuild/sort potentially large history on unchanged 2s polls.
+            if confirmed or now.keys() != previous_jobs.keys():
+                self._publish_finished()
+            retained_attempts = set(now) | set(self.departed_jobs) | set(self._recent_finished)
+            for jid in self._job_attempts.keys() - retained_attempts:
+                del self._job_attempts[jid]
             self.t_jobs = clock.now()
         return out
+
+    def job_attempt(self, jid: str) -> int:
+        """Generation used to reject detail responses from a prior queue attempt."""
+        with self.lock:
+            return self._job_attempts.get(jid, 0)
+
+    @staticmethod
+    def _bound(mapping: dict) -> None:
+        while len(mapping) > COMPLETION_KEEP:
+            del mapping[next(iter(mapping))]
+
+    @staticmethod
+    def _finished_identity(job: Finished) -> tuple:
+        return job.id, job.submit, job.start, job.end
+
+    def _transition(self, kind: str, job, state: str, confirmed: bool = False) -> dict:
+        self._transition_seq += 1
+        event = dict(seq=self._transition_seq, kind=kind, job=job.id, name=job.name,
+                     state=state, t=clock.now(), mono=time.monotonic(), confirmed=confirmed)
+        self.job_transitions.append(event)
+        return event
+
+    def _matches_attempt(self, previous: Job, finished: Finished) -> bool:
+        if previous.id != finished.id or terminal_state(finished.state) not in TERMINAL_STATES:
+            return False
+        if self._stale_finished.get(finished.id) == self._finished_identity(finished):
+            return False
+        # A requeued job keeps its ID. A prior attempt's accounting must not
+        # complete the new attempt; pending StartTime can be a future estimate.
+        end = stamp(finished.end)
+        lower = stamp(previous.submit)
+        if not previous.pending:
+            started = stamp(previous.start)
+            lower = max(lower or 0, started or 0) or None
+        if end is not None and lower is not None and end < lower:
+            return False
+        started = stamp(previous.start) if not previous.pending else None
+        actual = stamp(finished.start)
+        return not (started is not None and actual is not None and actual < started)
+
+    def _confirm_departure(self, jid: str, finished: Finished) -> bool:
+        previous = self.departed_jobs.get(jid)
+        if previous is None or not self._matches_attempt(previous, finished):
+            return False
+        del self.departed_jobs[jid]
+        self._recent_finished[jid] = finished
+        self._bound(self._recent_finished)
+        self.history_revision += 1
+        self._transition("history", finished, terminal_state(finished.state), confirmed=True)
+        if jid in self.details:
+            self.details[jid] = dict(self.details[jid], JobState=finished.state)
+        return True
+
+    def _publish_finished(self) -> None:
+        active = {job.id for job in self.jobs}
+        combined = {job.id: job for job in self.finished}
+        combined.update(self._recent_finished)
+        combined.update(self._accounting_jobs)
+        self.finished = sorted((job for jid, job in combined.items() if jid not in active),
+                               key=lambda job: job.end, reverse=True)
+
+    def apply_finished(self, jobs: Sequence[Finished], history_days: Optional[float] = None) -> None:
+        """Reconcile an accounting snapshot with observed departures under one lock.
+
+        Initial history never animates. Confirmed live transitions increment
+        ``history_revision`` once, even if sacct wins the race with squeue. Recent
+        confirmations survive temporarily incomplete accounting snapshots.
+        """
+        with self.lock:
+            active = {job.id: job for job in self.jobs}
+            incoming = {}
+            for job in jobs:
+                state = terminal_state(job.state)
+                if state not in TERMINAL_STATES or "[" in job.id:
+                    continue
+                job = replace(job, state=state)
+                previous = active.get(job.id) or self.departed_jobs.get(job.id)
+                if previous is not None and not self._matches_attempt(previous, job):
+                    continue
+                if self._stale_finished.get(job.id) == self._finished_identity(job):
+                    continue
+                incoming[job.id] = job
+            if history_days is not None:
+                cutoff = clock.now() - max(0.0, history_days) * 86400
+                for jid, job in list(self._recent_finished.items()):
+                    ended = stamp(job.end)
+                    if ended is not None and ended < cutoff:
+                        del self._recent_finished[jid]
+            self._accounting_jobs = incoming
+            for jid in list(self.departed_jobs):
+                if jid in incoming:
+                    self._confirm_departure(jid, incoming[jid])
+            # Keep fresh metrics/corrected state for confirmations already known.
+            for jid in self._recent_finished:
+                if jid in incoming:
+                    self._recent_finished[jid] = incoming[jid]
+            self.finished = []
+            self._publish_finished()
+
+    def preserved_detail_ids(self) -> set:
+        """Bounded IDs whose original scheduler paths must survive queue removal."""
+        with self.lock:
+            return set(self.departed_jobs) | set(self._recent_finished)
 
     def apply_starts(self, starts: Dict[str, str]):
         with self.lock:
@@ -645,6 +811,8 @@ class Store:
         with self.lock:
             return dict(jobs=list(self.jobs), live=dict(self.live), gpu=dict(self.gpu), nodes=dict(self.nodes), partitions=list(self.partitions),
                         gpu_inventory=dict(self.gpu_inventory), finished=list(self.finished), share=list(self.share), account=dict(self.account),
+                        departed_jobs=dict(self.departed_jobs), job_transitions=[dict(e) for e in self.job_transitions],
+                        history_revision=self.history_revision,
                         details=dict(self.details), health={k: Health(**asdict(v)) for k, v in self.health.items()}, events=list(self.events),
                         group=list(self.group), weather=list(self.weather), pending_ahead=dict(self.pending_ahead), budget=dict(self.budget),
                         nodemap=dict(self.nodemap), steps=dict(self.steps), fin_steps=dict(self.fin_steps), trace=dict(self.trace),

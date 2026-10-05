@@ -4,10 +4,13 @@ set-clipboard on), a local clipboard tool when one is reachable, and always a fi
 from __future__ import annotations
 
 import base64
+import codecs
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import uuid
 from typing import List, Optional
 
 TOOLS = [["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"], ["clip.exe"]]
@@ -15,10 +18,18 @@ OSC52_LIMIT = 100_000                                     # bytes of base64 most
 
 
 def osc52(text: str, tty_path: str = "/dev/tty") -> bool:
-    """Write the OSC 52 sequence to the controlling terminal (wrapped for tmux and screen)."""
-    data = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    if len(data) > OSC52_LIMIT:
-        data = base64.b64encode(text.encode("utf-8")[:OSC52_LIMIT * 3 // 4]).decode("ascii")
+    """Request the complete text through OSC 52; never send a truncated prefix.
+
+    A successful write confirms only that a request was sent. Terminals can
+    disable clipboard access or impose a smaller limit without acknowledging it.
+    """
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeError:
+        return False
+    if len(encoded) > OSC52_LIMIT // 4 * 3:
+        return False
+    data = base64.b64encode(encoded).decode("ascii")
     seq = f"\033]52;c;{data}\a"
     if os.environ.get("TMUX"):
         seq = "\033Ptmux;" + seq.replace("\033", "\033\033") + "\033\\"
@@ -31,6 +42,8 @@ def osc52(text: str, tty_path: str = "/dev/tty") -> bool:
         return True
     except OSError:
         try:
+            if sys.__stdout__ is None or not sys.__stdout__.isatty():
+                return False
             sys.__stdout__.write(seq)
             sys.__stdout__.flush()
             return True
@@ -50,28 +63,147 @@ def local_tool(text: str) -> Optional[str]:
             r = subprocess.run(cmd, input=text.encode("utf-8"), capture_output=True, timeout=5)
             if r.returncode == 0:
                 return cmd[0]
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, UnicodeError, subprocess.TimeoutExpired):
             continue
     return None
 
 
 def to_file(text: str, state_dir: Optional[str], name: str = "clipboard.txt") -> Optional[str]:
     base = state_dir or os.path.join(os.getcwd(), "tower-exports")
+    directory_fd = None
+    temporary = None
     try:
-        os.makedirs(base, exist_ok=True)
-        path = os.path.join(base, name)
-        with open(path, "w") as f:
-            f.write(text)
-        return path
-    except OSError:
+        if not isinstance(name, str) or not name or os.path.basename(name) != name or name in (".", ".."):
+            return None
+        encoded = text.encode("utf-8")
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        directory_fd = os.open(base, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            existing = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISREG(existing.st_mode):
+                return None
+        except FileNotFoundError:
+            pass
+        temporary = ".clipboard-" + uuid.uuid4().hex + ".tmp"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                     0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "wb") as output:
+            output.write(encoded)
+            output.flush()
+        os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        temporary = None
+        return os.path.join(base, name)
+    except (OSError, UnicodeError, ValueError):
         return None
+    finally:
+        if temporary and directory_fd is not None:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except OSError:
+                pass
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _regular_file(path: str):
+    """Open only the published regular export, without following its symlink."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("clipboard source must be a regular file")
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _tool_from_file(path: str) -> Optional[str]:
+    """Stream an already exported file to a local clipboard process."""
+    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) or sys.platform in ("darwin", "win32", "cygwin")
+    for cmd in TOOLS:
+        if shutil.which(cmd[0]) is None or (cmd[0] in ("xclip", "xsel", "wl-copy") and not has_display):
+            continue
+        try:
+            with _regular_file(path) as source:
+                result = subprocess.run(cmd, stdin=source, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=5)
+            if result.returncode == 0:
+                return cmd[0]
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def copy_file(path: str, *, tty_path: str = "/dev/tty", use_osc52: bool = True, use_tools: bool = True, cancel=None) -> dict:
+    """Deliver a complete private export without loading a large file in memory.
+
+    Text transports receive only strict UTF-8. The caller keeps the exact-byte
+    export when encoding or transport limits prevent copying to a clipboard.
+    """
+    result = {"methods": [], "warnings": [], "bytes": 0, "text": False}
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    small = bytearray()
+    fits = True
+    try:
+        with _regular_file(path) as source:
+            file_size = os.fstat(source.fileno()).st_size
+            while True:
+                if cancel is not None and cancel():
+                    raise InterruptedError("clipboard delivery cancelled")
+                data = source.read(65536)
+                if not data:
+                    break
+                result["bytes"] += len(data)
+                decoder.decode(data, final=False)
+                if fits and len(small) + len(data) <= OSC52_LIMIT // 4 * 3:
+                    small.extend(data)
+                else:
+                    fits = False
+                    small.clear()
+            decoder.decode(b"", final=True)
+    except UnicodeError:
+        result["bytes"] = file_size
+        result["warnings"].append("Clipboard skipped: the log is not valid UTF-8; the full raw export is preserved.")
+        return result
+    except OSError as exc:
+        result["warnings"].append("Clipboard source could not be read: " + str(exc))
+        return result
+    result["text"] = True
+    if cancel is not None and cancel():
+        result["warnings"].append("Clipboard delivery cancelled.")
+        return result
+    if use_osc52:
+        if not fits:
+            result["warnings"].append(f"OSC 52 skipped: complete log exceeds the {OSC52_LIMIT}-byte base64 limit.")
+        elif osc52(small.decode("utf-8"), tty_path):
+            result["methods"].append("OSC 52 request sent")
+        else:
+            result["warnings"].append("OSC 52 request could not be sent to a terminal.")
+    if use_tools:
+        if cancel is not None and cancel():
+            result["warnings"].append("Local clipboard delivery cancelled.")
+            return result
+        tool = _tool_from_file(path)
+        if tool:
+            result["methods"].append(tool)
+        else:
+            result["warnings"].append("No local clipboard tool accepted the full log.")
+    return result
 
 
 def copy(text: str, state_dir: Optional[str] = None, tty_path: str = "/dev/tty", use_osc52: bool = True, use_tools: bool = True) -> str:
     """Send ``text`` everywhere it can go; returns a one-line account of where it went."""
     where: List[str] = []
-    if use_osc52 and osc52(text, tty_path):
-        where.append("terminal clipboard (OSC 52)")
+    notices: List[str] = []
+    try:
+        encoded_size = len(text.encode("utf-8"))
+    except UnicodeError:
+        return "copy failed: text is not valid UTF-8"
+    if use_osc52:
+        if osc52(text, tty_path):
+            notices.append("OSC 52 request sent (terminal acceptance cannot be confirmed)")
+        elif encoded_size > OSC52_LIMIT // 4 * 3:
+            notices.append("OSC 52 skipped: complete selection exceeds its size limit")
     if use_tools:
         tool = local_tool(text)
         if tool:
@@ -80,4 +212,5 @@ def copy(text: str, state_dir: Optional[str] = None, tty_path: str = "/dev/tty",
     if path:
         where.append(path)
     n = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
-    return f"copied {n} line{'s' if n != 1 else ''} to " + (", ".join(where) if where else "nowhere (no terminal, tool or writable directory)")
+    message = f"copied {n} line{'s' if n != 1 else ''} to " + (", ".join(where) if where else "nowhere (no tool or writable directory)")
+    return message + ("; " + "; ".join(notices) if notices else "")

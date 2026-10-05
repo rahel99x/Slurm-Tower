@@ -18,6 +18,7 @@ class LogBuffer:
         self.files = files or LocalFiles()
         self.last_refresh = 0.0
         self.lines: List[str] = []
+        self.raw_lines: List[bytes] = []     # unmodified completed lines, without their trailing LF
         self.size = 0                        # bytes of the file consumed so far
         self.ident: Optional[Tuple[int, int]] = None   # (device, inode) of the file read
         self.partial = ""                    # an unterminated last line kept until it is completed
@@ -28,11 +29,13 @@ class LogBuffer:
         self._partial_raw = b""
         self._line_bytes: List[int] = []
         self._retained_bytes = 0
+        self._count_key = None
+        self._count_value = 0
 
     # ---- reading ----------------------------------------------------------------------------------
     def _reset(self):
         self.lines, self.size, self.partial, self.truncated, self.skipped_bytes = [], 0, "", False, 0
-        self._partial_raw, self._line_bytes, self._retained_bytes = b"", [], 0
+        self._partial_raw, self._line_bytes, self.raw_lines, self._retained_bytes = b"", [], [], 0
 
     def refresh(self) -> bool:
         """Bring the buffer up to date; True when anything changed.  A remote file is not re-checked more often
@@ -63,7 +66,7 @@ class LogBuffer:
             return False
         consumed = len(data)
         if jumped:
-            self.lines, self._line_bytes, self._partial_raw = [], [], b""
+            self.lines, self.raw_lines, self._line_bytes, self._partial_raw = [], [], [], b""
             self._retained_bytes = 0
             self.skipped_bytes = offset
             self.truncated = True
@@ -87,6 +90,7 @@ class LogBuffer:
             self.skipped_bytes += skipped
             self.truncated = True
         self._partial_raw = parts.pop()
+        self.raw_lines.extend(parts)
         self.lines.extend(line.decode("utf-8", "replace").replace("\t", "    ").rstrip("\r") for line in parts)
         self._line_bytes.extend(len(line) + 1 for line in parts)
         drop = 0
@@ -96,6 +100,7 @@ class LogBuffer:
             drop += 1
         if drop:
             del self.lines[:drop]
+            del self.raw_lines[:drop]
             del self._line_bytes[:drop]
             self.truncated = True
         if len(self._partial_raw) > self.max_bytes:
@@ -115,6 +120,25 @@ class LogBuffer:
 
     def all_lines(self) -> List[str]:
         return self.lines + ([self.partial] if self.partial else [])
+
+    def raw_range(self, first: int, last: int) -> bytes:
+        """Unmodified bytes for retained logical lines, including their actual endings.
+
+        Rendering uses normalized strings. Copying instead keeps tabs, CRLF,
+        and the complete width of each source line; an unterminated last line
+        receives no invented newline. The selected range alone is assembled.
+        """
+        if self.error or self.total == 0:
+            return b""
+        first, last = sorted((first, last))
+        first, last = max(0, first), min(self.total - 1, last)
+        if first > last:
+            return b""
+        completed = len(self.raw_lines)
+        if first >= completed:
+            return self._partial_raw
+        data = b"\n".join(self.raw_lines[first:min(last + 1, completed)]) + b"\n"
+        return data + self._partial_raw if last >= completed else data
 
     def clamp_top(self, top: Optional[int], n: int) -> Optional[int]:
         """``top`` as an absolute line index for a page of ``n`` lines; None means following (the last page)."""
@@ -154,11 +178,17 @@ class LogBuffer:
         return None
 
     def count(self, pattern: str) -> int:
+        key = pattern, self.ident, self.size, self.reloads, self.skipped_bytes
+        if key == self._count_key:
+            return self._count_value
         try:
             rx = re.compile(pattern, re.IGNORECASE)
         except re.error:
             rx = re.compile(re.escape(pattern), re.IGNORECASE)
-        return sum(1 for l in self.all_lines() if rx.search(l))
+        count = sum(1 for line in self.lines if rx.search(line))
+        count += bool(self.partial and rx.search(self.partial))
+        self._count_key, self._count_value = key, count
+        return count
 
 
 class LogSession:
@@ -179,6 +209,13 @@ class LogSession:
         self.candidates: dict = {}            # job id -> (time, [paths]) of the other files
         self.bookmarks: dict = {}             # path -> sorted line indices
         self.last_bookmark: Optional[int] = None   # the bookmark the last jump landed on (the next jump continues from it)
+        self.cursor: Optional[int] = None         # retained logical line, independent of wrapped screen rows
+        self.selection_anchor: Optional[int] = None
+        self.selection_end: Optional[int] = None
+        self.selection_path: Optional[str] = None
+        self.selection_all = False
+        self.selection_generation = 0
+        self._buffer_token = None
         self.browser = False
         self.browse_return = False
         self.browser_cursor = 0
@@ -211,10 +248,12 @@ class LogSession:
         return marks[0]                                    # wrap around
 
     def current_line(self, buf: Optional[LogBuffer]) -> Optional[int]:
-        """The line a bookmark or a jump refers to: the match when it is on the page, else the top line when paused,
-        the last line when following."""
-        if buf is None or buf.total == 0:
+        """The logical cursor, visible search/bookmark, or natural viewport position."""
+        self.sync_buffer(buf)
+        if buf is None or buf.error or buf.total == 0:
             return None
+        if self.cursor is not None:
+            return self.cursor
         lines, start = buf.window(self.top, self.page)
         if self.match is not None and start <= self.match < start + len(lines):
             return self.match
@@ -224,9 +263,12 @@ class LogSession:
 
     def buffer(self, path: str) -> Optional[LogBuffer]:
         if not path:
+            self.sync_buffer(None)
             return None
         if path != self.path:
             self.path, self.top, self.match, self.last_bookmark = path, None, None, None
+            self.clear_selection(reset_cursor=True)
+            self._buffer_token = None
         buf = self.buffers.get(path)
         if buf is None:
             buf = self.buffers[path] = LogBuffer(path, self.max_bytes, self.files)
@@ -235,7 +277,124 @@ class LogSession:
                 if oldest != path:
                     del self.buffers[oldest]
         buf.refresh()
+        self.sync_buffer(buf)
         return buf
+
+    # ---- logical cursor and line selection -------------------------------------------------------
+    def clear_selection(self, reset_cursor: bool = False):
+        if self.selection_path is not None:
+            self.selection_generation += 1
+        self.selection_anchor = self.selection_end = self.selection_path = None
+        self.selection_all = False
+        if reset_cursor:
+            self.cursor = None
+
+    @property
+    def selection_active(self) -> bool:
+        return self.selection_path == self.path and (self.selection_all or
+            (self.selection_anchor is not None and self.selection_end is not None))
+
+    def sync_buffer(self, buf: Optional[LogBuffer]):
+        """Invalidate positions when file identity or retained-line numbering changes.
+
+        Appending without dropping a prefix preserves a paused cursor and range.
+        Rotation, truncation, buffer replacement, tail eviction, and path changes
+        clear stale positions before any copy or rendering can use them.
+        """
+        if buf is None:
+            self.clear_selection(reset_cursor=True)
+            self._buffer_token = None
+            return
+        if buf.path != self.path:
+            self.path, self.top, self.match, self.last_bookmark = buf.path, None, None, None
+            self.clear_selection(reset_cursor=True)
+            self._buffer_token = None
+        token = (id(buf), buf.ident, buf.reloads, buf.skipped_bytes)
+        if self._buffer_token is not None and token != self._buffer_token:
+            self.clear_selection(reset_cursor=True)
+            self.top, self.match, self.last_bookmark = None, None, None
+        self._buffer_token = token
+        if buf.error or buf.total == 0:
+            self.clear_selection(reset_cursor=True)
+            return
+        if self.cursor is not None:
+            self.cursor = max(0, min(buf.total - 1, self.cursor))
+            self._show_cursor(buf)
+
+    def _show_cursor(self, buf: LogBuffer):
+        if self.cursor is None:
+            return
+        page = max(1, self.page)
+        start = self.top if self.top is not None else max(0, buf.total - page)
+        start = max(0, min(start, max(0, buf.total - page)))
+        if self.cursor < start:
+            start = self.cursor
+        elif self.cursor >= start + page:
+            start = self.cursor - page + 1
+        self.top = max(0, min(start, max(0, buf.total - page)))
+
+    def begin_selection(self, buf: Optional[LogBuffer], index: Optional[int] = None) -> bool:
+        self.sync_buffer(buf)
+        if buf is None or buf.error or buf.total == 0:
+            return False
+        index = self.current_line(buf) if index is None else index
+        if index is None:
+            return False
+        self.cursor = max(0, min(buf.total - 1, index))
+        self.selection_anchor = self.selection_end = self.cursor
+        self.selection_path, self.selection_all = self.path, False
+        self.selection_generation += 1
+        self._show_cursor(buf)
+        return True
+
+    def select_all(self, buf: Optional[LogBuffer]) -> bool:
+        self.sync_buffer(buf)
+        if buf is None or buf.error or buf.total == 0:
+            return False
+        self.selection_anchor = self.selection_end = None
+        self.selection_path, self.selection_all = self.path, True
+        self.selection_generation += 1
+        return True
+
+    def move_cursor(self, action: str, buf: Optional[LogBuffer]) -> Optional[int]:
+        self.sync_buffer(buf)
+        if buf is None or buf.error or buf.total == 0:
+            return None
+        current = self.current_line(buf)
+        if current is None:
+            return None
+        page = max(1, self.page - 1)
+        targets = {"up": current - 1, "down": current + 1, "page_up": current - page,
+                   "page_down": current + page, "home": 0, "end": buf.total - 1,
+                   "follow": buf.total - 1}
+        if action not in targets:
+            return current
+        target = max(0, min(buf.total - 1, targets[action]))
+        self.match = self.last_bookmark = None
+        if action in ("end", "follow") and not self.selection_active:
+            self.cursor, self.top = None, None
+            return target
+        self.cursor = target
+        if self.selection_active and not self.selection_all:
+            self.selection_end = target
+        self._show_cursor(buf)
+        return target
+
+    def is_selected(self, index: int) -> bool:
+        if not self.selection_active:
+            return False
+        if self.selection_all:
+            return True
+        return min(self.selection_anchor, self.selection_end) <= index <= max(self.selection_anchor, self.selection_end)
+
+    def selection_bytes(self, buf: Optional[LogBuffer]) -> bytes:
+        self.sync_buffer(buf)
+        if buf is None or not self.selection_active or self.selection_all:
+            return b""
+        return buf.raw_range(self.selection_anchor, self.selection_end)
+
+    def selection_text(self, buf: Optional[LogBuffer]) -> str:
+        return self.selection_bytes(buf).decode("utf-8", "replace")
 
     @property
     def following(self) -> bool:
@@ -254,17 +413,21 @@ class LogSession:
             self.top = max(0, new)
 
     def goto(self, index: Optional[int], buf: Optional[LogBuffer]):
-        if buf is None:
+        self.sync_buffer(buf)
+        if buf is None or buf.error or buf.total == 0:
             return
         if index is None:
-            self.top = None
+            self.cursor, self.top = None, None
             return
-        self.top = buf.clamp_top(max(0, index - self.page // 2), self.page)
+        self.cursor = max(0, min(buf.total - 1, index))
+        if self.selection_active and not self.selection_all:
+            self.selection_end = self.cursor
+        self.top = max(0, min(self.cursor - self.page // 2, max(0, buf.total - self.page)))
 
     def find_next(self, buf: Optional[LogBuffer], backwards: bool = False) -> Optional[int]:
         if buf is None or not self.search:
             return None
-        start = self.match
+        start = self.match if self.match is not None else self.cursor
         if start is None and self.top is not None:
             start = self.top + self.page
         i = buf.find(self.search, start, backwards=backwards)

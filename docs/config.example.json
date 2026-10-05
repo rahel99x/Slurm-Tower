@@ -30,5 +30,6 @@
       }
     }
   },
-  "ascii": false
+  "ascii": false,
+  "animations": true
 }

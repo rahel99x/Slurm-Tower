@@ -105,14 +105,36 @@ scaling spread describes measured repeats rather than future-run confidence.
 | **Nodes** | two views (`←`/`→`): **my nodes**, the nodes running your jobs: state, allocated CPUs, load, memory in use, GRES and GRES in use, GPU utilisation with a sparkline per GPU; **cluster map**, every node of every partition (or of the configured `partitions`) as a cell: a state glyph (idle, mixed, allocated, down or drained), cores allocated / total, GPUs in use / total, the nodes running your jobs marked, with per-partition totals. |
 | **Deps** | the dependency chains among your jobs (the `Dependency` field of squeue: `afterok`, `afterany`, `afternotok`, `after`, `aftercorr`, `singleton`), as trees from each root with every job's state; prerequisites that already finished are named from the history. The cursor selects a job; `c` cancels it **and everything that waits for it** (the confirmation lists the chain), `h` holds or releases the chain, `Space` marks, `Enter` opens its details. The selected panel on the Jobs tab says what a pending job still waits for and how many jobs wait for it. |
 | **Group** | everyone in your account: a bar per user (running jobs, CPUs, GPUs, nodes, pending) and the table of all their jobs (sortable by user, state, name, id, time, priority; filterable; `C` exports it; `i` opens a job's details). |
-| **Log** | logs stay attached to the exact job selected from active Jobs, Recents, or History, including failed and other terminal states. `O` opens a grouped file list combining actual scheduler stdout/stderr, bounded job-ID-matching files in both output directories, and explicit `tower.logs/v1` index entries from other locations. Select with arrows/PgUp/PgDn/Home/End and Enter; Esc returns to the list, then closes it. Files are read once (the last `log_max_mb`) and then only as they grow. Arrows/PgUp/PgDn scroll, Home goes to the top, End or `f` follows; paused views stay put. `/` searches, `N`/`P` move through matches, `L` opens `less`, `w` wraps, `e` switches stdout/stderr, and `o` cycles files. `m` bookmarks a line; `'` jumps to the next bookmark. Bookmarks and wrapping persist in `ui.json`. Missing historical paths stay missing instead of falling back to a running job. |
+| **Log** | logs stay attached to the exact job selected from active Jobs, Recents, or History, including failed and other terminal states. `O` opens a grouped file list combining actual scheduler stdout/stderr, bounded job-ID-matching files in both output directories, and explicit `tower.logs/v1` index entries from other locations. Select with arrows/PgUp/PgDn/Home/End and Enter; Esc returns to the list, then closes it. The displayed tail is bounded by `log_max_mb` and follows appended bytes. Arrows move a logical line cursor, page keys move across pages, Home goes to the first retained line, and End or `f` follows unless extending a selection. `v` starts a line selection; `y` copies its original text. `V` then `y`, `Y`, or `:copy all` copies the entire selected file through a worker, independent of the tail limit. `/` searches, `N`/`P` move through matches, `L` opens `less`, `w` wraps, `e` switches stdout/stderr, and `o` cycles files. `m` bookmarks a line; `'` jumps to the next bookmark. Bookmarks and wrapping persist in `ui.json`. Missing historical paths stay missing instead of falling back to a running job. |
 | **Sources** | every Slurm command the dashboard runs: cadence, last success, latency, calls, errors, backoff, the last error; `x` disables or enables one (say `sinfo` on a slow controller). |
+
+## Observed job completion
+
+When a job disappears from a successful live-queue observation, its last real
+record remains selectable in Jobs' Recents as **awaiting accounting**. Queue
+absence alone does not establish `COMPLETED`, failure, cancellation, or another
+terminal state. Tower requests a bounded, expedited accounting refresh while
+respecting source timeouts and backoff. A matching terminal accounting record
+confirms the attempt and adds it to History; cached details and log paths remain
+associated with that exact job. Delayed accounting remains visible as pending
+evidence instead of a fabricated terminal record.
+If the same job ID is requeued, Tower clears the old attempt's cached details
+and requests fresh metadata subject to source backoff; old log paths do not
+silently become evidence for the new attempt.
+
+In the interactive terminal, departure produces a 1.6-second block-particle
+motion toward Recents. Confirmed History arrivals trigger exactly two
+0.35-second pulses, followed by a static `+N` unread badge. Entering History
+acknowledges the badge. Existing history loaded at startup and unchanged polling
+results do not replay a completion animation. Set `animations = false` in TOML,
+`"animations": false` in JSON, or use the `reader` theme to retain static notices
+without motion or pulses. One-frame reports are static as well.
 
 ## Keys (remappable in the config)
 
 | keys | action |
 |---|---|
-| `↑` `↓` `j` `k` `PgUp` `PgDn` `Home` `End` `g` `G` | move (on the Log tab: scroll) |
+| `↑` `↓` `j` `k` `PgUp` `PgDn` `Home` `End` `g` `G` | move; in Logs, move the logical line cursor before selection and extend it after `v` |
 | `Tab` `S-Tab` `]` `[` `1`..`9` | switch tabs (7 Analytics, 8 Group, 9 Deps) |
 | `Space` `a` `u` | mark the selected job, all visible jobs, none: actions apply to the marked jobs, else the selected one |
 | `p` | pin or unpin the marked or selected jobs: pinned jobs stay at the top of the Jobs table with a `⚲` mark; `:tag [ids] <tags>`, `:untag`, `:note [id] <text>` attach tags (a TAGS column, also on the History tab) and a note (shown in INFO and under the job); `/#tag` filters by tag; `j.tags` in expressions. All of it persists in `state/tags.json` across restarts. |
@@ -127,7 +149,8 @@ scaling spread describes measured repeats rather than future-run confidence.
 | `s` `S` | cycle the sort of the tab (jobs: state, name, id, time, priority; history: end, name, state, elapsed, cpu eff, mem eff); reverse |
 | `/` `Esc` | filter by name, id, partition or info; clear the filter (or the marks) |
 | `n` `b` `r` `x` | GPU sampling on/off; bell on start on/off; sample every source now; Sources tab: enable / disable the selected source |
-| `v` `V` `y` | select screen lines from the cursor row (arrows extend; a right-click or shift-click extends to a row); select all; copy the selection |
+| `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys extend a selection; right-click or shift-click extends to a row. |
+| `Y` | Logs: copy the entire exact selected file, independent of displayed lines, search, scrolling, or wrapping |
 | `E` `C` `J` | export the tab as text; its table as CSV; the marked or selected jobs with their recorded series as JSON |
 | `:` | the command palette (Tab completes): `cancel 123 456`, `hold marked`, `filter rb2`, `sort name`, `days 7`, `tab history`, `view timeline`, `export csv`, `copy 5 12`, `gpu off`, `source sinfo off`, `theme mono`, `log 123`, `profile carc`, `eval n_pending`, and every plugin command |
 | `T` | cycle the theme: default, mono, high contrast, cb (colour-blind safe: blue / orange / magenta for green / red / yellow), reader (no colour, no glyphs: plain text for screen readers and dumb terminals) |
@@ -144,14 +167,61 @@ separate from the job-table filter. Empty tables or file lists have no action ta
 
 ## Copying and exporting
 
-`y` sends the selected lines to the terminal's clipboard through OSC 52 (over ssh this works in iTerm2, Windows
-Terminal, kitty, alacritty, foot, wezterm, xterm with allowWindowOps, and tmux with `set -g set-clipboard on`), to a
-local clipboard tool when one can reach a display (pbcopy, wl-copy, xclip, xsel, clip.exe), and always to
-`~/.local/state/tower/clipboard.txt`, so `cat` works when the terminal does not.  Exports land in
-`~/.local/state/tower/exports/` as `text-<tab>-<stamp>.txt`, `csv-<tab>-<stamp>.csv`, `json-<tab>-<stamp>.json` or
-`report-<stamp>.txt`; the JSON carries the job record, live statistics, GPU samples, the scontrol details and the
-recorded series.  From the command line, `tower --csv --tab history`, `tower --json` and `tower --report [PATH]`
-print the same without the screen.
+In a log file, arrows move the logical line cursor before `v` starts selection.
+The cursor has a right-edge `›` caret (`>` in ASCII); selected lines have an
+orange right-edge `◆` (`*` in ASCII), including wrapped continuations. With a
+selection active, arrows, PgUp/PgDn, Home, and End extend the range across pages;
+Esc cancels it. `y` copies source text without row numbers, status lines, search
+highlights, or wrapping. Tabs and CRLF line endings are preserved for valid
+UTF-8 text. The display's bounded retained history still applies to line ranges.
+Other tabs keep screen-row selection and screen-wide `V` behavior.
+
+Ranges larger than 256 KiB or 4,096 lines run on the shared worker, as do ranges
+containing invalid UTF-8. These copies pin the selected source bytes and publish
+a private unique `state/exports/log-selected-<uuid>.log` file before attempting
+clipboard delivery. Invalid UTF-8 skips text clipboard transport rather than
+substituting replacement characters. Small valid UTF-8 ranges keep the immediate
+private atomic `clipboard.txt` fallback. With `--no-state`, exports use
+`./tower-exports/` instead.
+An unfinished selected last line keeps its original bytes without an invented
+final newline.
+
+Rotation, truncation, or eviction of selected lines from the retained tail
+invalidates their selection. Pressing `y` then reports that you need to reselect;
+it does not turn an expired range into a whole-file copy. Stale mouse clicks are
+also rejected instead of selecting whatever now occupies the old screen row.
+
+In Logs, `V` marks the **whole file** and `y` then requests a full-file copy.
+`Y`, `:copy all`, or `y` with no line selection requests the same operation.
+Open an entry with Enter before copying from the file browser. The worker reads
+the exact selected file from its selected local or SSH backend in 1 MiB chunks,
+with bounded memory, independently of tail-buffer limits, filtering, cursor
+position, wrapping, or line count. It saves exact source bytes to a unique
+private file with mode `0600` at `state/exports/log-full-<uuid>.log`; the default
+state base is `~/.local/state/tower`, honoring `XDG_STATE_HOME`. With `--no-state`,
+the file goes under the launch directory's `tower-exports/` instead.
+
+A growing log is copied through its initial byte count; later appends are
+excluded and the status reports that snapshot. The writer is not locked, so
+this is not an atomic application checkpoint. Detected replacement, rotation,
+truncation, in-place mutation, or a short read fails without publishing a
+partial export or requesting clipboard delivery; retry the current file.
+
+Tower attempts an OSC 52 request when the **complete** UTF-8 text fits its
+100,000-byte base64 limit, and a local clipboard tool when available. It never
+sends only a prefix. Terminal clipboard permission and acceptance cannot be
+confirmed; the status says when a request was sent. Oversize or non-UTF-8 files
+keep their complete raw export, with the skipped transport explained. A local
+tool can accept larger text files when a usable display is available.
+
+Small valid UTF-8 selections and ordinary screen-text copies publish private, atomically replaced
+`state/clipboard.txt` (or `tower-exports/clipboard.txt` with `--no-state`) as a
+fallback. The clipboard tools are pbcopy, wl-copy, xclip, xsel, or clip.exe.
+Exports of views use `text-<tab>-<stamp>.txt`, `csv-<tab>-<stamp>.csv`,
+`json-<tab>-<stamp>.json`, or `report-<stamp>.txt` under `state/exports/`.
+JSON carries the job record, live statistics, GPU samples, controller details,
+and recorded series. From the command line, `tower --csv --tab history`,
+`tower --json`, and `tower --report [PATH]` print the corresponding reports.
 
 `:export report` (and `--report`) writes **the complete dashboard as an ASCII text
 report**: summary, jobs, partitions, history, analytics, nodes, dependencies,
@@ -309,7 +379,7 @@ within one `jobs` round.
 
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
 commented defaults without replacing an existing config (JSON on Python 3.10, TOML on 3.11+).  Sections: top level (`user`, `account`, `ascii`, `color`, `history_days`, `log_lines`,
-`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`), `[research]`, `[logs]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
+`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`), `[research]`, `[logs]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
 (`command` runs through the shell on the configured `events` with `TOWER_EVENT`, `TOWER_JOBID`, `TOWER_JOBNAME`
 and `TOWER_TEXT` in the environment: a Slack webhook, an e-mail, anything), `[keys]` (action = list of key names).
 
@@ -379,12 +449,17 @@ tower/
   slurm.py       the command layer: one function per Slurm call, parsers on the recorded formats, and FakeBackend,
                  a simulated cluster answering the same commands as text
   sampler.py     the scheduler: cadences, a thread pool, per-source timeouts, backoff, health, kick
+  transitions.py short monotonic queue-departure motion, confirmed History pulses, and an unread count
   actions.py     cancel / hold / release / requeue / top with an audit event each; the notification hook
   views.py       the tabs and overlays as rows of (text, style) segments
   controller.py  the application state and every key, mouse click and confirmation; no curses, so tests drive it;
                  the line selection, the command palette, exports and the clipboard
   charts.py      vertical bar charts with axes (eight sub-levels per row), horizontal bars, histograms, Gantt rows
-  clipboard.py   OSC 52, local clipboard tools, the clipboard file
+  logs.py        bounded incremental log buffers, logical keyboard cursors, raw line ranges, and selection
+  log_catalog.py bounded grouped file discovery and explicit tower.logs/v1 manifests on the selected backend
+  log_copy.py    background exact-byte full-file snapshots and selected ranges, private exports, clipboard handoff
+  research.py    the shared bounded worker for research inspections, log catalogs, and full-log copies
+  clipboard.py   complete OSC 52 requests, streamed local clipboard tools, and private atomic text fallbacks
   export.py      text / CSV / JSON exports
   screen.py      the curses loop (colours, mouse, resize, less), the ANSI watch loop, one-frame text and JSON
   cli.py         the command line: profiles, remote mode, recording and replay, scripted mode, plugins

@@ -20,6 +20,7 @@ DEFAULTS: Dict[str, Any] = {
     "logs": {"manifest_file": ""},       # optional per-run log index, relative to the selected workdir
     "gpu_sampling": True,                # nvidia-smi inside the job's allocation
     "bell": False,                       # terminal bell when one of your jobs starts
+    "animations": True,                  # short completion motion and two History pulses (reader is static)
     "intervals": {                       # seconds between samples of each source
         "jobs": 2.0, "starts": 10.0, "live": 10.0, "gpu": 5.0, "nodes": 15.0, "partitions": 60.0, "finished": 60.0,
         "share": 120.0, "account": 30.0, "details": 20.0, "weather": 120.0, "budget": 600.0, "trace": 60.0, "fin_details": 5.0,
@@ -61,7 +62,7 @@ DEFAULTS: Dict[str, Any] = {
         "log": ["l"], "less": ["L"], "follow": ["f"], "sort": ["s"], "reverse": ["S"], "filter": ["/"], "clear": ["esc"],
         "gpu_toggle": ["n"], "bell_toggle": ["b"], "log_lines": ["+"], "log_lines_less": ["-"], "source_toggle": ["x"],
         "tab_analytics": ["7"], "tab_research": ["0"], "view_prev": ["left", ","], "view_next": ["right", "."], "days_more": ["="], "days_less": ["_"],
-        "visual": ["v"], "visual_all": ["V"], "yank": ["y"], "export_text": ["E"], "export_csv": ["C"], "export_json": ["J"],
+        "visual": ["v"], "visual_all": ["V"], "yank": ["y"], "copy_all": ["Y"], "export_text": ["E"], "export_csv": ["C"], "export_json": ["J"],
         "palette": [":"], "theme": ["T"], "find_next": ["N"], "find_prev": ["P"],
     },
 }
@@ -76,6 +77,7 @@ log_lines = 8                   # stdout tail under the selected job
 log_max_mb = 32                 # the Log tab keeps the last this many MB of a file (read once, then only what is appended)
 gpu_sampling = true             # nvidia-smi inside the job's allocation (each sample is a small job step)
 bell = false                    # terminal bell when one of your jobs starts
+animations = true               # short completion motion and two History pulses; false keeps static notices
 
 # partitions = ["gpu", "main"]  # cluster tab: partitions to show (empty: those with GPUs or with your jobs)
 weather = true                  # queue weather on the Cluster tab: pending work ahead per partition, sbatch --test-only probes
@@ -164,8 +166,9 @@ quit = ["q"]
 help = ["?"]
 cancel = ["c"]
 hold = ["h"]
-visual = ["v"]                  # start a line selection at the cursor row; V selects the whole screen; y copies; Esc cancels
+visual = ["v"]                  # start at keyboard/mouse cursor; log selections span pages; Esc cancels
 yank = ["y"]
+copy_all = ["Y"]                # Logs: complete selected file, independent of the displayed/retained page
 export_text = ["E"]
 export_csv = ["C"]
 export_json = ["J"]

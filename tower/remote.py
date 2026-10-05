@@ -7,6 +7,7 @@ import base64
 import binascii
 import os
 import shlex
+import stat as _stat
 import subprocess
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -64,6 +65,14 @@ class LocalFiles:
         st = os.stat(path)
         return st.st_size, (st.st_dev, st.st_ino)
 
+    def snapshot_stat(self, path: str) -> dict:
+        """Regular target identity and mutation metadata for full-file exports."""
+        st = os.stat(path)
+        if not _stat.S_ISREG(st.st_mode):
+            raise OSError("log source must be a regular file")
+        return {"size": st.st_size, "ident": (st.st_dev, st.st_ino),
+                "updated": (st.st_mtime_ns, st.st_ctime_ns)}
+
     def read(self, path: str, offset: int, length: int) -> bytes:
         with open(path, "rb") as f:
             f.seek(offset)
@@ -104,6 +113,25 @@ class RemoteFiles(LocalFiles):
             return int(parts[2]), (int(parts[0]), int(parts[1]))
         except ValueError as exc:
             raise OSError("stat: invalid numeric result") from exc
+
+    def snapshot_stat(self, path: str) -> dict:
+        """Inspect the regular target rather than a stable symlink's identity."""
+        try:
+            out, _ = self.ssh.run(["stat", "-L", "-c", "%f|%d|%i|%s|%y|%z", "--", path], self.timeout)
+            if not isinstance(out, str) or len(out) > 1024:
+                raise ValueError("oversized metadata")
+            parts = out.strip().split("|")
+            if len(parts) != 6:
+                raise ValueError("unexpected metadata")
+            mode = int(parts[0], 16)
+            dev, ino, size = (int(part) for part in parts[1:4])
+            if not _stat.S_ISREG(mode) or min(dev, ino, size) < 0:
+                raise ValueError("log source must be a regular file")
+            if any(not value or not value.isprintable() for value in parts[4:]):
+                raise ValueError("invalid timestamps")
+            return {"size": size, "ident": (dev, ino), "updated": tuple(parts[4:])}
+        except (CommandError, ValueError) as exc:
+            raise OSError(str(exc)) from exc
 
     def read(self, path: str, offset: int, length: int) -> bytes:
         if length <= 0:

@@ -15,6 +15,7 @@ from .model import Job, Store, secs
 from .sampler import Sampler
 from .views import ANALYTICS_VIEWS, NODES_VIEWS, SORTS, TABS
 from .research import RESEARCH_VIEWS
+from .transitions import CompletionFeedback
 
 KEY_LABELS = {"up": "↑", "down": "↓", "pgup": "PgUp", "pgdn": "PgDn", "home": "Home", "end": "End", "tab": "Tab", "btab": "S-Tab", "enter": "Enter",
               "esc": "Esc", "space": "Space"}
@@ -89,6 +90,12 @@ class App:
         self.views_ref = None                              # set by the screen: the Views instance (exports render through it)
         self.width = 120
         self.last_hits: list = []
+        self.completion = CompletionFeedback(store.snapshot())
+        self.last_jobs_ids = None
+        self.last_history_ids = None
+        self.last_history_options = None
+        self.log_selection_expected = False
+        self.log_render_token = None
         self.restore(store.load_ui())
         self.labels = KEY_LABELS_ASCII if self.theme == "reader" or ascii_ else KEY_LABELS
 
@@ -178,13 +185,17 @@ class App:
             self.sampler.select_fin(self.detail_id if (self.mode == "details" and self.detail_id and not self.store.job(self.detail_id)) else None)
             self.sampler.select_trace(self.analytics_job if (self.tab == "analytics" and self.analytics_view == "job") else None)
 
+    @property
+    def animations_enabled(self):
+        return self.interactive and bool(self.cfg.get("animations", True)) and self.theme != "reader"
+
     def selected_job(self) -> Optional[Job]:
         return self.store.job(self.selected_id) if self.selected_id else None
 
     def job_record(self, jid, snap=None):
         """Resolve an exact ID across queue and accounting records, without another-job fallback."""
         snap = self.store.snapshot() if snap is None else snap
-        return next((j for j in snap["jobs"] + snap["finished"] + snap.get("group", []) if j.id == jid), None)
+        return next((j for j in snap["jobs"] + snap["finished"] + list(snap.get("departed_jobs", {}).values()) + snap.get("group", []) if j.id == jid), None)
 
     def log_target(self, snap=None):
         jid = self.log_job or self.selected_id
@@ -217,8 +228,49 @@ class App:
     def history_jobs(self, snap=None):
         return self.finished_jobs(snap)
 
+    def sync_history_selection(self, snap=None):
+        fin = self.history_jobs(snap)
+        ids = [f.id for f in fin]
+        options = self.filter, self.sort.get("history", "end"), self.reverse.get("history", False)
+        previous = self.last_history_ids
+        if (previous is not None and ids != previous and options == self.last_history_options
+                and self.selected_id in ids and self.selected_id in previous
+                and self.cursor["history"] == previous.index(self.selected_id)):
+            self.cursor["history"] = ids.index(self.selected_id)
+        self.last_history_ids, self.last_history_options = ids, options
+        self.selected_id = ids[self.clamp_cursor("history", len(ids))] if ids else None
+        return fin
+
     def recent_jobs(self, snap=None):
-        return self.finished_jobs(snap, recent=True)
+        snap = self.store.snapshot() if snap is None else snap
+        active = {j.id for j in snap["jobs"]}
+        pending = [j for j in reversed(list(snap.get("departed_jobs", {}).values())) if j.id not in active]
+        flt = self.filter.casefold()
+        if flt.startswith("#"):
+            pending = [j for j in pending if flt[1:] in [t.casefold() for t in snap.get("tags", {}).get(j.id, {}).get("tags", [])]]
+        elif flt:
+            pending = [j for j in pending if any(flt in value.casefold() for value in (j.id, j.name, j.partition, "awaiting accounting"))]
+        pending_ids = {j.id for j in pending}
+        return (pending + [f for f in self.finished_jobs(snap, recent=True) if f.id not in pending_ids])[:5]
+
+    def resolve_log_path(self):
+        """Resolve the current stream now, including keys received between frames."""
+        if self.tab != "log" or self.logs.browser:
+            return ""
+        if self.views_ref is not None:
+            snap = self.store.snapshot()
+            job = self.log_target(snap)
+            if job is None:
+                return ""
+            return self.views_ref.log_path(self, job, snap["details"].get(job.id, {}))[0]
+        return self.logs.path
+
+    def prepare_log(self):
+        path = self.resolve_log_path()
+        if not path:
+            self.logs.clear_selection(reset_cursor=True)
+            return None
+        return self.logs.buffer(path)
 
     def jobs_options(self):
         return self.filter, self.sort.get("jobs", "state"), self.reverse.get("jobs", False)
@@ -233,6 +285,8 @@ class App:
             self.fail("no job selected for logs")
             return
         if jid != self.log_job:
+            self.logs.clear_selection(reset_cursor=True)
+            self.log_selection_expected = False
             self.logs.which, self.logs.file_index = "out", 0
             self.logs.path, self.logs.match, self.logs.last_bookmark = "", None, None
             self.logs.entry, self.logs.entries = None, []
@@ -256,6 +310,8 @@ class App:
         self.logs.browser_cursor = max(0, min(self.logs.browser_cursor, len(entries) - 1))
         entry = entries[self.logs.browser_cursor]
         if not self.logs.entry or self.logs.entry["path"] != entry["path"]:
+            self.logs.clear_selection(reset_cursor=True)
+            self.log_selection_expected = False
             self.logs.path, self.logs.top, self.logs.match, self.logs.last_bookmark = "", None, None, None
         self.logs.entry = dict(entry)
         self.logs.file_index, self.logs.browser, self.logs.browse_return = 0, False, True
@@ -304,8 +360,7 @@ class App:
             ids = self.visible_ids + self.recent_ids
             self.selected_id = ids[self.clamp_cursor("jobs", len(ids))] if ids else None
         elif self.tab == "history":
-            ids = [f.id for f in self.history_jobs()]
-            self.selected_id = ids[self.clamp_cursor("history", len(ids))] if ids else None
+            self.sync_history_selection()
         elif self.tab == "log" and self.log_job:
             self.selected_id = self.log_job
         elif self.tab == "deps":
@@ -392,7 +447,11 @@ class App:
             else:
                 self.quit = True
         elif action == "clear":
-            if self.sel_anchor is not None:
+            if self.tab == "log" and (self.logs.selection_active or self.log_selection_expected):
+                self.logs.clear_selection()
+                self.log_selection_expected = False
+                self.say("selection cancelled")
+            elif self.sel_anchor is not None:
                 self.sel_anchor = None; self.say("selection cancelled")
             elif self.tab == "log" and (self.logs.browser or self.logs.browse_return):
                 self.logs.browser = not self.logs.browser
@@ -435,11 +494,19 @@ class App:
         elif action in ("days_more", "days_less"):
             self.set_days(self.days_index + (1 if action == "days_more" else -1))
         elif action == "visual":
-            self.start_selection(self.cursor_row())
+            if self.tab == "log" and not self.logs.browser:
+                self.log_selection_expected = self.logs.begin_selection(self.prepare_log())
+            else:
+                self.start_selection(self.cursor_row())
         elif action == "visual_all":
-            self.sel_anchor, self.sel_end = 0, max(0, len(self.last_rows) - 1)
+            if self.tab == "log" and not self.logs.browser:
+                self.log_selection_expected = self.logs.select_all(self.prepare_log())
+            else:
+                self.sel_anchor, self.sel_end = 0, max(0, len(self.last_rows) - 1)
         elif action == "yank":
             self.yank()
+        elif action == "copy_all":
+            self.copy_all_log() if self.tab == "log" else self.yank()
         elif action == "export_text":
             self.export("text")
         elif action == "export_csv":
@@ -499,15 +566,20 @@ class App:
             if self.tab != "log":
                 self.open_log()
             if self.tab == "log":
+                self.logs.clear_selection(reset_cursor=True)
+                self.log_selection_expected = False
+                self.sel_anchor = None
                 self.logs.browser, self.logs.browse_return = True, True
         elif action == "follow":
-            buf = self.logs.buffer(self.logs.path) if self.logs.path else None
+            buf = self.prepare_log()
             if self.logs.following:
                 self.logs.top = buf.clamp_top(max(0, buf.total - self.logs.page), self.logs.page) if buf else 0
                 if self.logs.top is None:
                     self.logs.top = 0
                 self.say("paused: arrows and PgUp/PgDn scroll, End or f follows again")
             else:
+                self.logs.clear_selection(reset_cursor=True)
+                self.log_selection_expected = False
                 self.logs.top = None
                 self.say("following")
         elif action in ("find_next", "find_prev"):
@@ -520,6 +592,8 @@ class App:
             self.say(f"long lines {'wrapped' if self.logs.wrap else 'cut'}")
         elif action == "stderr":
             if self.tab == "log":
+                self.logs.clear_selection(reset_cursor=True)
+                self.log_selection_expected = False
                 self.logs.entry, self.logs.browser = None, False
                 self.logs.which = "err" if self.logs.which == "out" else "out"
                 self.logs.file_index, self.logs.top, self.logs.match = 0, None, None
@@ -536,6 +610,8 @@ class App:
                 if not cands:
                     self.say("no other files of this job in its log directory (array tasks, steps, gpu-util-<id>.csv)")
                 else:
+                    self.logs.clear_selection(reset_cursor=True)
+                    self.log_selection_expected = False
                     self.logs.entry, self.logs.browser = None, False
                     self.logs.file_index = (self.logs.file_index + 1) % (len(cands) + 1)
                     self.logs.top, self.logs.match = None, None
@@ -557,6 +633,7 @@ class App:
                 else:
                     self.logs.match, self.logs.last_bookmark = None, i
                     self.logs.goto(i, buf)
+                    self.logs.cursor = i
                     self.logs.top = buf.clamp_top(i, self.logs.page) if buf else 0   # the bookmark at the top of the page
                     if self.logs.top is None:
                         self.logs.top = 0
@@ -622,6 +699,7 @@ class App:
             self.handle(key)
 
     def move(self, action: str):
+        self.click_row = None
         if self.tab == "research":
             if action in ("page_up", "page_down", "home", "end"):
                 if self.research_view == "arrays" and self.research_array_open and action in ("page_up", "page_down"):
@@ -666,14 +744,7 @@ class App:
                 self.logs.browser_cursor = max(0, min(max(0, n - 1), {"up": cur - 1, "down": cur + 1,
                     "page_up": cur - step, "page_down": cur + step, "home": 0, "end": n - 1}[action]))
                 return
-            buf = self.logs.buffer(self.logs.path) if self.logs.path else None
-            page = max(1, self.logs.page - 1)
-            if action == "home":
-                self.logs.top = 0 if buf and buf.total > self.logs.page else None
-            elif action == "end":
-                self.logs.top = None
-            else:
-                self.logs.scroll({"up": -1, "down": 1, "page_up": -page, "page_down": page}[action], buf)
+            self.logs.move_cursor(action, self.prepare_log())
             return
         tab = self.tab
         n = len(self.history_jobs()) if tab == "history" else {"jobs": len(self.visible_ids) + len(self.recent_ids),
@@ -700,6 +771,11 @@ class App:
             self.research_job_id = ids[0] if ids else self.selected_id
         self.tab = name
         self.sel_anchor = None
+        self.click_row = None
+        self.logs.clear_selection()
+        self.log_selection_expected = False
+        if name == "history":
+            self.completion.acknowledge()
 
     def set_days(self, index: int):
         index = max(0, min(len(self.days_options) - 1, index))
@@ -716,11 +792,15 @@ class App:
     # ---- selection, copy, export -------------------------------------------------------------------
     def cursor_row(self) -> int:
         """The screen row of the selected job (jobs tab) or of the last click, else the first body row."""
-        if self.click_row is not None:
-            return self.click_row
         for (y, kind, key) in getattr(self, "last_hits", []):
             if kind in ("job", "recent", "fin") and key == self.selected_id:
                 return y
+        tab_kind = {"sources": "source", "group": "group", "deps": "dep", "research": "research_array"}.get(self.tab)
+        matches = [y for y, kind, _ in self.last_hits if kind == tab_kind]
+        if matches:
+            return matches[max(0, min(len(matches) - 1, self.cursor.get(self.tab, 0) - self.top.get(self.tab, 0)))]
+        if self.click_row is not None:
+            return self.click_row
         return min(4, max(0, len(self.last_rows) - 1))
 
     def start_selection(self, row: int):
@@ -740,7 +820,34 @@ class App:
         return export.selection_text(self.last_rows, self.sel_anchor, self.sel_end)
 
     def yank(self):
-        text = self.selection_text()
+        if self.tab == "log" and not self.logs.browser:
+            expected = self.log_selection_expected or self.logs.selection_active
+            buf = self.prepare_log()
+            if expected and not self.logs.selection_active:
+                self.log_selection_expected = False
+                self.fail("Log changed or the selected lines left the buffer; select the lines again (Y copies the entire file)")
+                return
+            if self.logs.selection_all or not self.logs.selection_active:
+                self.copy_all_log()
+                return
+            lo, hi = sorted((self.logs.selection_anchor, self.logs.selection_end))
+            size = sum(buf._line_bytes[lo:min(hi + 1, len(buf._line_bytes))])
+            if hi >= len(buf.lines):
+                size += len(buf._partial_raw)
+            if size > 256 << 10 or hi - lo + 1 > 4096:
+                self.copy_selected_log(buf)
+                return
+            raw = self.logs.selection_bytes(buf)
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeError:
+                self.copy_selected_log(buf)
+                return
+        elif self.tab == "log" and self.logs.browser:
+            self.fail("Open a log with Enter before copying its contents")
+            return
+        else:
+            text = self.selection_text()
         if not text:
             self.fail("nothing to copy")
             return
@@ -749,6 +856,67 @@ class App:
         self.store.event("copy", msg)
         self.say(msg)
         self.sel_anchor = None
+        if self.tab == "log":
+            self.logs.clear_selection()
+            self.log_selection_expected = False
+
+    def copy_all_log(self):
+        path = self.resolve_log_path()
+        if not path:
+            self.fail("Open a log with Enter before copying its contents" if self.logs.browser else "no log file selected")
+            return
+        from .log_copy import copy_full_log
+        files = self.logs.files
+        cb = dict(self.cfg["clipboard"])
+        self.start_log_copy(lambda service: copy_full_log(path, self.state_dir, files=files,
+            use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)),
+            cancel=lambda: service.closed), path, f"Copying entire log: {path}")
+
+    def copy_selected_log(self, buf):
+        """Pin immutable retained line bytes; large/invalid text never blocks the UI."""
+        lo, hi = sorted((self.logs.selection_anchor, self.logs.selection_end))
+        complete = tuple(buf.raw_lines[lo:min(hi + 1, len(buf.raw_lines))])
+        partial = buf._partial_raw if hi >= len(buf.raw_lines) else None
+        path = self.logs.path
+        def chunks():
+            for line in complete:
+                yield line
+                yield b"\n"
+            if partial is not None:
+                yield partial
+        from .log_copy import copy_log_selection
+        cb = dict(self.cfg["clipboard"])
+        self.start_log_copy(lambda service: copy_log_selection(chunks(), self.state_dir, source_path=path,
+            use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)),
+            cancel=lambda: service.closed), path, f"Copying log lines {lo + 1}-{hi + 1}: {path}")
+
+    def start_log_copy(self, task, path, message):
+        if self.research is None:
+            from .research import ResearchHub
+            self.research = ResearchHub(self.cfg, self.logs.files)
+        service = self.research
+        selected_range = (self.logs.selection_path, self.logs.selection_anchor, self.logs.selection_end, self.logs.selection_all)
+        selected_token = self.logs._buffer_token, self.logs.selection_generation
+        def finished(result):
+            if isinstance(result, Exception):
+                self.fail(f"Log copy failed: {result}")
+                return
+            message = result.get("message", "Log copy finished")
+            if result.get("status") not in ("ready", "partial"):
+                self.fail(message)
+                return
+            self.store.event("copy", message)
+            self.say(message)
+            current_range = (self.logs.selection_path, self.logs.selection_anchor, self.logs.selection_end, self.logs.selection_all)
+            current_token = self.logs._buffer_token, self.logs.selection_generation
+            if self.logs.path == path and current_range == selected_range and current_token == selected_token:
+                self.logs.clear_selection()
+                self.log_selection_expected = False
+        accepted = service.start_task(lambda: task(service), finished)
+        if accepted:
+            self.say(message)
+        else:
+            self.fail("A background command is still running; retry copy when it finishes")
 
     def export(self, kind: str):
         if not self.views_ref:
@@ -801,7 +969,7 @@ class App:
         matches = [c for c in cmds if c.startswith(word)]
         hints = {"cancel": "cancel [ids | marked | all]", "hold": "hold [ids | marked]", "release": "release [ids | marked]", "requeue": "requeue [ids | marked]",
                  "top": "top [ids | marked]", "filter": "filter <text>", "sort": "sort <" + "|".join(SORTS.get(self.tab, ["name"])) + ">", "days": "days <" + "|".join(f"{d:g}" for d in self.days_options) + ">",
-                 "tab": "tab <" + "|".join(t for t, _ in TABS) + ">", "view": "view <job|history|timeline|advisor|compare>", "export": "export <text|csv|json|report>", "copy": "copy [a b]  (screen rows, 1-based)",
+                 "tab": "tab <" + "|".join(t for t, _ in TABS) + ">", "view": "view <job|history|timeline|advisor|compare>", "export": "export <text|csv|json|report>", "copy": "copy [all|a b] (log lines or screen rows, 1-based)",
                  "replay": "replay <pause|play|back|fwd|slower|faster|speed N|seek HH:MM|+60|50%>", "wrap": "wrap  (Log tab: wrap or cut long lines)", "bookmark": "bookmark  (Log tab: mark the current line; ' jumps)",
                  "gpu": "gpu <on|off>", "bell": "bell <on|off>", "source": "source <name> <on|off>", "theme": "theme <default|mono|high>", "mark": "mark <ids | all>", "unmark": "unmark [ids]",
                  "log": "log <id>", "find": "find <text>  (regular expression; N / P next / previous match)", "refresh": "refresh", "help": "help", "quit": "quit",
@@ -950,9 +1118,27 @@ class App:
         elif cmd == "bookmark":
             self.handle_action("bookmark")
         elif cmd == "copy":
-            if len(args) == 2 and all(a.isdigit() for a in args):
-                self.sel_anchor, self.sel_end = int(args[0]) - 1, int(args[1]) - 1
-            self.yank()
+            if args == ["all"]:
+                if self.tab == "log":
+                    self.copy_all_log()
+                else:
+                    self.sel_anchor = None
+                    self.yank()
+            elif len(args) == 2 and all(a.isdigit() and int(a) > 0 for a in args):
+                if self.tab == "log" and not self.logs.browser:
+                    buf = self.prepare_log()
+                    if buf is None or max(map(int, args)) > buf.total:
+                        self.fail("copy line range is outside the loaded log")
+                        return
+                    self.log_selection_expected = self.logs.begin_selection(buf, int(args[0]) - 1)
+                    self.logs.selection_end = self.logs.cursor = int(args[1]) - 1
+                else:
+                    self.sel_anchor, self.sel_end = int(args[0]) - 1, int(args[1]) - 1
+                self.yank()
+            elif not args:
+                self.yank()
+            else:
+                self.fail("copy [all|first last] (positive 1-based lines)")
         elif cmd == "gpu":
             if args and args not in (["on"], ["off"]):
                 self.fail("gpu <on|off>")
@@ -1176,6 +1362,25 @@ class App:
         """A mouse click: on the tab bar switches tabs, on a row selects it; a right or shift click extends the
         line selection from the last click to this row."""
         self.last_hits = list(hits)
+        if self.tab == "log" and not self.logs.browser:
+            line = next((int(key) for hy, kind, key in hits if hy == y and kind == "log_line"), None)
+            if line is not None:
+                buf = self.prepare_log()
+                if buf is None or self.log_render_token != (self.logs.path, self.logs._buffer_token):
+                    self.logs.clear_selection(reset_cursor=True)
+                    self.log_selection_expected = True
+                    self.fail("Log changed since that row was drawn; select a line in the current display")
+                    return
+                if button == "right" or shift:
+                    if not self.logs.selection_active:
+                        self.logs.begin_selection(buf)
+                    self.logs.selection_end = self.logs.cursor = line
+                else:
+                    self.logs.clear_selection()
+                    self.logs.cursor = line
+                    self.logs.begin_selection(buf, line)
+                self.log_selection_expected = self.logs.selection_active
+                return
         if button == "right" or shift:
             self.extend_selection(y)
             return

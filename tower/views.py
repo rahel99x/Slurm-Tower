@@ -252,6 +252,8 @@ class Views:
             n = {"jobs": len(snap["jobs"]), "history": len(snap.get("finished", [])), "nodes": len(snap.get("nodes", {})), "group": len(snap.get("group", [])),
                  "sources": sum(1 for h in snap.get("health", {}).values() if h.error)}.get(key)
             label = f" {title}" + (f" {n}" if n else "") + " "
+            if key == "history" and app.completion.new_history:
+                label = label.rstrip() + f" +{app.completion.new_history} "
             labels.append((key, label))
         active = next((i for i, (key, _) in enumerate(labels) if key == app.tab), 0)
         start = 0
@@ -266,7 +268,12 @@ class Views:
                 tabs.append((" >", "dim"))
                 break
             label = cut(label, max(0, width - x - reserve), self.g.ascii)
-            tabs.append((label, "rev+bold" if key == app.tab else "dim"))
+            style = "rev+bold" if key == app.tab else "dim"
+            if key == "history" and app.animations_enabled and app.completion.flash_on():
+                style = "bg:#92400e+fg:#fff7ed+bold"
+            elif key == "history" and app.completion.new_history:
+                style = "yellow+bold" if key != app.tab else "rev+bold"
+            tabs.append((label, style))
             hits.append((x, x + vlen(label), key))
             tabs.append((" ", ""))
             x += vlen(label) + 1
@@ -349,6 +356,11 @@ class Views:
         if app.message:
             return [(cut(app.message, width - 1, self.g.ascii), "yellow")]
         k = app.keys_help
+        if app.tab == "log" and app.logs.selection_active:
+            if app.logs.selection_all:
+                return [(f" Entire log selected {self.g.dot} y copies the complete file {self.g.dot} Esc cancel", "yellow")]
+            a, b = sorted((app.logs.selection_anchor, app.logs.selection_end))
+            return [(f" Selecting log lines {a + 1}-{b + 1} ({b - a + 1}) {self.g.dot} arrows/PgUp/PgDn extend {self.g.dot} y copy {self.g.dot} Esc cancel", "yellow")]
         if app.sel_anchor is not None:
             a, b = sorted((app.sel_anchor, app.sel_end))
             return [(f" selecting rows {a + 1}-{b + 1} ({b - a + 1} lines)   {k('yank')} copy  {k('up')}/{k('down')} extend  {k('visual_all')} all  Esc cancel", "magenta")]
@@ -357,7 +369,7 @@ class Views:
             "jobs": f"{k('up')}/{k('down')} select  {k('mark')} mark  {k('details')} details  {k('log')} log  {k('filter')} filter",
             "history": f"{k('up')}/{k('down')} select  {k('log')} log  {k('details')} series  {k('sort')} sort  {k('filter')} filter",
             "log": (f"{k('up')}/{k('down')} files  Enter open  Esc back  {k('filter')} filter" if app.logs.browser else
-                    f"{k('up')}/{k('down')} scroll  {k('log_files')} files  {k('stderr')} stderr  {k('filter')} search" + ("  Esc files" if app.logs.browse_return else "")),
+                    f"{k('up')}/{k('down')} line  {k('visual')} select  {k('yank')} copy  {k('copy_all')} all  {k('log_files')} files" + ("  Esc files" if app.logs.browse_return else "")),
             "sources": f"{k('up')}/{k('down')} select  {k('source_toggle')} toggle  {k('refresh')} refresh",
             "analytics": f"{k('view_prev')}/{k('view_next')} view  {k('up')}/{k('down')} job  {k('days_more')}/{k('days_less')} days",
             "research": f"{k('view_prev')}/{k('view_next')} view  {k('up')}/{k('down')} job/cohort  PgUp/PgDn scroll  Enter tasks",
@@ -628,6 +640,9 @@ class Views:
         app.jobs_selection_options = app.jobs_options()
         n = len(rows_d)
         ids = app.visible_ids + app.recent_ids
+        if app.last_jobs_ids is not None and ids != app.last_jobs_ids and app.selected_id in ids:
+            app.cursor["jobs"] = ids.index(app.selected_id)
+        app.last_jobs_ids = list(ids)
         cur = app.clamp_cursor("jobs", len(ids))
         app.selected_id = ids[cur] if ids else None
         recent_focus = bool(fin) and cur >= n
@@ -645,14 +660,22 @@ class Views:
             out += self.event_rows(events, width)
             return out, []
         budget = height
+        moving = app.completion.moving() if app.animations_enabled and height >= 10 else []
+        transit = []
+        if moving:
+            item = moving[-1]
+            transit = [[(" ", "")] + gradient_bar(self.g, item["progress"], min(12, max(1, width // 5)), "#67e8f9", "#a78bfa") +
+                       [(f" {item['job']} {item.get('name', '')} {'->' if self.g.ascii else '↓'} Recents", "cyan+bold")]]
         vis = min(n, max(1, budget // 3 - 2)) if n else 0
         fin_vis = len(fin)
         show_queue = True
         def used():
             return ((2 + vis if n else 3) if show_queue else 0) + (len(det) + 1 if det else 0) + \
-                   (fin_vis + 2 if fin_vis else 0) + (len(events) + 1 if events else 0)
+                   (fin_vis + 2 if fin_vis else 0) + (len(events) + 1 if events else 0) + len(transit)
         while used() > budget:
-            if events:
+            if transit:
+                transit = []
+            elif events:
                 events = events[:-1]
             elif fin_vis > (1 if recent_focus else 0):
                 fin_vis -= 1
@@ -679,6 +702,7 @@ class Views:
             out.append([("   no jobs match the filter; Esc clears it" if app.filter else "   Your queue is clear. New jobs appear here automatically.", "dim")])
         if det:
             out += [rule(self.g, width, "selected")] + det
+        out += transit
         if fin_vis:
             recent_cur = cur - n if recent_focus else 0
             fin_top = app.scroll_to("recent", recent_cur, fin_vis, len(fin))
@@ -702,6 +726,12 @@ class Views:
         return [rule(self.g, width, title)] + rows
 
     def finished_dict(self, f: Finished) -> dict:
+        if isinstance(f, Job):
+            return dict(fin=f, id=f.id, name=f.name, state="accounting...", part=f.partition,
+                        elapsed=f.elapsed, cpus=f.cpus, gpus=f.gpus or "", ce="n/a", me="n/a",
+                        rss="", start=when(f.start), end="pending", exit="", nodes=f.nodelist,
+                        tags=" ".join(self.cfg_tags.get(f.id, {}).get("tags", [])) if hasattr(self, "cfg_tags") else "",
+                        _styles={"state": "yellow", "end": "dim"})
         ok = f.state == "COMPLETED"
         style = "green" if ok else ("yellow" if f.state.startswith("CANCEL") else "red")
         ce, me = f.cpu_eff, f.mem_eff
@@ -712,7 +742,7 @@ class Views:
 
     def history_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         self.cfg_tags = snap.get("tags", {})
-        fin = app.history_jobs(snap)
+        fin = app.sync_history_selection(snap)
         key, rev = app.sort.get("history", "end"), app.reverse.get("history", False)
         n = len(fin)
         cur = app.clamp_cursor("history", n)
@@ -1249,6 +1279,7 @@ class Views:
         page = max(1, (height - 2) if height else 40)       # the rule and the status line, then the page
         app.logs.page = page
         buf = app.logs.buffer(path) if path else None
+        app.log_render_token = (app.logs.path, app.logs._buffer_token) if buf is not None and not buf.error else None
         cands = app.logs.candidates.get(j.id, (0, []))[1]
         head = f"{j.id} {j.name} {g.dot} {label}" + (f" {g.dot} o: {len(cands)} other file{'s' if len(cands) != 1 else ''}" if cands else "") + f" {g.dot} {path or 'path not known yet'}"
         out = [rule(g, width, cut(head, width - 8, g.ascii))]
@@ -1285,44 +1316,72 @@ class Views:
         if not g.ascii and width >= 100 and total:
             status = [(" ", "")] + gradient_bar(g, (start + len(lines)) / total, 12) + [(" ", "")] + status
         out.append(status)
-        body: List[Row] = []
-        for i, l in enumerate(lines):
-            idx = start + i
-            if rx is not None and rx.search(l):
-                style = "sel" if idx == app.logs.match else "yellow"
-            elif LOG_ERROR.search(l):
-                style = "red"
-            elif LOG_WARNING.search(l):
-                style = "yellow"
-            elif LOG_SUCCESS.search(l):
-                style = "green"
-            else:
-                style = ""
-            mark = (g.mark if idx in marks else " ")
+        def render_lines(source_lines, first):
+            body = []
             numbers = not g.ascii and width >= 64
             number_width = max(5, len(str(total))) if numbers else 0
-            gutter = [(mark, "cyan"), (f"{idx + 1:>{number_width}} │ ", "dim")] if numbers else [(mark, "cyan")]
             content_width = max(1, width - (number_width + 5 if numbers else 2))
-            if app.logs.wrap and vlen(l) > content_width:
-                chunks, cur = [], l
-                while cur:
-                    chunk = L.truncate(cur, content_width)
-                    # A wide glyph cannot fit a one-column viewport. Consume it with an
-                    # explicit placeholder, rather than looping forever on an empty chunk.
-                    consumed = len(chunk) if chunk else 1
-                    chunks.append(chunk or "?")
-                    cur = cur[consumed:]
-                for n, ch in enumerate(chunks):
+            for i, line in enumerate(source_lines):
+                idx = first + i
+                display_budget = max(1, content_width * page * 2)
+                clipped_prefix = app.logs.wrap and app.logs.following and len(line) > display_budget
+                display_line = line[-display_budget:] if clipped_prefix else line[:display_budget]
+                selected = app.logs.is_selected(idx)
+                if selected:
+                    style = "sel"
+                elif rx is not None and (idx == app.logs.match or rx.search(display_line)):
+                    style = "sel" if idx == app.logs.match else "yellow"
+                elif LOG_ERROR.search(display_line):
+                    style = "red"
+                elif LOG_WARNING.search(display_line):
+                    style = "yellow"
+                elif LOG_SUCCESS.search(display_line):
+                    style = "green"
+                else:
+                    style = ""
+                mark = g.mark if idx in marks else " "
+                gutter = [(mark, "cyan"), (f"{idx + 1:>{number_width}} │ ", "dim")] if numbers else [(mark, "cyan")]
+                chunks = []
+                skipped_prefix = False
+                if app.logs.wrap:
+                    # Rendering a gigantic unbroken line still allocates at most a page.
+                    skipped_prefix = clipped_prefix
+                    current = display_line
+                    while current and len(chunks) < page * 2:
+                        chunk = L.truncate(current, content_width)
+                        consumed = len(chunk) if chunk else 1
+                        chunks.append(chunk or "?")
+                        current = current[consumed:]
+                    chunks = chunks or [""]
+                    if app.logs.following:
+                        skipped_prefix = skipped_prefix or len(chunks) > page
+                        chunks = chunks[-page:]
+                else:
+                    chunks = [cut(display_line, content_width, g.ascii)]
+                for part, text in enumerate(chunks):
                     continuation = [(" " * (number_width + 1) + " │ ", "dim")] if numbers else [(" ", "cyan")]
-                    body.append((gutter if n == 0 else continuation) + [(ch, style)])
-            else:
-                body.append(gutter + [(cut(l, content_width, g.ascii), style)])
-        if app.logs.wrap and len(body) > page:
-            body = body[-page:] if app.logs.following else body[:page]
-        out += body
+                    row = (gutter if part == 0 and not skipped_prefix else continuation) + [(text, style)]
+                    row = L.clip_row(row, max(0, width - 1))
+                    symbol = ("*" if g.ascii else "◆") if selected else ((">" if g.ascii else "›") if idx == app.logs.cursor else " ")
+                    if symbol.strip():
+                        row += [(" " * max(0, width - 1 - vlen(L.row_text(row))), style),
+                                (symbol, "fg:#fb923c+bold" if selected else "cyan+bold")]
+                    body.append((row, idx))
+                    if not app.logs.following and len(body) >= page:
+                        return body
+                if app.logs.following and len(body) > page:
+                    body = body[-page:]
+            return body[-page:] if app.logs.following else body[:page]
+        body = render_lines(lines, start)
+        if app.logs.cursor is not None and not app.logs.following and not any(idx == app.logs.cursor for _, idx in body):
+            # Long wrapped predecessors must not conceal the keyboard-selected line.
+            app.logs.top = app.logs.cursor
+            lines, start = buf.window(app.logs.cursor, max(1, min(page, total - app.logs.cursor)))
+            body = render_lines(lines, start)
+        out += [row for row, _ in body]
         if not lines:
             out.append([("   This log file is empty." if isinstance(j, Finished) else "   No output yet. This view updates as the job writes to its log.", "dim")])
-        return out, []
+        return out, [(2 + i, "log_line", str(idx)) for i, (_, idx) in enumerate(body)]
 
     # ---- sources tab ------------------------------------------------------------------------------
     def sources_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
@@ -1672,8 +1731,9 @@ class Views:
 
     def compose(self, snap: dict, app, width: int, height: Optional[int], actions=None) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         width = max(0, width)
+        app.completion.update(snap)
         if height is not None and height <= 0:
-            app.tab_hits, app.last_rows = [], []
+            app.tab_hits, app.last_rows, app.last_hits = [], [], []
             return [], []
         head = self.header(snap, app, width)
         body_h = None if height is None else max(0, height - len(head) - 1)
@@ -1694,12 +1754,33 @@ class Views:
         while len(rows) < height - 1:
             rows.append([("", "")])
         rows = rows[:height - 1]
-        app.last_rows = rows                               # what a copy or an export of the screen reproduces
+        app.last_rows = [list(row) for row in rows]         # pristine content; copy excludes feedback glyphs
         if app.sel_anchor is not None:
             a, b = sorted((app.sel_anchor, min(app.sel_end, len(rows) - 1)))
             for y in range(max(0, a), b + 1):
-                rows[y] = [(t, "sel") for t, _ in rows[y]]
+                selected = [(t, "sel") for t, _ in L.clip_row(rows[y], max(0, width - 1))]
+                rows[y] = selected + [(" " * max(0, width - 1 - vlen(L.row_text(selected))), "sel"),
+                                      ("*" if self.g.ascii else "◆", "fg:#fb923c+bold")]
         hits = [(y, kind, key) for y, kind, key in hits if 0 <= y < max(0, height - 1)]
+        app.last_hits = hits
+        if app.tab == "jobs" and app.animations_enabled and width >= 4:
+            for item in app.completion.moving()[-3:]:
+                destination = next((y for y, kind, jid in hits if kind == "recent" and jid == item["job"]), None)
+                if destination is None:
+                    continue
+                source = item.get("source")
+                source = max(len(head), min(destination, source if source is not None else len(head) + 2))
+                progress = 1 - (1 - item["progress"]) ** 3
+                position = round(source + (destination - source) * progress)
+                for trail in range(3):
+                    y = position - trail
+                    if not len(head) <= y < len(rows):
+                        continue
+                    row = L.clip_row(rows[y], width - 1)
+                    glyph = ("v" if self.g.ascii else "◆") if trail == 0 else (":" if self.g.ascii else "│")
+                    style = "cyan+bold" if trail == 0 else "fg:#475569"
+                    rows[y] = row + [(" " * max(0, width - 1 - vlen(L.row_text(row))), ""), (glyph, style)]
+        app.completion.remember(hits)
         app.tab_hits = [hit for hit in app.tab_hits if hit[0] < height - 1 and hit[1] < hit[2]]
         return rows + [L.clip_row(self.footer(app, width), width)], hits
 

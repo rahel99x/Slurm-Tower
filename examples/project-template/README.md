@@ -131,9 +131,44 @@ choose another entry without changing jobs. `o` retains quick cycling and `e`
 switches stdout/stderr. Scheduler paths and bounded job-ID-matching files in
 their directories join the explicit index; Tower does not scan the filesystem.
 
+Inside the file, arrows move a logical line cursor before `v` begins selection;
+arrows/page keys/Home/End extend it across pages. The right edge shows `›` for
+the cursor and orange `◆` for selected lines (`>` and `*` in ASCII). `y` copies
+the original UTF-8 text, including tabs and CRLF endings, without Tower headers
+or row numbers. Esc cancels the selection before returning to the file list.
+Ranges above 256 KiB or 4,096 lines, and any invalid-UTF-8 range, run on the shared
+worker. They pin the selected raw bytes in a private unique
+`log-selected-<uuid>.log` export before clipboard delivery. Invalid UTF-8 skips
+text transport; small valid ranges keep the immediate `clipboard.txt` fallback.
+Rotation, truncation, or retained-tail eviction makes an old range unavailable:
+`y` asks you to reselect rather than copying the entire file. Stale mouse targets
+are rejected as well.
+
+For all contents, use `V` then `y`, `Y`, or `:copy all`; `y` without a selection
+also copies the entire file. The shared worker streams exact bytes through the
+selected local/SSH backend independently of displayed tail limits, search,
+scrolling, or wrapping. Its private unique `log-full-<uuid>.log` export is under
+Tower's `state/exports/`, or `./tower-exports/` with `--no-state`. Keep these
+generated/private exports out of Git; add `tower-exports/` to your project's
+ignore rules if using that fallback.
+
+An active log copy includes only its initial byte range and reports later
+growth. Detected rotation, replacement, truncation, mutation, or a short read
+fails without publishing a partial export. The producer keeps running; the
+copy is not an application checkpoint. Full raw exports remain available when
+clipboard transport cannot accept the entire file. Tower never silently sends
+a prefix through OSC 52 and reports a request rather than confirmed terminal
+acceptance; non-UTF-8 logs keep their exact bytes in the export.
+
 For old jobs whose accounting service did not retain stdout/stderr or WorkDir,
 Tower reports missing evidence instead of using a currently running job. Select
 the run directory explicitly with `--workdir` to attach its `logs.json`.
+
+Jobs leaving the live queue remain in Recents as **awaiting accounting** until
+Slurm confirms a terminal state, then their actual records enter History. This
+does not finalize your application reports or infer successful completion. Short
+completion motion and two History pulses are optional; `"animations": false`
+or the `reader` theme keeps static notices and unread counts.
 
 ## Instrument another application
 

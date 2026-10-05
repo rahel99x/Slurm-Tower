@@ -13,6 +13,10 @@ from .model import Health, Job, Store
 from .slurm import CommandError, Slurm
 
 
+HISTORY_REFRESH_MIN = 5.0
+HISTORY_FAST_ATTEMPTS = 5
+
+
 class Sampler(threading.Thread):
     def __init__(self, slurm: Slurm, store: Store, intervals: Dict[str, float], gpu_types: List[str], history_days: float = 2.0,
                  account: str = "", gpu_sampling: bool = True, workers: int = 4, on_event: Optional[Callable[[dict], None]] = None,
@@ -37,6 +41,7 @@ class Sampler(threading.Thread):
         self.kick = threading.Event()
         self.want_detail: Optional[str] = None
         self._historical_details: Dict[str, Dict[str, str]] = {}
+        self._details_refresh: Optional[tuple] = None
         self.sources: Dict[str, Callable[[], None]] = {
             "jobs": self.src_jobs, "starts": self.src_starts, "live": self.src_live, "gpu": self.src_gpu, "nodes": self.src_nodes,
             "partitions": self.src_partitions, "finished": self.src_finished, "share": self.src_share, "account": self.src_account, "details": self.src_details,
@@ -50,6 +55,14 @@ class Sampler(threading.Thread):
             "weather": ("jobs", "partitions", "share"),
         }
         self.last_run: Dict[str, float] = {name: 0.0 for name in self.sources}
+        # A generation counter retains a departure that races an in-flight sacct.
+        # Expedited retries are bounded and never reset a failing source's backoff.
+        self._finished_requested = 0
+        self._finished_handled = 0
+        self._finished_retry_remaining = 0
+        self._finished_retry_at = 0.0
+        self._finished_retry_delay = HISTORY_REFRESH_MIN
+        self._finished_completed_at = 0.0
         self.hooks: List[Callable[[dict], None]] = []     # plugin event hooks, called after on_event
         self.job_observers = []                         # bounded read-only consumers of existing samples
         self.observer_errors = {}
@@ -95,7 +108,29 @@ class Sampler(threading.Thread):
             return False
         if name == "fin_details" and not self.want_fin:
             return False
-        return now - self.last_run[name] >= self.intervals.get(name, 30.0) + h.backoff
+        regular = now - self.last_run[name] >= self.intervals.get(name, 30.0) + h.backoff
+        if name == "details" and not regular:
+            request = self._details_refresh
+            return bool(request and request[0] == self.want_detail and not h.backoff and
+                        request[1] == self.store.job_attempt(request[0]))
+        if name != "finished" or regular:
+            return regular
+        # Failures use the existing source backoff; new departures cannot turn an
+        # unavailable accounting service into a tight retry loop.
+        if h.backoff:
+            return False
+        requested = self._finished_requested > self._finished_handled
+        retry = self._finished_retry_remaining > 0 and now >= self._finished_retry_at
+        last = max(self.last_run[name], self._finished_completed_at)
+        return (requested or retry) and now - last >= HISTORY_REFRESH_MIN
+
+    def request_history(self):
+        """Coalesce queue departures into an accounting refresh and limited retries."""
+        with self._schedule_lock:
+            self._finished_requested += 1
+            self._finished_retry_remaining = HISTORY_FAST_ATTEMPTS
+            self._finished_retry_delay = HISTORY_REFRESH_MIN
+        self.kick.set()
 
     def run_source(self, name: str):
         h = self.health(name)
@@ -172,11 +207,20 @@ class Sampler(threading.Thread):
     # ---- sources -----------------------------------------------------------------------------------
     def src_jobs(self):
         jobs = self.slurm.jobs()
+        returning = {job.id for job in jobs} & self.store.preserved_detail_ids()
         events = self.store.apply_jobs(jobs)
+        for jid in returning:
+            self._historical_details.pop(jid, None)
+            with self._schedule_lock:
+                if jid == self.want_detail:
+                    self._details_refresh = (jid, self.store.job_attempt(jid))
+                    self.kick.set()
         if events:
             self.emit(events)
         if any(ev["kind"] in ("started", "finished", "left") for ev in events):
             self.last_run["starts"] = 0.0                  # projected starts change when the queue moves
+        if any(ev["kind"] in ("finished", "left") for ev in events):
+            self.request_history()
         self.check_alerts()
         self.observe_jobs()
 
@@ -283,9 +327,25 @@ class Sampler(threading.Thread):
             self.store.partitions, self.store.gpu_inventory, self.store.nodemap = parts, tot, nodemap
 
     def src_finished(self):
+        with self._schedule_lock:
+            requested = self._finished_requested
         fin = self.slurm.finished(self.history_days)
+        self.store.apply_finished(fin, history_days=self.history_days)
         with self.store.lock:
-            self.store.finished = fin
+            pending = bool(self.store.departed_jobs)
+        with self._schedule_lock:
+            self._finished_completed_at = time.time()
+            self._finished_handled = max(self._finished_handled, requested)
+            # Do not consume a retry belonging to a newer departure while this
+            # command was running. Its request generation remains outstanding.
+            if self._finished_requested == requested:
+                if pending:
+                    self._finished_retry_remaining = max(0, self._finished_retry_remaining - 1)
+                    self._finished_retry_at = self._finished_completed_at + self._finished_retry_delay
+                    self._finished_retry_delay = min(60.0, self._finished_retry_delay * 2)
+                else:
+                    self._finished_retry_remaining = 0
+        self.kick.set()
 
     def src_share(self):
         rows = self.slurm.share()
@@ -383,6 +443,7 @@ class Sampler(threading.Thread):
         with self.store.lock:
             finished = next((job for job in self.store.finished if job.id == jid), None)
             previous = dict(self.store.details.get(jid, {}))
+            attempt = self.store.job_attempt(jid)
         if finished is None:
             kv = self.slurm.details(jid)
         else:
@@ -420,11 +481,25 @@ class Sampler(threading.Thread):
             # the newly selected job's details.
             if jid != self.want_detail:
                 return
+            if attempt != self.store.job_attempt(jid):
+                self._historical_details.pop(jid, None)
+                return
+            if finished is not None and any(job.id == jid for job in self.store.jobs):
+                # A historical fetch can finish after this ID has been requeued.
+                # It must not replace the active attempt's metadata or paths.
+                self._historical_details.pop(jid, None)
+                return
+            current_finished = next((job for job in self.store.finished if job.id == jid), None)
+            if current_finished is not None:
+                kv = dict(kv, JobState=current_finished.state)
             self.store.details[jid] = kv
             alive = {j.id for j in self.store.jobs}
-            retained = set(self._historical_details)
+            retained = set(self._historical_details) | self.store.preserved_detail_ids()
             for k in [k for k in self.store.details if k not in alive and k not in retained and k != jid]:
                 del self.store.details[k]
+        with self._schedule_lock:
+            if self._details_refresh == (jid, attempt):
+                self._details_refresh = None
 
     def select(self, jid: Optional[str]):
         """The screen's selected job: its details are fetched now and refreshed on the details cadence."""

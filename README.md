@@ -103,6 +103,23 @@ Esc returns to the list so you can choose another file. Missing historical
 scheduler paths are reported explicitly; a run's log index can retain access to
 its project-owned files.
 
+When a job leaves the live queue, Tower keeps it in Recents as **awaiting
+accounting**, requests a bounded accounting refresh, and adds its record to History
+when Slurm confirms its terminal state. A short block-particle motion and two
+History pulses mark the change; an unread count remains visible. Set
+`"animations": false` or use the `reader` theme for static notices.
+
+In a log file, arrows move the line cursor before you press `v` to start a
+selection; arrows and page keys then extend it across pages. Orange `◆` marks
+selected lines (`*` in ASCII). `y` copies the original text, including tabs and
+line endings. `V` then `y`, `Y`, or `:copy all` saves the entire selected file
+through a background worker, independent of the displayed tail. A private full
+export remains available when the terminal clipboard cannot accept the file;
+Tower reports clipboard requests and limits explicitly.
+Large line selections run on that worker too; non-UTF-8 ranges keep an exact raw
+export. If selected lines expire through rotation or tail eviction, `y` asks you
+to reselect rather than copying a different range or the whole file.
+
 | View | Get an answer quickly |
 | --- | --- |
 | **Jobs** | What is running, what is waiting, and which jobs need attention? |
