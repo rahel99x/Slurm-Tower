@@ -380,7 +380,8 @@ def test_command_palette_and_analytics_views(tmp_path):
     cmd("filter"); cmd("sort name"); assert app.sort["jobs"] == "name"
     cmd("sort bogus"); assert app.message.startswith("sort keys here")
     cmd("days 7"); assert app.analytics_days_value() == 7 and sampler.history_days == 7
-    cmd("tab analytics"); assert app.tab == "analytics"
+    selected_job = app.selected_id
+    cmd("tab analytics"); assert app.tab == "analytics" and app.analytics_job == selected_job
     cmd("view timeline"); assert app.analytics_view == "timeline"
     cmd("theme mono"); assert app.theme == "mono"
     cmd("gpu off"); assert app.gpu is False
@@ -399,7 +400,10 @@ def test_command_palette_and_analytics_views(tmp_path):
     rows, _ = views.compose(store.snapshot(), app, 150, 44, actions)
     text = "\n".join(L.row_text(r) for r in rows)
     assert "cpu per core" in text and "memory of the request" in text and "cpu samples" in text
-    app.handle("up"); assert app.analytics_job == "12477369"                 # the series list follows squeue's order: 12477369 first
+    cmd("density compact")  # Use native series navigation rather than scrolling a chart panel.
+    app.handle("home"); assert app.analytics_job == "12477369"               # series follow the scheduler feed, independently of table sorts
+    app.handle("down"); assert app.analytics_job == "12480001"
+    app.handle("up"); assert app.analytics_job == "12477369"
     rows, _ = views.compose(store.snapshot(), app, 150, 44, actions)
     assert "gpu a01-05:0 utilisation" in "\n".join(L.row_text(r) for r in rows) or "gpu task0:0 utilisation" in "\n".join(L.row_text(r) for r in rows)
     app.analytics_view = "history"
@@ -787,7 +791,8 @@ def test_group_weather_budget_map_steps_and_trace_through_the_dashboard(tmp_path
         app.handle("8")
         rows, hits = views.compose(store.snapshot(), app, W, H, actions)
         text = "\n".join(L.row_text(r) for r in rows)
-        assert app.tab == "group" and "3 users, 5 running, 5 pending" in text and "carol" in text and "md-run" in text and len(hits) == 10
+        assert app.tab == "group" and "3 users, 5 running, 5 pending" in text and "carol" in text and "md-run" in text
+        assert len([hit for hit in hits if hit[1] == "group"]) == 10
         assert app.group_ids[0] == "12477369"                        # sorted by user: alex first
         app.handle("s"); rows, _ = views.compose(store.snapshot(), app, W, H, actions)
         assert app.sort["group"] == "state" and app.group_ids[0] in ("12477369", "12480001")

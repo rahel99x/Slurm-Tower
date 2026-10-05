@@ -34,6 +34,39 @@ SORTS = {"jobs": ["state", "name", "id", "time", "priority"], "history": ["end",
          "nodes": ["name", "load"], "cluster": ["name"], "log": ["name"], "sources": ["name"], "group": ["user", "state", "name", "id", "time", "priority"], "deps": ["name"]}
 
 
+def job_sort_values(job: Job, row: dict, snap: dict, keys=None) -> dict:
+    """Sort observations before display rounding, decoration or viewport slicing."""
+    requested = set(keys) if keys is not None else {column.key for column in JOB_COLS}
+    values = dict(id=job.id, name=job.name, part=job.partition, st=job.state,
+                  user=job.user, where=job.nodelist or (job.nodes if job.pending else None),
+                  cpus=job.cpus, gpu=job.gpus, prio=job.priority,
+                  flags=row.get("flags", ""), tags=row.get("tags", ""), info=row.get("info", ""))
+    # A JOBID or name click should not parse timestamps or inspect telemetry for
+    # every row. Only active measured columns need their unrounded observations.
+    if "time" in requested:
+        values["time"] = None if job.pending else job.elapsed_s
+    if "left" in requested:
+        if job.pending:
+            submitted = stamp(job.submit)
+            values["left"] = clock.now() - submitted if submitted is not None else None
+        else:
+            elapsed, limit = job.elapsed_s, job.limit_s
+            values["left"] = limit - elapsed if limit is not None and elapsed is not None else None
+    if requested & {"cpu%", "eff", "mem%"}:
+        live = snap.get("live", {}).get(job.id) if not job.pending else None
+        if "cpu%" in requested:
+            values["cpu%"] = (live.rate if live.rate is not None else live.avg) if live else None
+        if "eff" in requested:
+            values["eff"] = live.avg if live else None
+        if "mem%" in requested:
+            request = job.mem_bytes
+            values["mem%"] = live.rss / request if live and live.rss is not None and request else None
+    if "gpu%" in requested:
+        gpu = (snap.get("gpu", {}).get(job.id) or []) if not job.pending else []
+        values["gpu%"] = sum(sample.util for sample in gpu) / len(gpu) if gpu else None
+    return values
+
+
 def tail_lines(path: str, n: int, max_bytes: int = 131072, files=None) -> List[str]:
     if not path or n <= 0:
         return []
@@ -438,7 +471,9 @@ class Views:
 
     def job_rows(self, snap: dict, app, actions=None) -> List[dict]:
         from .table_ui import matches
+        from .table_sort import chain, sort_rows
         live, gpu = snap["live"], snap["gpu"]
+        cascade = chain(app, "jobs")
         rows = []
         for j in snap["jobs"]:
             if not matches(app, "jobs", j, snap):
@@ -484,18 +519,23 @@ class Views:
                 row["id"] = (self.g.pin if hasattr(self.g, "pin") else "^") + j.id
             if rec.get("note"):
                 row["info"] += f" {self.g.dot} {rec['note']}"
+            if cascade:
+                row["_sort"] = job_sort_values(j, row, snap, (key for key, _ in cascade))
             rows.append(row)
         key, rev = app.sort.get("jobs", "state"), app.reverse.get("jobs", False)
-        if key == "name":
-            rows.sort(key=lambda r: (r["name"], r["id"]), reverse=rev)
-        elif key == "id":
-            rows.sort(key=lambda r: r["id"], reverse=rev)
-        elif key == "time":
-            rows.sort(key=lambda r: -(r["job"].elapsed_s or -1), reverse=rev)
-        elif key == "priority":
-            rows.sort(key=lambda r: -r["job"].priority, reverse=rev)
+        if cascade is not None:
+            rows = sort_rows(app, "jobs", rows)
         else:
-            rows.sort(key=lambda r: (r["job"].pending, -r["job"].priority if r["job"].pending else r["job"].start), reverse=rev)
+            if key == "name":
+                rows.sort(key=lambda r: (r["name"], r["id"]), reverse=rev)
+            elif key == "id":
+                rows.sort(key=lambda r: r["id"], reverse=rev)
+            elif key == "time":
+                rows.sort(key=lambda r: -(r["job"].elapsed_s or -1), reverse=rev)
+            elif key == "priority":
+                rows.sort(key=lambda r: -r["job"].priority, reverse=rev)
+            else:
+                rows.sort(key=lambda r: (r["job"].pending, -r["job"].priority if r["job"].pending else r["job"].start), reverse=rev)
         rows.sort(key=lambda r: not r["pinned"])             # pinned first (a stable sort keeps the order within each group)
         for r in rows:
             r["id"] = r["job"].id                                # the pin glyph goes into the mark column, not the id
@@ -689,6 +729,7 @@ class Views:
 
     def jobs_tab(self, snap: dict, app, actions, width: int, height: Optional[int], *, prepared_rows=None) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         from .table_ui import columns
+        from .table_sort import header_hits
         job_columns = columns(app, "jobs", JOB_COLS)
         self.cfg_tags = snap.get("tags", {})
         rows_d = self.job_rows(snap, app, actions) if prepared_rows is None else prepared_rows
@@ -754,10 +795,12 @@ class Views:
         marks = {i for i, r in enumerate(shown) if r["id"] in app.marks}
         for r in shown:
             r["_mark"] = self.g.pin if r.get("pinned") else ""
-        trows, _ = table(job_columns, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus else cur - top, marks=marks, mark_char=self.g.mark)
+        cells = []
+        trows, _ = table(job_columns, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus else cur - top, marks=marks, mark_char=self.g.mark,
+                         header_cells=cells)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
         out = [rule(self.g, width, title)] + trows if show_queue else []
-        hits = [(2 + i, "job", r["id"]) for i, r in enumerate(shown)] if show_queue else []
+        hits = header_hits("jobs", cells, 1) + [(2 + i, "job", r["id"]) for i, r in enumerate(shown)] if show_queue else []
         if show_queue and not rows_d:
             out.append([("   no jobs match the filter; Esc clears it" if app.filter else "   Your queue is clear. New jobs appear here automatically.", "dim")])
         if det:
@@ -767,8 +810,12 @@ class Views:
             recent_cur = cur - n if recent_focus else 0
             fin_top = app.scroll_to("recent", recent_cur, fin_vis, len(fin))
             recent_shown = fin[fin_top:fin_top + fin_vis]
-            hits += [(len(out) + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
-            out += self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus else None, app=app)
+            base = len(out)
+            recent_cells = []
+            recent_rows = self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus else None,
+                                             app=app, header_cells=recent_cells, sort_tab="recent")
+            hits += header_hits("recent", recent_cells, base + 1) + [(base + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
+            out += recent_rows
         out += self.event_rows(events, width)
         return out, hits
 
@@ -778,13 +825,16 @@ class Views:
                 Column("me", "MEM EFF", 7, 7, ">"), Column("rss", "PEAK MEM", 8, 10, ">"), Column("start", "STARTED", 5, 12), Column("end", "ENDED", 5, 12),
                 Column("exit", "EXIT", 4, 6), Column("nodes", "NODES", 5, 16, flex=True), Column("tags", "TAGS", 4, 14)]
 
-    def finished_rows(self, fin: Sequence[Finished], width: int, title: str, cursor: Optional[int] = None, app=None) -> List[Row]:
+    def finished_rows(self, fin: Sequence[Finished], width: int, title: str, cursor: Optional[int] = None, app=None,
+                      *, header_cells=None, sort_tab=None) -> List[Row]:
         if not fin:
             return []
         data = [self.finished_dict(f) for f in fin]
         from .table_ui import columns
-        cols = columns(app, "history", self.FIN_COLS) if app else self.FIN_COLS
-        rows, _ = table(cols, data, width, self.g.ascii, indent="   ", droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cursor)
+        sort_tab = sort_tab or ("recent" if title == "recent" else "history")
+        cols = columns(app, sort_tab, self.FIN_COLS) if app else self.FIN_COLS
+        rows, _ = table(cols, data, width, self.g.ascii, indent="   ", droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cursor,
+                        header_cells=header_cells)
         return [rule(self.g, width, title)] + rows
 
     def finished_dict(self, f: Finished) -> dict:
@@ -823,6 +873,7 @@ class Views:
 
     def history_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         from .table_ui import columns
+        from .table_sort import chain, describe, header_hits
         fin_columns = columns(app, "history", self.FIN_COLS)
         self.cfg_tags = snap.get("tags", {})
         fin = app.sync_history_selection(snap)
@@ -839,7 +890,8 @@ class Views:
         summary: Row = [(f" last {self.cfg['history_days']:g} days: {n} jobs  ", "bold")]
         for st, c in sorted(counts.items(), key=lambda kv: -kv[1]):
             summary.append((f"{st.lower()} {c}  ", "green" if st == "COMPLETED" else ("yellow" if st.startswith("CANCEL") else "red")))
-        summary.append((f"{self.g.dot} {core_h:.1f} core-hours {self.g.dot} {gpu_h:.1f} gpu-hours" + (f" {self.g.dot} mean cpu eff {100 * sum(effs) / len(effs):.0f}%" if effs else "") + f" {self.g.dot} sorted by {key}{' (reversed)' if rev else ''}", "dim"))
+        sort_label = describe(app, "history") if chain(app, "history") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
+        summary.append((f"{self.g.dot} {core_h:.1f} core-hours {self.g.dot} {gpu_h:.1f} gpu-hours" + (f" {self.g.dot} mean cpu eff {100 * sum(effs) / len(effs):.0f}%" if effs else "") + f" {self.g.dot} {sort_label}", "dim"))
         prefix = [summary]
         if self.visual_room(width, height):
             prefix += self.composition([(state.lower(), count, "green" if state == "COMPLETED" else "yellow" if state.startswith("CANCEL") else "red")
@@ -851,18 +903,22 @@ class Views:
         top = app.scroll_to("history", cur, vis, n)
         shown = fin[top:top + vis]
         data = [self.finished_dict(f) for f in shown]
-        trows, _ = table(fin_columns, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top)
+        cells = []
+        trows, _ = table(fin_columns, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top,
+                         header_cells=cells)
         title = f"history {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "history"
         out = prefix + [rule(self.g, width, title)] + trows
         if not fin:
             out.append([("   nothing matches the filter; Esc clears it" if app.filter else "   No completed runs yet. Finished jobs and efficiency appear here.", "dim")])
-        hits = [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
+        hits = header_hits("history", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
         if fin:
             out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
         return out, hits
 
     # ---- cluster tab ------------------------------------------------------------------------------
     def cluster_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
+        from .table_ui import columns
+        from .table_sort import header_hits, sort_rows
         parts = list(snap["partitions"])
         want = set(self.cfg["partitions"]) or None
         mine = {j.partition for j in snap["jobs"]}
@@ -878,11 +934,15 @@ class Views:
             rows.append(dict(name=p.name, avail=p.avail, limit=p.limit, nodes=p.nodes, nidle=na[1] if len(na) > 1 else "", nalloc=na[0], nother=na[2] if len(na) > 2 else "",
                              cidle=ca[1] if len(ca) > 1 else "", calloc=ca[0], gpus=gp, mine=sum(1 for j in snap["jobs"] if j.partition == p.name and not j.pending),
                              minep=sum(1 for j in snap["jobs"] if j.partition == p.name and j.pending),
+                             _sort={"limit": secs(p.limit) if secs(p.limit) is not None else p.limit,
+                                    "gpus": sum(v.get("free", 0) for v in p.gpus.values())},
                              _styles={"avail": "green" if p.avail == "up" else "red"}))
         cols = [Column("name", "PARTITION", 6, 14), Column("avail", "AVAIL", 4, 6), Column("limit", "LIMIT", 5, 12), Column("nodes", "NODES", 5, 6, ">"),
                 Column("nidle", "IDLE", 4, 6, ">"), Column("nalloc", "ALLOC", 5, 6, ">"), Column("nother", "OTHER", 5, 6, ">"), Column("cidle", "CPUS IDLE", 9, 10, ">"),
                 Column("calloc", "CPUS ALLOC", 10, 11, ">"), Column("mine", "MY RUN", 6, 6, ">"), Column("minep", "MY PEND", 7, 7, ">"), Column("gpus", "GPUS FREE/UP", 12, 60, flex=True)]
-        trows, _ = table(cols, rows, width, self.g.ascii, droppable=("nother", "calloc", "cidle", "limit"))
+        rows = sort_rows(app, "cluster", rows)
+        cells = []
+        trows, _ = table(columns(app, "cluster", cols), rows, width, self.g.ascii, droppable=("nother", "calloc", "cidle", "limit"), header_cells=cells)
         out = [rule(self.g, width, "partitions")] + trows
         if not rows:
             out.append([("   Waiting for partition data. Open Sources to check sinfo or refresh with r.", "dim")])
@@ -907,7 +967,7 @@ class Views:
             out.append([(f"   {acc['account']} right now: {acc['running']} running jobs using {acc['cpus']} cpus and {acc['gpus']} gpus, {acc['pending']} pending (everyone in the account)", "dim")])
         out += self.weather_rows(snap, width)
         out += self.budget_rows(snap, width)
-        return out, []
+        return out, header_hits("cluster", cells, 1)
 
     def weather_rows(self, snap: dict, width: int) -> List[Row]:
         """Queue weather: pending work ahead per partition cluster-wide and what sbatch --test-only projects for typical jobs."""
@@ -1050,9 +1110,12 @@ class Views:
         return out
 
     def my_nodes(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
+        from .table_ui import columns
+        from .table_sort import chain, header_hits, sort_rows
         nodes = list(snap["nodes"].values())
         key, rev = app.sort.get("nodes", "name"), app.reverse.get("nodes", False)
-        nodes.sort(key=(lambda n: n.name) if key == "name" else (lambda n: (n.load is None, -(n.load or 0))), reverse=rev)
+        if chain(app, "nodes") is None:
+            nodes.sort(key=(lambda n: n.name) if key == "name" else (lambda n: (n.load is None, -(n.load or 0))), reverse=rev)
         by_host: Dict[str, List[Job]] = {}
         for j in snap["jobs"]:
             for h in j.hosts:
@@ -1068,13 +1131,21 @@ class Views:
             rows.append(dict(name=nd.name, state=nd.state, load=f"{nd.load:.1f}" if nd.load is not None else "n/a", cpus=f"{nd.alloc}/{nd.cpus}", loadpct=f"{100 * nd.load / nd.cpus:.0f}%" if nd.load is not None and nd.cpus else "n/a",
                              mem=f"{(nd.mem_total - nd.mem_free) / 1024:.0f}/{nd.mem_total / 1024:.0f} GB" if nd.mem_free is not None and nd.mem_total and nd.mem_free <= nd.mem_total else "n/a", gres=nd.gres.split("(")[0] if nd.gres and nd.gres != "(null)" else "",
                              gused=nd.gres_used.split("(")[0] if nd.gres_used and nd.gres_used != "(null)" else "", gutil=gutil,
+                             _node=nd, _sort={"load": nd.load, "cpus": nd.alloc / nd.cpus if nd.cpus else None,
+                                             "loadpct": nd.load / nd.cpus if nd.load is not None and nd.cpus else None,
+                                             "mem": (nd.mem_total - nd.mem_free) * 1024 ** 2 if nd.mem_free is not None and nd.mem_total and nd.mem_free <= nd.mem_total else None,
+                                             "gutil": sum(s.util for s in gsamp) / len(gsamp) if gsamp else None},
                              jobs=" ".join(f"{j.id}({j.name})" for j in jobs), _styles={"state": "red" if any(k in nd.state.lower() for k in ("drain", "down", "fail")) else ""}))
         cols = [Column("name", "NODE", 6, 16), Column("state", "STATE", 5, 14), Column("cpus", "ALLOC/CPUS", 10, 10, ">"), Column("load", "LOAD", 4, 7, ">"), Column("loadpct", "LOAD%", 5, 5, ">"),
                 Column("mem", "MEM USED", 8, 14, ">"), Column("gres", "GRES", 4, 16), Column("gused", "GRES USED", 9, 16), Column("gutil", "GPU%", 4, 4, ">"), Column("jobs", "MY JOBS", 7, 60, flex=True)]
-        trows, _ = table(cols, rows, width, self.g.ascii, droppable=("gused", "gres", "loadpct"))
+        rows = sort_rows(app, "nodes", rows)
+        nodes = [row["_node"] for row in rows]
+        cells = []
+        trows, _ = table(columns(app, "nodes", cols), rows, width, self.g.ascii, droppable=("gused", "gres", "loadpct"), header_cells=cells)
         out = []
         if nodes and self.visual_room(width, height, minimum=22):
             out += self.node_resource_rows(nodes, width)
+        header_y = len(out) + 1
         out += [rule(self.g, width, "nodes running your jobs")] + trows
         if not rows:
             out.append([("   no running jobs (or scontrol has not answered yet)", "dim")])
@@ -1087,7 +1158,7 @@ class Views:
                         mean = snap["gpu_mean"].get(key)
                         out.append([(f"   {nd.name} gpu{s.index} ", ""), bar(self.g, s.util / 100, 20), (f" {int(s.util):>3}%  mem {s.used / 1024:.1f}/{s.total / 1024:.0f} GB  ", ""),
                                     (spark(self.g, snap["hist_gpu"].get(key, []), 20), "cyan"), (f"  mean {'?' if mean is None else f'{mean:.0f}%'}  job {j.id}", "dim")])
-        return out, []
+        return out, header_hits("nodes", cells, header_y)
 
     # ---- group tab --------------------------------------------------------------------------------
     GROUP_COLS = [Column("user", "USER", 4, 12), Column("id", "JOBID", 5, 16), Column("name", "NAME", 8, 28, flex=True), Column("part", "PART", 4, 9), Column("st", "ST", 2, 3),
@@ -1095,8 +1166,11 @@ class Views:
                   Column("prio", "PRIO", 4, 7, ">"), Column("info", "INFO", 10, 40, flex=True)]
 
     def group_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
+        from .table_ui import columns
+        from .table_sort import chain, describe, header_hits, sort_rows
         g = self.g
         jobs = list(snap.get("group", []))
+        cascade = chain(app, "group")
         acc = snap.get("account", {})
         out: List[Row] = []
         if not jobs:
@@ -1140,30 +1214,43 @@ class Views:
             rows.append(dict(job=j, user=j.user, id=j.id, name=j.name, part=j.partition, st=st, where=j.nodelist if not j.pending else f"{j.nodes} node{'s' if j.nodes != 1 else ''}",
                              cpus=j.cpus, gpu=j.gpu_text, time=f"{j.elapsed}/{j.limit}" if not j.pending else f"-/{j.limit}", prio=j.priority, info=info,
                              _style="cyan" if j.user == app.user else ("dim" if j.pending else "")))
+            if cascade:
+                rows[-1]["_sort"] = job_sort_values(j, rows[-1], snap, (key for key, _ in cascade))
         key, rev = app.sort.get("group", "user"), app.reverse.get("group", False)
         keyfn = {"user": lambda r: (r["user"], r["job"].pending, r["id"]), "state": lambda r: (r["job"].pending, r["user"], r["id"]), "name": lambda r: (r["name"], r["id"]),
                  "id": lambda r: r["id"], "time": lambda r: -(r["job"].elapsed_s or -1), "priority": lambda r: -r["job"].priority}[key]
-        rows.sort(key=keyfn, reverse=rev)
+        if cascade is None:
+            rows.sort(key=keyfn, reverse=rev)
+        else:
+            rows = sort_rows(app, "group", rows)
         flt = app.filter.lower()
         if flt:
             rows = [r for r in rows if flt in r["user"].lower() or flt in r["name"].lower() or flt in r["id"].lower() or flt in r["part"].lower()]
         n = len(rows)
-        app.group_ids = [r["id"] for r in rows]
+        ids = [r["id"] for r in rows]
+        previous = getattr(app, "group_ids", [])
+        selected = app.selected_id
+        if (previous != ids and selected in ids and selected in previous
+                and app.cursor.get("group", 0) == previous.index(selected)):
+            app.cursor["group"] = ids.index(selected)
+        app.group_ids = ids
         cur = app.clamp_cursor("group", n)
         app.selected_id = None
         if n:
             app.selected_id = app.group_ids[cur]
         if height is None:
-            trows, _ = table(self.GROUP_COLS, rows, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"))
+            trows, _ = table(columns(app, "group", self.GROUP_COLS), rows, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"))
             return out + [rule(g, width, "jobs")] + trows, []
         vis = max(1, height - len(out) - 2)
         top = app.scroll_to("group", cur, vis, n)
         shown = rows[top:top + vis]
-        trows, _ = table(self.GROUP_COLS, shown, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"), cursor=cur - top)
+        cells = []
+        trows, _ = table(columns(app, "group", self.GROUP_COLS), shown, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"), cursor=cur - top, header_cells=cells)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
         base = len(out) + 1
-        out += [rule(g, width, title + f", sorted by {key}{' (reversed)' if rev else ''}")] + trows
-        hits = [(base + 1 + i, "group", r["id"]) for i, r in enumerate(shown)]
+        sort_label = describe(app, "group") if chain(app, "group") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
+        out += [rule(g, width, title + f", {sort_label}")] + trows
+        hits = header_hits("group", cells, base) + [(base + 1 + i, "group", r["id"]) for i, r in enumerate(shown)]
         return out, hits
 
     # ---- deps tab ---------------------------------------------------------------------------------
@@ -1498,16 +1585,33 @@ class Views:
 
     # ---- sources tab ------------------------------------------------------------------------------
     def sources_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
-        hs = sorted(snap["health"].values(), key=lambda h: h.name)
+        from .table_ui import columns
+        from .table_sort import chain, header_hits, sort_rows
+        hs = list(snap["health"].values())
+        if chain(app, "sources") is None:
+            hs.sort(key=lambda h: h.name, reverse=app.reverse.get("sources", False))
         n = len(hs)
-        cur = app.clamp_cursor("sources", n)
+        previous = getattr(app, "source_ids", [])
+        old_cursor = app.cursor.get("sources", 0)
+        chosen = previous[old_cursor] if 0 <= old_cursor < len(previous) else None
         now = clock.now()
         rows = []
         for h in hs:
             state = "off" if not h.enabled else ("error" if h.error else ("ok" if h.last_ok else "pending"))
             rows.append(dict(name=h.name, state=state, every=f"{self.cfg['intervals'].get(h.name, 0):g}s", last=short_duration(now - h.last_ok) + " ago" if h.last_ok else "never",
                              latency=f"{h.latency_ms:.0f} ms" if h.latency_ms else "", calls=h.calls, errors=h.errors, backoff=f"{h.backoff:.0f}s" if h.backoff else "",
+                             _sort={"every": self.cfg["intervals"].get(h.name, 0),
+                                    "last": now - h.last_ok if h.last_ok else None,
+                                    "latency": h.latency_ms if h.calls else None,
+                                    "backoff": h.backoff},
                              error=h.error, _styles={"state": {"ok": "green", "error": "red", "off": "dim", "pending": "yellow"}[state]}))
+        rows = sort_rows(app, "sources", rows)
+        app.source_ids = [row["name"] for row in rows]
+        # Sources has no selected job ID: its identity is the name under the
+        # current cursor in the last rendered order, including intervening keys.
+        if previous != app.source_ids and chosen in app.source_ids:
+            app.cursor["sources"] = app.source_ids.index(chosen)
+        cur = app.clamp_cursor("sources", n)
         cols = [Column("name", "SOURCE", 6, 12), Column("state", "STATE", 5, 7), Column("every", "EVERY", 5, 6, ">"), Column("last", "LAST OK", 7, 12, ">"),
                 Column("latency", "LATENCY", 7, 8, ">"), Column("calls", "CALLS", 5, 6, ">"), Column("errors", "ERRORS", 6, 6, ">"), Column("backoff", "BACKOFF", 7, 7, ">"),
                 Column("error", "LAST ERROR", 10, 80, flex=True)]
@@ -1521,8 +1625,9 @@ class Views:
         vis = len(rows) if height is None else max(1, height - len(prefix) - 2)
         top = app.scroll_to("sources", cur, vis, n) if height is not None else 0
         shown = rows[top:top + vis]
-        trows, _ = table(cols, shown, width, self.g.ascii, cursor=cur - top if height else None,
-                         droppable=("backoff", "calls", "errors", "every", "error"))
+        cells = []
+        trows, _ = table(columns(app, "sources", cols), shown, width, self.g.ascii, cursor=cur - top if height else None,
+                         droppable=("backoff", "calls", "errors", "every", "error"), header_cells=cells)
         title = f"sources {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "sources"
         out = prefix + [rule(self.g, width, title + f" ({app.keys_help('source_toggle')} enables / disables the selected one)")] + trows
         if not hs:
@@ -1533,7 +1638,7 @@ class Views:
         ev = snap["events"][-8:]
         if ev:
             out += self.event_rows(ev, width, limit=8)
-        hits = [(len(prefix) + 2 + i, "source", r["name"]) for i, r in enumerate(shown)]
+        hits = header_hits("sources", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "source", r["name"]) for i, r in enumerate(shown)]
         return out, hits
 
     # ---- analytics tab ----------------------------------------------------------------------------

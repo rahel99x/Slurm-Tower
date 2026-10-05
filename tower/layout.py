@@ -108,14 +108,23 @@ def fit_columns(cols: Sequence[Column], rows: Iterable[dict], width: int, gap: i
 
 def table(cols: Sequence[Column], rows: Sequence[dict], width: int, ascii_: bool = False, indent: str = " ", gap: int = 2,
           droppable: Sequence[str] = (), header_style: str = "cyan+bold", cursor: Optional[int] = None, marks: Iterable[int] = (),
-          mark_char: Optional[str] = None) -> Tuple[List[Row], List[Column]]:
+          mark_char: Optional[str] = None, header_cells: Optional[list] = None) -> Tuple[List[Row], List[Column]]:
     """Header row plus one row per dict; ``rows[i]['_style']`` styles a row, ``rows[i]['_styles']`` a cell; the
-    ``cursor`` row is reversed; marked rows carry ``mark_char`` in a leading one-character column."""
+    ``cursor`` row is reversed; marked rows carry ``mark_char`` in a leading one-character column.
+    ``header_cells`` receives (key, left, right) visible, half-open display-column
+    bounds from this exact fit, excluding gaps and the optional mark column."""
     cols = list(cols)
     marks = set(marks)
     if mark_char is not None:
         cols = [Column("_mark", "", 1, 1)] + cols
     w, kept = fit_columns(cols, rows, width - vlen(indent), gap=gap, droppable=droppable)
+    if header_cells is not None:
+        x = vlen(indent)
+        for column in kept:
+            right = min(width, x + w[column.key])
+            if column.key != "_mark" and x < right:
+                header_cells.append((column.key, x, right))
+            x += w[column.key] + gap
     sep = " " * gap
     out: List[Row] = [[(indent, ""), (sep.join(pad(c.title, w[c.key], c.align) for c in kept), header_style)]]
     for i, r in enumerate(rows):

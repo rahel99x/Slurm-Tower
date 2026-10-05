@@ -48,7 +48,7 @@ for its keys and the [reference](reference.md) for scripted commands.
 | 2. Focusable, expandable panels | `Ctrl-W` / F6, `z`; `:focus details`, `:maximize on` | Main and Details have independent scroll positions where a page provides both. `:panel-scroll page-down` supplies a command alternative. |
 | 3. Information density and saved layouts | `:density comfortable`, `compact`, or `focused`; `:layout split 55`; `:layout save work` | Split is Main's percentage, from 20 to 80. Up to 16 named layouts; `load`, `delete`, and `list` manage them. Narrow screens use a vertical layout. |
 | 4. Configurable metric dashboards | `:dashboard`, `:dashboard pin loss`, `:dashboard hide debug_value` | Arrange up to 64 reported metrics, with saved pins, visibility, order, card expansion, and colors. |
-| 5. Richer Jobs and History tables | `:columns`, `:facet state=FAILED,TIMEOUT`, `:savedview save failures` | Visible sort/filter state, selectable columns, saved table views, and optional array grouping. Identity and state columns remain visible. |
+| 5. Richer Jobs and History tables | Click headings; `:sortby cpus desc`, `:columns`, `:facet state=FAILED,TIMEOUT`, `:savedview save failures` | Cascading column sorts with direction/priority, selectable columns, saved table views, and optional array grouping. Identity and state columns remain visible. |
 | 6. Breadcrumbs and Back | `Ctrl-B` / Alt-Left / `:back`; `Ctrl-P` / `:workspaces` | Restores the originating view and exact identity. Back history is bounded to 32 locations and stays session-local. |
 | 7. Searchable, scrollable help | `?`, then `/`; `:help copy` | Help is contextual, wraps to the terminal width, and scrolls through all matching instructions. |
 | 8. Editable command palette | `:`, arrows, Tab, PgUp/PgDn | Fuzzy results have descriptions; edit anywhere in the line, complete supported IDs/arguments/paths, and recall up to 50 commands. |
@@ -94,7 +94,8 @@ toggles optional columns. You can also name a table explicitly:
 ```text
 columns history hide nodes
 facet history state=FAILED,TIMEOUT partition=gpu
-sort name
+sortby history name asc
+sortby history cpus desc
 savedview save "failed GPU jobs"
 savedview load "failed GPU jobs"
 facet clear
@@ -104,9 +105,28 @@ jobgroups on
 Facets accept `state`, `partition`, `tag`, `name`, and `id`. Commas provide
 alternatives within a field; fields combine with the ordinary text filter. An
 empty value removes that field. Up to 32 named views retain their table,
-columns, facets, text filter, sort/direction, and history window. Array grouping
+columns, facets, text filter, complete sort cascade, and history window. Array grouping
 applies to observed array task IDs in Jobs: Left folds the selected array and
 Right expands it. It does not synthesize unobserved tasks.
+
+Every visible table heading, including JOBID, accepts a mouse click to cycle
+**ascending → descending → off**. The first activated column is primary; later
+columns break its ties. `^1` means ascending at priority one, and `v2` descending
+at priority two. Direction changes keep priority. Turning one column off leaves
+the others; turning all off restores source order. `:sortby [TABLE] COLUMN
+[asc|desc|off]` offers the same action, cycling when direction is omitted.
+`:sortby cpus off` removes the CPU rule; `:sortby clear` removes them all.
+`s`, `S`, and `:sort name` resume a legacy single-key sort.
+
+Jobs, Recents, History, Group, My Nodes, Sources, and Cluster partitions keep
+independent cascades (`jobs`, `recent`, `history`, `group`, `nodes`, `sources`,
+`cluster`). Recents orders its latest five retained records. JOBID uses natural
+numeric and array-task order: `2` before `10`, `123_2` before `123_10`. Measured
+values sort before rounding; unknowns remain last in both directions. Jobs pins
+remain first, and grouping presents the sorted observed array tasks together.
+If sorting would hide the selected task behind a different folded representative, Tower expands that array and preserves the selected job.
+Cascades persist with ordinary UI state, restore with Back, and travel with
+saved Jobs and History views.
 
 ## Navigate and issue commands
 

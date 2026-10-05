@@ -74,7 +74,7 @@ def location(app):
     result["logs"]["entries"] = copy.deepcopy(logs.entries[:512])
     table = getattr(app, "table_state", None)
     if isinstance(table, dict):
-        result["table_context"] = {field: copy.deepcopy(table.get(field)) for field in ("facets", "groups", "collapsed")}
+        result["table_context"] = {field: copy.deepcopy(table.get(field)) for field in ("facets", "sorts", "groups", "collapsed")}
     layout = getattr(app, "layout_state", None)
     if layout is not None:
         result["panel_context"] = {field: copy.deepcopy(getattr(layout, field, None)) for field in ("focus", "maximized", "scroll")}

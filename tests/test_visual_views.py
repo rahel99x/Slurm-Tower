@@ -34,10 +34,18 @@ def test_rich_pages_fit_and_preserve_mouse_selection(visual_dashboard, width, he
         rows, hits = views.compose(store.snapshot(), app, width, height, actions)
         assert len(rows) == height
         assert all(L.vlen(L.row_text(row)) <= width for row in rows)
-        assert all(0 <= y < height - 1 and key in L.row_text(rows[y]) for y, _, key in hits)
+        for y, kind, key in hits:
+            assert 0 <= y < height - 1
+            if kind == "sort_header":
+                _, _, left, right = key
+                assert 0 <= left < right <= width
+                assert L.row_text(rows[y])[left:right].strip()
+            else:
+                assert key in L.row_text(rows[y])
         assert any(hit[3] == tab for hit in app.tab_hits)
-        if hits:
-            y, kind, key = hits[-1]
+        data_hits = [hit for hit in hits if hit[1] != "sort_header"]
+        if data_hits:
+            y, kind, key = data_hits[-1]
             app.click(y, 2, hits)
             if kind in {"job", "group", "dep"}:
                 views.compose(store.snapshot(), app, width, height, actions)

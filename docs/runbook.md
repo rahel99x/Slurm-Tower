@@ -410,11 +410,22 @@ For a useful recurring table, open History and enter:
 ```text
 facet state=FAILED,TIMEOUT
 columns
+sortby name asc
+sortby cpus desc
 savedview save failures
 ```
 
 Use Space in the column picker to toggle optional columns. `:savedview load failures`
-restores the table, columns, facets, text filter, sort/direction, and day window.
+restores the table, columns, facets, text filter, cascading sort, and day window.
+The example orders names ascending, then CPU counts descending within each name.
+You can also click each heading to cycle ascending, descending, and off; JOBID
+is sortable too. Header marks such as `^1` and `v2` show direction and priority.
+`:sortby cpus off` removes only the CPU rule; `:sortby clear` restores source
+order. `s`, `S`, or `:sort name` resumes a single-key sort. Each of Jobs, Recents,
+History, Group, My Nodes, Sources, and Cluster partitions keeps its own cascade;
+use `:sortby recent id asc` to order the latest five Recents by numeric JOBID.
+Cascades survive restart with ordinary state and restore with Back. Unknown
+measurements remain last; Jobs pins stay first and array grouping still applies.
 `:facet clear` clears field filters. `:layout split 50` and `:layout save work`
 save a preferred density/split/focus arrangement separately from table views.
 

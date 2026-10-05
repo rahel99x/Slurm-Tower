@@ -182,7 +182,7 @@ without motion or pulses. One-frame reports are static as well.
 | `t` | `scontrol top`: put a pending job first among your own (confirmation) |
 | `l` `L` `f` `+` `-` | the Log tab for the exact selected Jobs/Recents/History job; the current log in `less`; follow on/off; more / fewer log lines under the selected job |
 | `O` `Enter` `Esc` | Logs: open the grouped file list; open its selected file; return from the file to its list, then close the list |
-| `s` `S` | cycle the sort of the tab (jobs: state, name, id, time, priority; history: end, name, state, elapsed, cpu eff, mem eff); reverse |
+| `s` `S` | resume a single-column sort: cycle the tab's legacy sort keys (jobs: state, name, id, time, priority; history: end, name, state, elapsed, cpu eff, mem eff); reverse |
 | `/` `Esc` | filter by name, id, partition or info; clear the filter (or the marks) |
 | `n` `b` `r` `x` | GPU sampling on/off; bell on start on/off; sample every source now; Sources tab: enable / disable the selected source |
 | `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys extend a selection; right-click or shift-click extends to a row. |
@@ -199,6 +199,40 @@ without motion or pulses. One-frame reports are static as well.
 The mouse works too: a click selects a row or switches tabs, a double-click opens the details (Jobs) or the series
 (History), or opens the selected file in the Logs browser. The wheel scrolls,
 and a right-click or shift-click extends a line selection from the last click.
+
+Click any visible **column heading**, including **JOBID**, to cycle ascending,
+descending, then off. Cascades follow the order in which you activate columns:
+`NAME ^1` is the primary ascending order; `CPU v2` resolves equal names by
+descending CPU count. Changing direction keeps that priority. Turning a column
+off removes only its rule; activating it again adds it after the remaining rules.
+Turning every column off restores the source sequence. Equal rows retain that
+sequence, and sorting applies to all rows before paging.
+
+The seven independent table scopes are `jobs`, `recent`, `history`, `group`,
+`nodes` (My Nodes), `sources`, and `cluster` (partitions). Recents sorts its latest
+five retained records, independently from History. Numeric JOBIDs and array task
+IDs use natural order (`2` before `10`, `123_2` before `123_10`). Measurements use
+their original numeric values rather than rounded labels; unknown values stay
+last in either direction. Jobs pins remain first, and optional array grouping
+arranges the sorted rows into their observed task groups.
+If sorting would hide the selected task behind a different folded group representative, Tower expands that array to keep the same job selected.
+
+`:sortby [TABLE] COLUMN [asc|desc|off]` provides the same controls. Omitting the
+direction cycles that column; omitting TABLE uses the current tab. Use the column
+key, such as `id` for JOBID and `cpus` for CPU:
+
+```text
+sortby jobs name asc
+sortby jobs cpus desc
+sortby jobs cpus off
+sortby recent id asc
+sortby jobs clear
+```
+
+`:sortby [TABLE] clear` disables every rule for that table. `s`, `S`, and
+`:sort NAME` resume the legacy single-key sort instead. Cascades persist across
+restarts with ordinary UI state, restore with Back, and are included in saved
+Jobs and History views.
 
 The palette follows the same targets: `:find PATTERN` from Jobs or History opens
 that selected job's logs. In the file browser, `:filter TEXT` filters file labels,

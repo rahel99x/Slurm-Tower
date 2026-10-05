@@ -440,16 +440,23 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         key = _key(app, panel)
         padding = 1 if state.density == "comfortable" and rect.width >= 8 and rect.height >= 5 else 0
         source, source_hits = _reflow(source, source_hits, max(0, rect.width - padding * 2))
-        state.interactive_panels[key] = bool(source_hits)
+        # Column headers are buttons, not selectable data rows. Header-only
+        # tables must keep their normal panel-scrolling controls.
+        data_hits = [(y, kind, value) for y, kind, value in source_hits if kind != "sort_header"]
+        state.interactive_panels[key] = bool(data_hits)
         page = max(0, rect.height - 1 - padding * 2)
         sticky = []
+        sticky_hits = []
         if panel == "main" and source_hits and page >= 2:
-            first = min(y for y, _, _ in source_hits)
+            first = min(y for y, _, _ in data_hits) if data_hits else min(y for y, _, _ in source_hits) + 1
             # Keep the page's primary summary and table column names visible
             # while large resource charts and individual rows scroll beneath.
             indices = sorted({index for index in (0, first - 2, first - 1) if 0 <= index < first})
             indices = indices[:max(0, min(3, page - 1))]
             sticky = [source[index] for index in indices]
+            sticky_map = {index: position for position, index in enumerate(indices)}
+            sticky_hits = [(sticky_map[y], kind, value) for y, kind, value in source_hits
+                           if kind == "sort_header" and y in sticky_map]
             removed = set(indices)
             remap, remaining = {}, []
             for index, row in enumerate(source):
@@ -467,10 +474,10 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         if panel == "details" and selected != state.selected.get(key):
             top = 0
             state.selected[key] = selected
-        active_hit = next(((y, kind, value) for y, kind, value in source_hits if value == selected), None)
+        active_hit = next(((y, kind, value) for y, kind, value in source_hits if kind != "sort_header" and value == selected), None)
         if active_hit is None or getattr(app, "tab", "jobs") not in ("jobs", "history"):
             active_hit = next(((y, kind, value) for y, kind, value in source_hits
-                               if any("rev" in style.split("+") or "sel" in style.split("+") for _, style in source[y])), None)
+                               if kind != "sort_header" and any("rev" in style.split("+") or "sel" in style.split("+") for _, style in source[y])), None)
         selected_key = active_hit[1:] if active_hit else selected
         if panel == "main" and selected_key and state.selected.get(key) != selected_key:
             row = active_hit[0] if active_hit else None
@@ -491,7 +498,19 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
             rows.append(_style_row([(" " * padding, "")] + row, rect.width))
         rows.extend(L.fill_row([], rect.width) for _ in range(max(0, rect.height - len(rows))))
         rendered[panel] = rows
-        output_hits.extend((rect.y + 1 + padding + len(sticky) + y, kind, value) for y, kind, value in mapped_hits)
+        def add_hit(y, kind, value):
+            if kind == "sort_header":
+                tab, column, left, right = value
+                usable_width = max(0, rect.width - padding * 2)
+                right = min(right, usable_width)
+                if left >= right:
+                    return
+                value = (tab, column, rect.x + padding + left, rect.x + padding + right)
+            output_hits.append((y, kind, value))
+        for y, kind, value in sticky_hits:
+            add_hit(rect.y + 1 + padding + y, kind, value)
+        for y, kind, value in mapped_hits:
+            add_hit(rect.y + 1 + padding + len(sticky) + y, kind, value)
     for y in range(height):
         spans = []
         for panel, rect in rects.items():

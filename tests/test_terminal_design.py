@@ -86,7 +86,8 @@ def test_sources_scroll_to_selected_row_and_use_replay_clock(dashboard, monkeypa
     assert "source49" in L.row_text(rows[selected])
     assert "1m 40s ago" in L.row_text(rows[selected])
     assert all("sel" in style.split("+") for _, style in rows[selected])
-    assert len(hits) <= 6
+    assert len([hit for hit in hits if hit[1] == "source"]) <= 6
+    assert all(0 <= key[2] < key[3] <= 100 for _, kind, key in hits if kind == "sort_header")
 
 
 def test_dependency_cursor_remains_visible_when_chain_is_taller_than_screen(dashboard):

@@ -74,6 +74,15 @@ Research workspaces, and `Ctrl-B` to return to the previous location.
 The [workbench guide](docs/WORKBENCH.md) maps all twenty UI/UX improvements to
 their actual keys, commands, and operating limits.
 
+Click a table's column heading to cycle **ascending → descending → off**,
+including **JOBID**. Click NAME, then CPU to combine their order: the first
+column has priority and the second resolves ties. `^1` and `v2` show direction
+and priority; turning one column off keeps the others. Jobs, Recents, History,
+Group, Nodes, Sources, and Cluster each retain their own order. Keyboard users
+can enter `:sortby name asc`, then `:sortby cpus desc`; `:sortby clear` returns
+the current table to source order. Numeric job IDs and array task IDs sort
+naturally, so `2` precedes `10`, and `123_2` precedes `123_10`.
+
 Press `0` to open **Research**, then use Left/Right to switch among twelve workspaces:
 application metric curves and progress, array cohorts and failed-task retry plans,
 failure hypotheses with cited evidence, output contracts, immutable run passports,

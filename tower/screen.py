@@ -247,8 +247,14 @@ def _apply_input(app, event, hits, curses):
     if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)):
         app.click(my, mx, hits, button="right")
     elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
+        origin = app.tab
+        double_target = (not shift and app.mode == "main" and any(
+            y == my and ((origin == "jobs" and kind in ("job", "recent"))
+                         or (origin == "history" and kind == "fin")
+                         or (origin == "log" and app.logs.browser and kind == "log_file"))
+            for y, kind, _ in hits))
         app.click(my, mx, hits, button="left", shift=shift)
-        if bstate & curses.BUTTON1_DOUBLE_CLICKED and (app.tab in ("jobs", "history") or (app.tab == "log" and app.logs.browser)):
+        if bstate & curses.BUTTON1_DOUBLE_CLICKED and double_target and app.tab == origin and app.mode == "main":
             app.handle("enter")
     elif bstate & getattr(curses, "BUTTON4_PRESSED", 0):
         for _ in range(3 if app.tab == "log" else 1):

@@ -6,6 +6,7 @@ import time
 import shlex
 import math
 import os
+import re
 from typing import Dict, List, Optional, Sequence
 
 from . import clipboard, export, workbench
@@ -56,6 +57,7 @@ class App:
         self.selected_id: Optional[str] = None
         self.visible_ids: List[str] = []
         self.recent_ids: List[str] = []
+        self.source_ids: List[str] = []
         self.jobs_selection_options = None
         self.tab_hits: list = []
         self.quit = False
@@ -226,12 +228,17 @@ class App:
             active = {j.id for j in snap["jobs"]}
             fin = [f for f in fin if f.id not in active]
         else:
+            from .table_ui import chain, history_value, sort_rows
+            cascade = chain(self, "history")
             key = self.sort.get("history", "end")
             keyfn = {"end": lambda f: f.end, "name": lambda f: (f.name, f.end),
                      "state": lambda f: (f.state, f.end), "elapsed": lambda f: secs(f.elapsed) or 0,
                      "cpu_eff": lambda f: -1 if f.cpu_eff is None else f.cpu_eff,
                      "mem_eff": lambda f: -1 if f.mem_eff is None else f.mem_eff}.get(key, lambda f: f.end)
-            fin.sort(key=keyfn, reverse=(key == "end") != self.reverse.get("history", False))
+            if cascade is None:
+                fin.sort(key=keyfn, reverse=(key == "end") != self.reverse.get("history", False))
+            else:
+                fin = sort_rows(self, "history", fin, value=lambda record, column: history_value(record, column, snap))
         flt = self.filter.lower()
         if flt.startswith("#"):
             fin = [f for f in fin if flt[1:] in [t.lower() for t in snap.get("tags", {}).get(f.id, {}).get("tags", [])]]
@@ -268,7 +275,60 @@ class App:
         elif flt:
             pending = [j for j in pending if any(flt in value.casefold() for value in (j.id, j.name, j.partition, "awaiting accounting"))]
         pending_ids = {j.id for j in pending}
-        return (pending + [f for f in self.finished_jobs(snap, recent=True) if f.id not in pending_ids])[:5]
+        recent = (pending + [f for f in self.finished_jobs(snap, recent=True) if f.id not in pending_ids])[:5]
+        from .table_ui import history_value, sort_rows
+        return sort_rows(self, "recent", recent, value=lambda record, column: history_value(record, column, snap))
+
+    def table_sort_changed(self, table, *, persist=True):
+        """Reanchor exact identities before a queued click/command can use them."""
+        active = "jobs" if table == "recent" else table
+        if active == self.tab and self.views_ref is not None:
+            snap, selected = self.store.snapshot(), self.selected_id
+            if active == "jobs":
+                self.visible_ids = [row["id"] for row in self.views_ref.job_rows(snap, self, self.actions)]
+                if selected not in self.visible_ids and self.table_state["groups"]:
+                    match = re.fullmatch(r"(\d+)_\d+", selected or "")
+                    if (match and match.group(1) in self.table_state["collapsed"]
+                            and any(job.id == selected for job in snap["jobs"])):
+                        # A different sort can change a folded array's representative.
+                        # Reveal the selected task so the next action retains its ID.
+                        self.table_state["collapsed"].remove(match.group(1))
+                        self.visible_ids = [row["id"] for row in self.views_ref.job_rows(snap, self, self.actions)]
+                self.recent_ids = [record.id for record in self.recent_jobs(snap)]
+                ids = self.visible_ids + self.recent_ids
+                if selected in ids:
+                    self.cursor["jobs"] = ids.index(selected)
+                self.selected_id = ids[self.clamp_cursor("jobs", len(ids))] if ids else None
+                self.last_jobs_ids, self.jobs_selection_options = ids, self.jobs_options()
+            elif active == "history":
+                ids = [record.id for record in self.history_jobs(snap)]
+                if selected in ids:
+                    self.cursor["history"] = ids.index(selected)
+                self.last_history_ids = ids
+                self.last_history_options = None
+                self.sync_history_selection(snap)
+            elif active == "group":
+                self.views_ref.group_tab(snap, self, self.width, None)
+                ids = getattr(self, "group_ids", [])
+                if selected in ids:
+                    self.cursor["group"] = ids.index(selected)
+                self.sync_selection()
+            elif active == "sources":
+                names = self.ordered_source_ids()
+                index = self.clamp_cursor("sources", len(names))
+                chosen = names[index] if names else None
+                self.views_ref.sources_tab(snap, self, self.width, None)
+                if chosen in self.source_ids:
+                    self.cursor["sources"] = self.source_ids.index(chosen)
+            self.sel_anchor, self.click_row = None, None
+        if persist:
+            self.save()
+
+    def ordered_source_ids(self):
+        """Actions use the rendered order, including between frames."""
+        known = self.store.health
+        names = [name for name in self.source_ids if name in known]
+        return names + [name for name in sorted(known) if name not in names]
 
     def resolve_log_path(self):
         """Resolve the current stream now, including keys received between frames."""
@@ -303,7 +363,8 @@ class App:
 
     def jobs_options(self):
         from .table_ui import fingerprint
-        return self.filter, self.sort.get("jobs", "state"), self.reverse.get("jobs", False), fingerprint(self, "jobs")
+        return (self.filter, self.sort.get("jobs", "state"), self.reverse.get("jobs", False),
+                fingerprint(self, "jobs"), fingerprint(self, "recent"))
 
     def open_log(self, jid=None):
         self.sync_selection()
@@ -689,12 +750,18 @@ class App:
         elif action.startswith("replay_"):
             self.replay_control(action[7:])
         elif action == "sort":
+            from .table_ui import reset_sort
+            reset_sort(self, self.tab)
             opts = SORTS.get(self.tab, ["name"])
             cur = self.sort.get(self.tab, opts[0])
             self.sort[self.tab] = opts[(opts.index(cur) + 1) % len(opts)] if cur in opts else opts[0]
+            self.table_sort_changed(self.tab, persist=False)
             self.say(f"sorted by {self.sort[self.tab]}")
         elif action == "reverse":
+            from .table_ui import reset_sort
+            reset_sort(self, self.tab)
             self.reverse[self.tab] = not self.reverse.get(self.tab, False)
+            self.table_sort_changed(self.tab, persist=False)
         elif action == "filter":
             self.mode, self.filter_edit = "filter", (self.logs.file_filter if self.tab == "log" and self.logs.browser else self.logs.search if self.tab == "log" else self.filter)
         elif action == "gpu_toggle":
@@ -709,7 +776,7 @@ class App:
             self.log_lines = max(0, self.log_lines - 4)
         elif action == "source_toggle":
             if self.tab == "sources":
-                names = sorted(self.store.health)
+                names = self.ordered_source_ids()
                 cur = self.clamp_cursor("sources", len(names))
                 if names:
                     h = self.store.health[names[cur]]
@@ -1183,7 +1250,10 @@ class App:
         elif cmd == "sort":
             opts = SORTS.get(self.tab, ["name"])
             if args and args[0] in opts:
+                from .table_ui import reset_sort
+                reset_sort(self, self.tab)
                 self.sort[self.tab] = args[0]
+                self.table_sort_changed(self.tab)
                 self.say(f"sorted by {args[0]}")
             else:
                 self.fail("sort keys here: " + " ".join(opts))
@@ -1473,6 +1543,16 @@ class App:
         if workbench.handle_mouse(self, y, x, button, shift):
             return
         self.last_hits = list(hits)
+        if button == "left" and not shift:
+            from .table_ui import cycle_sort, valid_header
+            for row, kind, payload in hits:
+                if row != y or kind != "sort_header" or not valid_header(payload):
+                    continue
+                table, column, left, right = payload
+                if left <= x < right and (table == self.tab or table == "recent" and self.tab == "jobs"):
+                    cycle_sort(self, table, column)
+                    self.table_sort_changed(table)
+                    return
         if self.tab == "log" and not self.logs.browser:
             line = next((int(key) for hy, kind, key in hits if hy == y and kind == "log_line"), None)
             if line is not None:
@@ -1530,7 +1610,7 @@ class App:
                     if key in ids:
                         self.cursor["history"] = ids.index(key)
                 elif kind == "source":
-                    names = sorted(self.store.health)
+                    names = self.ordered_source_ids()
                     if key in names:
                         self.cursor["sources"] = names.index(key)
                 elif kind == "group":

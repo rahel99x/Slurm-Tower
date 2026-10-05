@@ -23,6 +23,7 @@ DESCRIPTIONS = {
     "hold": "Hold pending jobs after reviewing targets", "release": "Release held jobs after review",
     "requeue": "Requeue jobs after reviewing targets", "top": "Prioritize your pending jobs",
     "filter": "Filter the current table or log file browser", "sort": "Choose a table's sort key",
+    "sortby": "Combine column sorts; set ascending, descending, or off independently",
     "days": "Set the accounting and analytics window", "tab": "Open a main page",
     "view": "Choose the current page's workspace", "export": "Export a table or report",
     "copy": "Copy selected raw log lines or the entire file", "log": "Open a job's logs",
@@ -253,8 +254,47 @@ def _path_candidates(app, prefix):
     return result
 
 
+def _sort_argument_values(app, previous):
+    """Complete sort syntax without confusing a column with a table name.
+
+    History's ``nodes`` and Nodes' ``jobs`` are both current columns and table
+    names. Until the following argument selects a direction or another column,
+    offer both valid continuations, just as the command parser accepts them.
+    """
+    from .table_sort import TABLE_KEYS
+    values = previous[1:]
+    current = TABLE_KEYS.get(app.tab, ())
+    directions = [(value, "column direction; off removes only this column")
+                  for value in ("asc", "desc", "off")]
+
+    def columns(table):
+        return [(value, f"{table} column") for value in TABLE_KEYS[table]] + [("clear", f"remove all {table} column sorts")]
+
+    if not values:
+        choices = columns(app.tab) if app.tab in TABLE_KEYS else []
+        existing = {value for value, _ in choices}
+        return choices + [(table, "table; follow with a column or clear")
+                          for table in TABLE_KEYS if table not in existing]
+    first = values[0]
+    if len(values) == 1:
+        if first == "clear":
+            return []
+        if first in TABLE_KEYS:
+            choices = columns(first)
+            return directions + choices if first in current else choices
+        return directions if first in current else []
+    # With another argument present, the same rule as table_ui.run_command
+    # decides whether the first word names a table or the current column.
+    explicit_table = first in TABLE_KEYS and (first not in current or values[1] not in ("asc", "desc", "off"))
+    if explicit_table and len(values) == 2 and values[1] in TABLE_KEYS[first]:
+        return directions
+    return []
+
+
 def _argument_values(app, previous, prefix):
     command = previous[0] if previous else ""
+    if command == "sortby":
+        return _sort_argument_values(app, previous)
     if command in ARGUMENTS and len(previous) == 1:
         choices = [(value, "command option") for value in ARGUMENTS[command]]
         if command == "execution":
@@ -515,6 +555,18 @@ def _help_entries(app):
                        ("Sources", k("refresh"), "Retry and refresh all sources")]
     elif page == "nodes":
         contextual += [("Nodes", "Left / Right", "Switch allocated nodes and the cluster map")]
+    from .table_sort import TABLE_KEYS
+    if page in TABLE_KEYS:
+        contextual += [
+            ("Sorting", "Click a column header", "Cycle ascending, descending, then off; off removes only that column"),
+            ("Sorting", "Header ^1 / v2", "The first chosen column has priority; later columns break ties, and numbers show the order"),
+            ("Sorting", ":sortby [TABLE] COLUMN [asc|desc|off]", "Combine reversible column sorts from the keyboard; omitting the direction cycles that column"),
+            ("Sorting", ":sortby [TABLE] clear", "Remove every column sort in that table and restore source order"),
+        ]
+        if page in ("jobs", "history", "group"):
+            contextual.append(("Sorting", "JOBID", "Sort numeric IDs and array task numbers naturally, including 9 before 10 and _2 before _10"))
+        if page == "jobs":
+            contextual.append(("Sorting", ":sortby recent COLUMN asc|desc|off", "The Recents table keeps its own column priorities, independently of active jobs"))
     return contextual + common
 
 
