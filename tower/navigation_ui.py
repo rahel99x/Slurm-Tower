@@ -80,7 +80,7 @@ def location(app):
         result["panel_context"] = {field: copy.deepcopy(getattr(layout, field, None)) for field in ("focus", "maximized", "scroll")}
     log_workbench = getattr(app, "log_workbench_state", None)
     if isinstance(log_workbench, dict):
-        result["log_view_context"] = {field: copy.deepcopy(log_workbench.get(field)) for field in ("view", "pan", "scroll", "collapsed", "preview", "current_group")}
+        result["log_view_context"] = {field: copy.deepcopy(log_workbench.get(field)) for field in ("view", "pan", "pan_source", "scroll", "collapsed", "preview", "current_group")}
     analysis = getattr(app, "analysis_state", None)
     if isinstance(analysis, dict):
         result["analysis_context"] = {field: copy.deepcopy(analysis.get(field)) for field in

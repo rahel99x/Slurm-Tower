@@ -45,7 +45,9 @@ class SelectionDashboard:
         self.store.finished = [Finished("77", "failed experiment", "FAILED", workdir=str(root))]
         self.store.details["77"] = {"StdOut": str(self.paths["out"]), "StdErr": str(self.paths["err"]), "WorkDir": str(root)}
         self.files = LocalFiles()
-        self.app = App(self.store, None, None, self.cfg, "reader", ascii_=ascii_)
+        # These cases exercise source-line and byte-copy semantics with current
+        # file contents; interactive snapshot responsiveness has its own suite.
+        self.app = App(self.store, None, None, self.cfg, "reader", ascii_=ascii_, interactive=False)
         self.views = Views(Glyphs(ascii_), self.cfg, files=self.files)
         self.app.files = self.files
         self.app.logs.files = self.files

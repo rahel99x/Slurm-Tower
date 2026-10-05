@@ -16,6 +16,7 @@ from . import advisor
 from .deps import DepGraph
 from .model import Finished, Job, Step, compact, hms, human, secs, short_duration, stamp, when
 from .remote import LocalFiles
+from .log_text import display_text
 
 TABS = [("jobs", "Jobs"), ("cluster", "Cluster"), ("history", "History"), ("analytics", "Analytics"), ("nodes", "Nodes"), ("group", "Group"), ("deps", "Deps"), ("log", "Log"), ("sources", "Sources"), ("research", "Research")]
 ANALYTICS_VIEWS = [("job", "job series"), ("history", "history"), ("timeline", "timeline"), ("advisor", "advisor"), ("compare", "compare")]
@@ -42,13 +43,19 @@ def tail_lines(path: str, n: int, max_bytes: int = 131072, files=None) -> List[s
         data = data.decode("utf-8", "replace")
     except OSError:
         return []
-    lines = data.splitlines()
+    lines = data.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
     if size > max_bytes and lines:
         lines = lines[1:]
-    return [l.replace("\t", "    ") for l in lines[-n:]]
+    return [display_text(line.rstrip("\r")) for line in lines[-n:]]
 
 
-def stdout_path(job, kv: dict, files=None, which: str = "StdOut") -> str:
+def stdout_path(job, kv: dict, files=None, which: str = "StdOut", *, probe: bool = True) -> str:
+    """Resolve declared paths, optionally checking a legacy local filename guess.
+
+    Interactive callers defer existence checks to their background file reader.
+    """
     p = kv.get(which, "") if kv else ""
     if p and p.lower() not in ("(null)", "n/a", "unknown", "none"):
         # Accounting can retain an unexpanded sbatch filename pattern. Array
@@ -84,7 +91,7 @@ def stdout_path(job, kv: dict, files=None, which: str = "StdOut") -> str:
     if files is not None and files.remote:
         return ""
     guess = os.path.join("logs", f"{job.name}-{job.id}.{'err' if which == 'StdErr' else 'out'}")
-    return guess if os.path.exists(guess) else ""
+    return guess if not probe or os.path.exists(guess) else ""
 
 
 class Views:
@@ -592,7 +599,7 @@ class Views:
             rows.append([(f"   {len(down)} job{'s' if len(down) != 1 else ''} wait for this one: " + " ".join(f"{d}({snap_name(snap, d) or '?'})" for d in down[:6]), "dim")])
         rows += self.tag_rows(snap, j.id)
         if log_lines > 0:
-            path = stdout_path(j, kv, self.files)
+            path = stdout_path(j, kv, self.files, probe=not app.interactive)
             lines = self.log_preview(app, path, log_lines)
             rows.append([(f"   log {cut(path or '(stdout path not known yet)', width - 10, g_.ascii)}", "magenta")])
             for l in lines:
@@ -602,7 +609,7 @@ class Views:
         return rows
 
     def log_preview(self, app, path, count):
-        """Reuse pane previews; remote tails never block an interactive redraw."""
+        """Reuse pane previews; shared-filesystem tails stay off the screen."""
         if not path or count <= 0:
             return []
         key = (id(self.files), path, count)
@@ -621,13 +628,14 @@ class Views:
             self._preview_cache.move_to_end(key)
             while len(self._preview_cache) > 16:
                 self._preview_cache.popitem(last=False)
-        if remote and app.interactive:
+        if app.interactive and (remote or app.research is not None):
             if app.research is None:
                 from .research import ResearchHub
                 app.research = ResearchHub(app.cfg, self.files)
             if key not in self._preview_pending:
                 self._preview_pending.add(key)
-                if not app.research.start_task(lambda: tail_lines(path, count, files=self.files), publish):
+                backend = self.files
+                if not app.research.start_task(lambda: tail_lines(path, count, files=backend), publish):
                     self._preview_pending.discard(key)
             return list(entry[1]) if entry else ["(waiting for the background log preview)"]
         lines = tail_lines(path, count, files=self.files)
@@ -1242,11 +1250,12 @@ class Views:
 
     def log_path(self, app, j: Job, kv: dict) -> Tuple[str, str]:
         """(the file the Log tab shows, a label): stdout, stderr, or one of the other files."""
+        probe = not app.interactive
         if app.logs.entry:
             entry = app.logs.entry
-            if entry["path"] == stdout_path(j, kv, self.files):
+            if entry["path"] == stdout_path(j, kv, self.files, probe=probe):
                 app.logs.which = "out"
-            elif entry["path"] == stdout_path(j, kv, self.files, "StdErr"):
+            elif entry["path"] == stdout_path(j, kv, self.files, "StdErr", probe=probe):
                 app.logs.which = "err"
             return entry["path"], entry["label"]
         cands = app.logs.candidates.get(j.id, (0, []))[1]
@@ -1255,10 +1264,10 @@ class Views:
             return cands[i], f"file {i + 2}/{len(cands) + 1}"
         app.logs.file_index = 0
         if app.logs.which == "err":
-            err = stdout_path(j, kv, self.files, "StdErr")
-            same = err and err == stdout_path(j, kv, self.files)
+            err = stdout_path(j, kv, self.files, "StdErr", probe=probe)
+            same = err and err == stdout_path(j, kv, self.files, probe=probe)
             return err, "stderr (the same file as stdout)" if same else "stderr"
-        return stdout_path(j, kv, self.files), "stdout"
+        return stdout_path(j, kv, self.files, probe=probe), "stdout"
 
     def log_manifest_path(self, app, job, kv):
         settings = self.cfg["logs"]
@@ -1303,8 +1312,8 @@ class Views:
         except ValueError as exc:
             manifest = ""
             messages.append(str(exc))
-        result = app.logs.catalog.request(job.id, stdout_path(job, kv, self.files),
-                    stdout_path(job, kv, self.files, "StdErr"), manifest_file=manifest,
+        result = app.logs.catalog.request(job.id, stdout_path(job, kv, self.files, probe=not app.interactive),
+                    stdout_path(job, kv, self.files, "StdErr", probe=not app.interactive), manifest_file=manifest,
                     worker=app.research, wait=height is None)
         previous = app.log_entries()
         selected_id = previous[app.logs.browser_cursor]["id"] if 0 <= app.logs.browser_cursor < len(previous) else None
@@ -1387,7 +1396,7 @@ class Views:
         if buf.error:
             return out + [[(f"   {buf.error}", "red")]], []
         if getattr(buf, "loading", False):
-            return out + [[("   Reading the selected remote log in the background.", "dim")]], []
+            return out + [[("   Reading the selected log in the background.", "dim")]], []
         lines, start = buf.window(app.logs.top, page)
         total = buf.total
         search = app.logs.search
@@ -1405,9 +1414,6 @@ class Views:
                        (f" {g.dot} following", "green") if app.logs.following else (f" {g.dot} paused (End or f follows)", "yellow")]
         if app.logs.wrap:
             status.append((f" {g.dot} wrapped", "dim"))
-        extra_status = status_label(app)
-        if extra_status:
-            status.append((f" {g.dot} {extra_status}", "dim"))
         if buf.truncated:
             status.append((f" {g.dot} the first {buf.skipped_bytes / 1024 ** 2:.0f} MB are not loaded (log_max_mb)", "yellow"))
         if search:
@@ -1416,6 +1422,11 @@ class Views:
             status.append((f" {g.dot} {len(marks)} bookmark{'s' if len(marks) != 1 else ''} (' jumps)", "cyan"))
         if not g.ascii and width >= 100 and total:
             status = [(" ", "")] + gradient_bar(g, (start + len(lines)) / total, 12) + [(" ", "")] + status
+        extra_status = status_label(app)
+        if extra_status:
+            # Keep the cause of hidden prefixes and its reset command visible,
+            # even when the rest of the status is clipped by a narrow terminal.
+            status.insert(0, (f" {extra_status} {g.dot}", "yellow+bold"))
         out.append(status)
         def render_lines(source_lines, first):
             body = []

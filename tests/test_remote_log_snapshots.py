@@ -165,11 +165,17 @@ def test_switching_backend_rejects_late_remote_data_without_local_fallback(tmp_p
         assert remote.entered.wait(1)
         session.files = LocalFiles()
         local = session.buffer(str(path), worker=hub, background=True)
-        assert local.raw_range(0, 0) == b"local private data\n"
+        assert local.loading and local.total == 0
         remote.release.set()
         finish(hub)
         assert session.buffers[str(path)] is local
-        assert local.raw_range(0, 0) == b"local private data\n"
+        assert local.loading and local.total == 0
+        session.buffer(str(path), worker=hub, background=True)
+        finish(hub)
+        ready = session.buffer(str(path), worker=hub, background=True)
+        assert ready is not local and not ready.loading
+        assert ready.raw_range(0, 0) == b"local private data\n"
+        assert b"remote data" not in ready.raw_range(0, 0)
     finally:
         remote.release.set()
         hub.close()

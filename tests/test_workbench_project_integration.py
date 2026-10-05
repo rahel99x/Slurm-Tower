@@ -34,7 +34,9 @@ def project_dashboard(tmp_path):
     other = tmp_path / "unrelated-job.log"
     other.write_text("unrelated job output\n")
     store.details["11"] = {"StdOut": str(other)}
-    app = App(store, None, None, cfg, "integration-tester")
+    # Binding/navigation assertions use synchronous log observations; slow
+    # interactive filesystems are covered in test_local_log_snapshots.py.
+    app = App(store, None, None, cfg, "integration-tester", interactive=False)
     app.state_dir = str(tmp_path / "private-state")
     app.research = ResearchHub(cfg)
     app.files = app.logs.files = app.research.files

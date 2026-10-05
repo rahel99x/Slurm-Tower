@@ -26,7 +26,7 @@ def initialize(app):
     app.log_workbench_state = dict(view="plain", pan=0, scroll=0, collapsed=[],
                                    current_group="", preview=False, cache=OrderedDict(),
                                    pending=None, generation=0, citation=None,
-                                   pan_cache=OrderedDict(), pan_context=None)
+                                   pan_cache=OrderedDict(), pan_context=None, pan_source=None)
 
 
 def _state(app):
@@ -40,8 +40,10 @@ def restore(app, state):
     state = state if isinstance(state, dict) else {}
     if state.get("view") in ("plain", "json", "split"):
         target["view"] = state["view"]
-    pan = state.get("pan", 0)
-    target["pan"] = min(100000, max(0, pan)) if type(pan) is int else 0
+    # Horizontal position belongs to an open source, not to all future logs.
+    # Ignore offsets saved by older versions so every launch starts at column 0.
+    target["pan"], target["pan_source"], target["pan_context"] = 0, None, None
+    target["pan_cache"].clear()
     collapsed = state.get("collapsed", [])
     if isinstance(collapsed, list):
         target["collapsed"] = [v for v in collapsed[:256] if isinstance(v, str) and len(v) <= 160 and v.isprintable()]
@@ -50,7 +52,26 @@ def restore(app, state):
 
 def save(app):
     state = _state(app)
-    return {key: state[key] for key in ("view", "pan", "collapsed", "preview")}
+    return {key: state[key] for key in ("view", "collapsed", "preview")}
+
+
+def sync_source(app, path):
+    """Start another job/run/file at its left edge; keep append redraws steady."""
+    state = _state(app)
+    binding = (getattr(app, "project_state", {}) or {}).get("binding") or {}
+    source = (getattr(app, "log_job", None), binding.get("run_root"), binding.get("run_id"), path)
+    if source != state["pan_source"]:
+        state["pan"], state["pan_source"], state["pan_context"] = 0, source, None
+        state["pan_cache"].clear()
+
+
+def _sync_selected_source(app):
+    resolve = getattr(app, "resolve_log_path", None)
+    if resolve is not None:
+        path = resolve()
+        if path:
+            # A source can change between frames (e.g. stderr then Right).
+            sync_source(app, path)
 
 
 def command_names():
@@ -127,6 +148,7 @@ def run_command(app, args):
             if len(values) != 1 or not values[0].isascii():
                 raise ValueError("logpan COLUMNS (0 resets; use +/- to move)")
             number = int(values[0])
+            _sync_selected_source(app)
             state["pan"] = max(0, min(100000, state["pan"] + number if values[0].startswith(("+", "-")) else number))
             app.logs.wrap = False
             app.say(f"Horizontal offset {state['pan']} display columns")
@@ -180,6 +202,7 @@ def handle_key(app, key):
                 app.say("Copy source: " + entry.get("label", entry["path"]))
             return True
     if key in ("left", "right"):
+        _sync_selected_source(app)
         state["pan"] = max(0, min(100000, state["pan"] + (-8 if key == "left" else 8)))
         app.logs.wrap = False
         return True
@@ -206,6 +229,9 @@ def display_line(app, line):
         if used >= offset:
             break
     position = index + 1 if line else 0
+    # An accent belongs to the preceding glyph, which panning just removed.
+    while position < len(line) and L.vlen(line[position]) == 0:
+        position += 1
     state["pan_cache"][id(line)] = (line, position)
     state["pan_cache"].move_to_end(id(line))
     while len(state["pan_cache"]) > 256:
@@ -215,7 +241,7 @@ def display_line(app, line):
 
 def status_label(app):
     state = _state(app)
-    return f"pan {state['pan']} columns (Left/Right)" if state["pan"] else ""
+    return f"pan {state['pan']} (:logpan 0 resets)" if state["pan"] else ""
 
 
 def _backend(app):
@@ -443,6 +469,8 @@ def overlay(views, snap, app, width, height):
     data = _alternate(app)
     rows = [[(" Esc original view | arrows scroll/pan | Y copies current source file", "dim")],
             [(" Copy/yank preserves original bytes; formatted panels are presentation only.", "dim")]]
+    if state["pan"]:
+        rows.insert(0, [(" " + status_label(app), "yellow+bold")])
     if data is None:
         rows.append([(" Waiting for the shared background reader.", "dim")])
     elif data.get("error"):

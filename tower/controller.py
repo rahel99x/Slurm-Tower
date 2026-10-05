@@ -294,6 +294,8 @@ class App:
         return self.read_log_buffer(path)
 
     def read_log_buffer(self, path):
+        from .log_workbench import sync_source
+        sync_source(self, path)
         if self.interactive and getattr(self.logs.files, "remote", False) and self.research is None:
             from .research import ResearchHub
             self.research = ResearchHub(self.cfg, self.logs.files)
@@ -714,7 +716,10 @@ class App:
                     h.enabled = not h.enabled
                     h.error = ""
                     self.say(f"{h.name} {'enabled' if h.enabled else 'disabled'}")
-        self.save()
+        # Cursor movement is session-local. Shared/home filesystem writes on
+        # every arrow or wheel tick can stall CARC's terminal input loop.
+        if action not in ("up", "down", "page_up", "page_down", "home", "end"):
+            self.save()
 
     def open_details(self):
         """The details overlay of the selected job: scontrol and the steps of a running job, sacct -j of a finished one."""

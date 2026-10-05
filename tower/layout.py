@@ -19,6 +19,8 @@ FRACTIONS = " ▏▎▍▌▋▊▉█"
 
 def vlen(s: str) -> int:
     """Display width (wide East-Asian characters count 2, combining marks 0)."""
+    if s.isascii():
+        return len(s)
     n = 0
     for ch in s:
         if unicodedata.combining(ch):
@@ -32,17 +34,13 @@ def cut(text, width: int, ascii_: bool = False) -> str:
     text = str(text)
     if width <= 0:
         return ""
-    if vlen(text) <= width:
+    # Inspect at most the visible prefix. Wide log lines and large tables must
+    # not scan all offscreen Unicode characters just to draw one terminal row.
+    prefix = truncate(text, width)
+    if len(prefix) == len(text):
         return text
     e = "~" if ascii_ else "…"
-    out, used = [], 0
-    for ch in text:
-        w = vlen(ch)
-        if used + w > width - 1:
-            break
-        out.append(ch)
-        used += w
-    return "".join(out) + e
+    return truncate(prefix, width - 1) + e
 
 
 def pad(text, width: int, align: str = "<") -> str:
@@ -262,6 +260,8 @@ def box(g: Glyphs, lines: Sequence[Row], width: int, height: int, title: str, mi
 
 def truncate(text: str, width: int) -> str:
     """Hard cut to ``width`` display columns (no ellipsis: the screen edge)."""
+    if text.isascii():
+        return text[:max(0, width)]
     out, used = [], 0
     for ch in text:
         w = vlen(ch)

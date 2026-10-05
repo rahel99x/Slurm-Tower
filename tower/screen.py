@@ -18,6 +18,9 @@ KEYNAMES = {}
 CB_MAP = {"green": "blue", "red": "yellow", "yellow": "magenta"}       # colour-blind safe: blue / orange(yellow) / magenta instead of green / red / yellow
 # A readable palette on modern terminals; basic terminals retain their native eight colours.
 PALETTE_256 = {"green": 114, "yellow": 221, "red": 203, "cyan": 81, "magenta": 183, "blue": 75, "white": 252}
+INPUT_BATCH_LIMIT = 32
+INPUT_BATCH_SECONDS = .008
+_NAVIGATION_ACTIONS = frozenset(("up", "down", "page_up", "page_down", "home", "end"))
 
 
 def style_attr(style: str, theme: str, base: dict, colors: dict, bold: int) -> int:
@@ -180,6 +183,106 @@ def key_name(ch, curses) -> Optional[str]:
     return None
 
 
+def _read_input(stdscr, curses):
+    """Capture one event, including mouse coordinates before reading another."""
+    try:
+        name = key_name(stdscr.get_wch(), curses)
+    except curses.error:
+        return None
+    mouse = None
+    if name == "mouse":
+        try:
+            mouse = curses.getmouse()
+        except curses.error:
+            name = None
+    return name, mouse
+
+
+def _navigation_context(app):
+    """A changed document needs a new frame before another navigation event."""
+    logs = getattr(app, "logs", None)
+    return (app.mode, app.tab, getattr(app, "research_job_id", None),
+            getattr(app, "research_view", None), getattr(app, "analytics_job", None),
+            getattr(app, "log_job", None), getattr(logs, "path", None),
+            getattr(logs, "browser", None))
+
+
+def _batchable_input(app, event, curses):
+    if app.mode != "main":
+        return False
+    name, mouse = event
+    if name is None:
+        return True  # An unsupported key or mouse motion has no controller action.
+    if name != "mouse":
+        return app.keymap.get(name) in _NAVIGATION_ACTIONS
+    if mouse is None:
+        return True
+    buttons = mouse[4]
+    click_mask = 0
+    for button in ("BUTTON1_CLICKED", "BUTTON1_PRESSED", "BUTTON1_DOUBLE_CLICKED",
+                   "BUTTON3_CLICKED", "BUTTON3_PRESSED"):
+        click_mask |= getattr(curses, button, 0)
+    # Clicks use the hit map of the freshly painted frame. Wheel and ignored
+    # motion reports can share a redraw without changing their event order.
+    if buttons & click_mask:
+        return False
+    if buttons & getattr(curses, "BUTTON4_PRESSED", 0):
+        return app.keymap.get("up") in _NAVIGATION_ACTIONS
+    if buttons & getattr(curses, "BUTTON5_PRESSED", 0):
+        return app.keymap.get("down") in _NAVIGATION_ACTIONS
+    return True
+
+
+def _apply_input(app, event, hits, curses):
+    name, mouse = event
+    if name is None or name == "resize":
+        return
+    if name != "mouse":
+        app.handle(name)
+        return
+    if mouse is None:
+        return
+    _, mx, my, _, bstate = mouse
+    shift = bool(bstate & getattr(curses, "BUTTON_SHIFT", 0))
+    if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)):
+        app.click(my, mx, hits, button="right")
+    elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
+        app.click(my, mx, hits, button="left", shift=shift)
+        if bstate & curses.BUTTON1_DOUBLE_CLICKED and (app.tab in ("jobs", "history") or (app.tab == "log" and app.logs.browser)):
+            app.handle("enter")
+    elif bstate & getattr(curses, "BUTTON4_PRESSED", 0):
+        for _ in range(3 if app.tab == "log" else 1):
+            app.handle("up")
+    elif bstate & getattr(curses, "BUTTON5_PRESSED", 0):
+        for _ in range(3 if app.tab == "log" else 1):
+            app.handle("down")
+
+
+def _consume_input_batch(app, stdscr, curses, hits, first):
+    """Preserve every event while sharing a bounded redraw for queued scrolling.
+
+    Return the first nonnavigation event for the next, freshly painted frame.
+    Keeping this single captured event avoids pushing escape sequences or mouse
+    reports back through curses, where their identity or order can change.
+    """
+    event = first
+    context = _navigation_context(app)
+    deadline = time.monotonic() + INPUT_BATCH_SECONDS
+    count = 0
+    while event is not None:
+        batchable = _batchable_input(app, event, curses)
+        _apply_input(app, event, hits, curses)
+        count += 1
+        if (not batchable or app.quit or _navigation_context(app) != context or
+                count >= INPUT_BATCH_LIMIT or time.monotonic() >= deadline):
+            return None
+        stdscr.timeout(0)
+        event = _read_input(stdscr, curses)
+        if event is not None and not _batchable_input(app, event, curses):
+            return event
+    return None
+
+
 def run_curses(app, views, sampler, store, actions, cfg):
     import curses
     import locale
@@ -215,6 +318,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
 
         hits = []
         rung = 0
+        pending_input = None
         app.views_ref = views
         while not app.quit:
             app.tick()
@@ -237,33 +341,11 @@ def run_curses(app, views, sampler, store, actions, cfg):
             rung = started
             stdscr.noutrefresh()
             curses.doupdate()
-            try:
-                ch = stdscr.get_wch()
-            except curses.error:
+            event = pending_input if pending_input is not None else _read_input(stdscr, curses)
+            pending_input = None
+            if event is None:
                 continue
-            name = key_name(ch, curses)
-            if name is None or name == "resize":
-                continue
-            if name == "mouse":
-                try:
-                    _, mx, my, _, bstate = curses.getmouse()
-                except curses.error:
-                    continue
-                shift = bool(bstate & getattr(curses, "BUTTON_SHIFT", 0))
-                if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)):
-                    app.click(my, mx, hits, button="right")
-                elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
-                    app.click(my, mx, hits, button="left", shift=shift)
-                    if bstate & curses.BUTTON1_DOUBLE_CLICKED and (app.tab in ("jobs", "history") or (app.tab == "log" and app.logs.browser)):
-                        app.handle("enter")
-                elif bstate & getattr(curses, "BUTTON4_PRESSED", 0):
-                    for _ in range(3 if app.tab == "log" else 1):
-                        app.handle("up")
-                elif bstate & getattr(curses, "BUTTON5_PRESSED", 0):
-                    for _ in range(3 if app.tab == "log" else 1):
-                        app.handle("down")
-                continue
-            app.handle(name)
+            pending_input = _consume_input_batch(app, stdscr, curses, hits, event)
             if getattr(app, "want_less", False):
                 app.want_less = False
                 files = views.files

@@ -26,7 +26,9 @@ class ReviewDashboard:
         self.store = Store(state_dir=str(root / "state"))
         self.store.finished = [Finished("77", "failed", "FAILED", end="2026-10-05T12:00:00")]
         self.store.details["77"] = {"StdOut": str(self.path), "StdErr": str(self.path)}
-        self.app = App(self.store, None, None, self.cfg, "reader", ascii_=True)
+        # Read deterministic current snapshots here; expensive copies still use
+        # the shared worker, including the blocked-copy responsiveness cases.
+        self.app = App(self.store, None, None, self.cfg, "reader", ascii_=True, interactive=False)
         self.views = Views(Glyphs(True), self.cfg, files=LocalFiles())
         self.app.logs.files = self.views.files
         self.app.views_ref = self.views

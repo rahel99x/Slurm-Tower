@@ -443,10 +443,18 @@ pans wide text, `:logpreview on` adds bounded file previews, and
 lines for logical selection. Failure Evidence now uses that same multi-location
 catalog and reports inspected/omitted/unavailable sources.
 
-Interactive SSH logs use background snapshots, including cold file loads;
-redraw and key handling consume the published buffer rather than waiting for
-SSH. Pending/source errors stay visible. Use refresh to request a fresh remote
-observation, or a noninteractive command when you need to wait for its result.
+Interactive local and SSH logs use background snapshots, including cold file
+loads. Redraw and key handling consume the published buffer while a read is
+pending, keeping slow CARC shared-filesystem reads and job-pane previews out of
+the input loop. Scrolling avoids preference writes on every key; queued arrows
+and wheel ticks share bounded redraws while preserving input order. Local log
+changes are checked at most twice per second. Pending/source errors stay visible;
+`r` requests a fresh observation. Noninteractive commands can wait for their result.
+
+Each new log source and each Tower launch starts at column zero. If you pan a
+wide log, the status begins with its offset and `:logpan 0` reset hint. ANSI
+commands and embedded terminal controls are normalized only for display; copy
+and exports preserve the original file bytes.
 
 For batch preparation, `:preflight SCRIPT --workdir DIR` opens an editable local
 form. Enter edits a field, `p` validates and refreshes the command preview, then
@@ -483,6 +491,8 @@ keys. The low-impact CARC profile remains the starting point for live monitoring
 | Full log did not reach the clipboard | Read the reported complete `log-full-<uuid>.log` export; the terminal may disable OSC 52 or the full text may exceed its limit. |
 | Log rotated during copying | Open the current file and retry; Tower does not publish an incomplete export. |
 | Selected range changed or expired | Reselect after rotation, truncation, or retained-tail eviction; `y` will not substitute the whole file. |
+| Log lines appear to lose their first characters | Use `:logpan 0` to restore the left edge; version 3.0.1 clears old saved offsets and resets position for each new source. |
+| Scrolling stalls and keys replay in a burst | Update to version 3.0.1 or newer, restart Tower, and let the first background log load complete; cached navigation avoids shared-filesystem reads and preference writes. |
 | Details seem clipped or arrows move the wrong panel | Use Ctrl-W/F6 to focus Main or Details, then scroll or maximize that panel; `:density compact` restores the compact layout. |
 | Project picker reports no compatible run | Use the actual project root; create direct `runs/<run_id>/run.json` inventories with matching IDs, and inspect `!` notices. Discovery is local and bounded. |
 | Project sources cannot bind | Check selected-run notices and declared paths; missing reports remain missing, identity mismatches and symlink traversal are refused. |

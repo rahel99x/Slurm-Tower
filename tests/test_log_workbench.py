@@ -41,12 +41,13 @@ def rows_text(rows):
     return "\n".join(L.row_text(row) for _, _, row in rows)
 
 
-def test_saved_preferences_exclude_worker_state_and_source_paths():
+def test_saved_preferences_exclude_worker_state_source_paths_and_horizontal_position():
     app = app_for()
     try:
         workbench.restore(app, {"view": "split", "pan": 24, "collapsed": ["Workers"], "preview": True,
                                 "cache": {"secret": "ignored"}})
-        assert workbench.save(app) == {"view": "split", "pan": 24, "collapsed": ["Workers"], "preview": True}
+        assert workbench.save(app) == {"view": "split", "collapsed": ["Workers"], "preview": True}
+        assert app.log_workbench_state["pan"] == 0
         assert app.log_workbench_state["cache"] == {}
         json.dumps(workbench.save(app))
     finally:
@@ -382,7 +383,9 @@ def real_dashboard(tmp_path):
     store = Store(state_dir=str(tmp_path / "private state"))
     store.finished = [Finished("77", "experiment", "FAILED", workdir=str(tmp_path))]
     store.details["77"] = {"StdOut": str(out), "StdErr": str(err), "WorkDir": str(tmp_path)}
-    app = App(store, None, None, cfg, "test", ascii_=False)
+    # Presentation/copy semantics use explicit synchronous snapshots; local
+    # interactive worker behavior is covered in test_local_log_snapshots.py.
+    app = App(store, None, None, cfg, "test", ascii_=False, interactive=False)
     app.files, app.logs.files = LocalFiles(), LocalFiles()
     app.research = ResearchHub(cfg, app.files)
     views = Views(L.Glyphs(False), cfg, files=app.files)

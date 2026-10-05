@@ -1,8 +1,8 @@
 """Bounded incremental log snapshots and logical source-line selection.
 
-Local and explicit noninteractive reads are synchronous. Interactive remote
-reads publish immutable snapshots through the existing research worker, so
-network latency never blocks terminal rendering or keyboard navigation.
+Explicit noninteractive reads are synchronous. Interactive reads publish
+immutable snapshots through the existing research worker, so shared filesystem
+and network latency never block terminal rendering or keyboard navigation.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import re
 import time
 from typing import List, Optional, Tuple
 
+from .log_text import display_text
 from .remote import LocalFiles
 
 
@@ -107,7 +108,7 @@ class LogBuffer:
             self.truncated = True
         self._partial_raw = parts.pop()
         self.raw_lines.extend(parts)
-        self.lines.extend(line.decode("utf-8", "replace").replace("\t", "    ").rstrip("\r") for line in parts)
+        self.lines.extend(display_text(line.decode("utf-8", "replace").rstrip("\r")) for line in parts)
         self._line_bytes.extend(len(line) + 1 for line in parts)
         drop = 0
         while drop < len(self.lines) and (self._retained_bytes > self.max_bytes or len(self.lines) - drop > 200_000):
@@ -126,16 +127,16 @@ class LogBuffer:
             self.skipped_bytes += skipped
             self.truncated = True
         # Keep an incomplete UTF-8 character for the next append instead of corrupting it.
-        self.partial = codecs.getincrementaldecoder("utf-8")("replace").decode(self._partial_raw, final=False)
+        self.partial = display_text(codecs.getincrementaldecoder("utf-8")("replace").decode(self._partial_raw, final=False))
         return True
 
     # ---- windows ----------------------------------------------------------------------------------
     @property
     def total(self) -> int:
-        return len(self.lines) + (1 if self.partial else 0)
+        return len(self.lines) + (1 if self._partial_raw else 0)
 
     def all_lines(self) -> List[str]:
-        return self.lines + ([self.partial] if self.partial else [])
+        return self.lines + ([self.partial] if self._partial_raw else [])
 
     def raw_range(self, first: int, last: int) -> bytes:
         """Unmodified bytes for retained logical lines, including their actual endings.
@@ -172,7 +173,7 @@ class LogBuffer:
         else:
             start = max(0, min(top, total - n))
         page = self.lines[start:start + n]
-        if self.partial and start + n > len(self.lines):
+        if self._partial_raw and start + n > len(self.lines):
             page.append(self.partial)
         return page, start
 
@@ -202,7 +203,7 @@ class LogBuffer:
         except re.error:
             rx = re.compile(re.escape(pattern), re.IGNORECASE)
         count = sum(1 for line in self.lines if rx.search(line))
-        count += bool(self.partial and rx.search(self.partial))
+        count += bool(self._partial_raw and rx.search(self.partial))
         self._count_key, self._count_value = key, count
         return count
 
@@ -282,11 +283,13 @@ class LogSession:
         return start if self.top is not None else start + len(lines) - 1
 
     def buffer(self, path: str, *, worker=None, background=False) -> Optional[LogBuffer]:
-        """Get a current local buffer or a published interactive SSH snapshot.
+        """Get a synchronous buffer or a published interactive file snapshot.
 
         ``worker`` follows ResearchHub's start_task/poll_task contract: completion
-        executes on the UI thread. No remote I/O occurs here when background is
-        true, including on cold loads or while the shared worker is busy.
+        executes on the UI thread. With a worker, background reads never perform
+        file I/O here, including cold loads and while the shared worker is busy.
+        Remote reads without a worker remain visibly pending; local callers
+        without one retain the synchronous API.
         """
         if not path:
             if self._async_active is not None:
@@ -305,8 +308,8 @@ class LogSession:
                 oldest = next(iter(self.buffers))
                 if oldest != path:
                     del self.buffers[oldest]
-        if background and getattr(self.files, "remote", False):
-            self._request_remote(path, buf, worker)
+        if background and (worker is not None or getattr(self.files, "remote", False)):
+            self._request_background(path, buf, worker)
             # Publication may happen only in worker.poll_task, outside this
             # function. A cold snapshot is visibly loading, never an empty file.
             buf = self.buffers[path]
@@ -317,11 +320,11 @@ class LogSession:
         return buf
 
     def invalidate_remote(self):
-        """Explicit refresh discards pending publications and polling deadlines."""
+        """Explicit refresh discards pending publications and file polling deadlines."""
         self._async_generation += 1
         self._async_attempts.clear()
 
-    def _request_remote(self, path, base, worker):
+    def _request_background(self, path, base, worker):
         files = self.files
         key = (id(files), path, base.max_bytes)
         if key != self._async_active:
@@ -329,7 +332,8 @@ class LogSession:
             self._async_generation += 1
         if base.ident is None and not base.error:
             base.loading = True
-        interval = max(1.5, float(getattr(files, "min_refresh", 0)))
+        interval = max(1.5 if getattr(files, "remote", False) else .5,
+                       float(getattr(files, "min_refresh", 0)))
         now = time.monotonic()
         if worker is None or self._async_pending is not None or now - self._async_attempts.get(key, -interval) < interval:
             return
@@ -344,19 +348,22 @@ class LogSession:
                 size, ident = files.stat(path)
                 result = {"size": size, "ident": ident}
             if type(size) is not int or size < 0 or not isinstance(ident, (tuple, list)) or len(ident) != 2 or any(type(v) is not int or v < 0 for v in ident):
-                raise ValueError("Invalid remote log metadata")
+                raise ValueError("Invalid log metadata")
             return dict(result, ident=tuple(ident))
 
         def read():
-            clone = base._worker_copy()
-            clone.loading = False
             try:
                 before = metadata()
+                # Unchanged polls need only a shallow state copy. Copy retained
+                # containers only when refresh may append, rotate, or evict.
+                clone = (base._worker_copy() if before["ident"] != base.ident or before["size"] != base.size
+                         else copy.copy(base))
+                clone.loading = False
                 class SnapshotFiles:
                     # LogBuffer uses this exact target snapshot rather than a
                     # second SSH stat (which could describe a symlink instead).
                     min_refresh = 0.0
-                    remote = True
+                    remote = getattr(files, "remote", False)
                     def stat(_self, _path):
                         return before["size"], before["ident"]
                     def read(_self, selected, offset, length):
@@ -368,9 +375,9 @@ class LogSession:
                 if changed:
                     after = metadata()
                     if after["ident"] != before["ident"] or after["size"] < before["size"] or (after["size"] == before["size"] and after.get("updated") != before.get("updated")):
-                        raise ValueError("Remote log changed during inspection; refresh to retry")
+                        raise ValueError("Log changed during inspection; refresh to retry")
                     if clone.size != before["size"]:
-                        raise ValueError("Remote log read was incomplete; refresh to retry")
+                        raise ValueError("Log read was incomplete; refresh to retry")
             except Exception as exc:
                 # Keep the previous complete bytes, and mark them unavailable
                 # for selection rather than publish a half-refreshed buffer.

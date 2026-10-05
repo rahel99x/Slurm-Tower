@@ -211,11 +211,19 @@ file list. Metadata includes regular-file size, modification time, and status;
 inspects at most 32 files, selected first, and explicitly reports omissions.
 Metadata is cached for 30 seconds; refresh updates it.
 
-Interactive SSH log reads publish immutable snapshots through the shared worker.
+Interactive local and SSH log reads publish immutable snapshots through the shared worker.
 Frames and key actions use the last published data while a read is pending, so a
-cold file or a slow remote connection does not perform SSH reads during redraw.
+cold file or a slow CARC shared filesystem/remote connection does not block scrolling.
 Source errors and pending status remain visible; refresh invalidates the cached
-remote observation. Explicit noninteractive reads can still wait for their result.
+observation. Local files are checked at most twice per second; SSH keeps its
+longer polling interval. Job-pane previews use the same background worker.
+Explicit noninteractive reads can still wait for their result.
+
+Scrolling keeps cursor movement in memory, without writing preferences on each
+arrow or wheel tick. Rapid scroll inputs share a bounded redraw: every input
+still runs in order, and clicks or other commands wait for a fresh view. Long
+Unicode lines are clipped using their visible prefix rather than scanning the
+entire offscreen line.
 
 Left/Right pans an unwrapped file by eight display columns; `:logpan +40`
 moves farther and `:logpan 0` resets. `:logview json` formats a bounded JSON
@@ -224,6 +232,15 @@ Alternate views read at most 64 KiB per source and retain up to 240 display rows
 with truncation visible. Arrows/page keys scroll their presentation. Esc or
 `:logview plain` returns to original lines. In Split, `[` and `]` choose which
 source full-file copy uses. Return to Plain for logical source-line selection.
+
+In version 3.0.1, opening another job/run/file and restarting Tower starts at the
+left edge. Horizontal position is kept only for the current source; `Ctrl-B`
+restores a previous source's deliberate position. An active offset and the
+`:logpan 0` reset command stay at the beginning of the status line so hidden
+prefixes are easy to explain and restore. ANSI color/cursor commands in logs
+are removed from the display; embedded carriage returns, backspaces and NUL
+appear as `^M`, `^H` and `^@` without overwriting text or moving terminal cursors.
+These display changes preserve physical source lines and original copy bytes.
 
 Selection and full-file copy retain the existing guarantees: arrows position the
 cursor, `v` begins a logical range, and `y` copies its original bytes. `Y`,
