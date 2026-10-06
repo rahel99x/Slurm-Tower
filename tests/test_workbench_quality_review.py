@@ -49,11 +49,17 @@ def test_report_isolates_panned_log_cache_from_interactive_buffers(dashboard, tm
     views.compose(store.snapshot(), app, 100, 24)
     assert app.log_workbench_state["pan_cache"]
     token = app.logs._buffer_token[0]
-    before = copy.deepcopy(app.log_workbench_state, memo={id(token): token})
+    buffer = app.log_workbench_state["last_buffer"]
+    before = copy.deepcopy({key: value for key, value in app.log_workbench_state.items() if key != "last_buffer"},
+                           memo={id(token): token})
+    buffer_before = copy.deepcopy(vars(buffer), memo={id(buffer.files): buffer.files,
+                                                     id(buffer._session_token): buffer._session_token})
     cache = app.log_workbench_state["pan_cache"]
     assert isinstance(cache, OrderedDict)
     report.build(store.snapshot(), app, views)
-    assert app.log_workbench_state == before
+    assert {key: value for key, value in app.log_workbench_state.items() if key != "last_buffer"} == before
+    assert app.log_workbench_state["last_buffer"] is buffer
+    assert vars(buffer) == buffer_before
     assert app.log_workbench_state["pan_cache"] is cache
 
 

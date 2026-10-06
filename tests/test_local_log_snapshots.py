@@ -347,3 +347,70 @@ def test_real_interactive_local_snapshot_yanks_original_bytes_after_pan(tmp_path
         assert app.logs.buffers[str(path)].raw_range(0, 2) == original
     finally:
         app.research.close()
+
+
+def test_same_size_local_rewrite_reloads_without_mutating_published_snapshot(tmp_path):
+    from types import SimpleNamespace
+    from tower import log_tools
+    path = tmp_path / 'job.log'
+    original, replacement = b'ERROR first\nsecond\n', b'plain first\nsecond\n'
+    assert len(original) == len(replacement)
+    path.write_bytes(original)
+    files = SharedFiles()
+    worker, session = ResearchHub({}, files), LogSession(files=files)
+    app = SimpleNamespace(logs=session, research=worker, interactive=True, cfg={}, log_job='77', project_state={}, mode='main', tab='log')
+    app.say = app.fail = lambda message: None
+    log_tools.initialize(app)
+    try:
+        ready = load(session, worker, path)
+        session.search = 'ERROR'
+        assert log_tools.count_retained(app, ready) == 1
+        assert session.begin_selection(ready, 0)
+        token = session._buffer_token
+        log_tools.observe_buffer(app, ready)
+        updated = ready.source_updated
+        path.write_bytes(replacement)
+        session.invalidate_remote()
+        latest = load(session, worker, path)
+        assert latest.ident == ready.ident and latest.size == ready.size
+        assert latest.source_updated != updated and latest.reloads == ready.reloads + 1
+        assert latest.raw_range(0, 1) == replacement
+        assert ready.raw_range(0, 1) == original and ready.source_updated == updated
+        assert session._buffer_token != token and not session.selection_active
+        assert session.cursor is None and session.top is None
+        log_tools.observe_buffer(app, latest)
+        assert all(saved['identity'][1] == latest.reloads for saved in app.log_tools_state['positions'].values())
+        assert log_tools.count_retained(app, latest) == 0
+    finally: worker.close()
+
+
+def test_rewrite_during_worker_reload_rejects_half_refreshed_local_data(tmp_path):
+    path = tmp_path / 'job.log'
+    original, replacement, raced = b'first\n', b'other\n', b'final\n'
+    path.write_bytes(original)
+    class Rewriting(SharedFiles):
+        rewrite = False
+        def read(self, path_, offset, length):
+            raw = super().read(path_, offset, length)
+            if self.rewrite:
+                path.write_bytes(raced)
+            return raw
+    files = Rewriting()
+    worker, session = ResearchHub({}, files), LogSession(files=files)
+    try:
+        ready = load(session, worker, path)
+        session.begin_selection(ready, 0)
+        path.write_bytes(replacement)
+        files.rewrite = True
+        session.invalidate_remote()
+        rejected = load(session, worker, path)
+        assert rejected.error and 'changed during inspection' in rejected.error
+        assert rejected.raw_lines == ready.raw_lines and not session.selection_active
+        assert rejected.source_updated == ready.source_updated
+        assert ready.raw_range(0, 0) == original
+        files.rewrite = False
+        session.invalidate_remote()
+        latest = load(session, worker, path)
+        assert not latest.error and latest.raw_range(0, 0) == raced
+        assert latest.reloads == ready.reloads + 1
+    finally: worker.close()

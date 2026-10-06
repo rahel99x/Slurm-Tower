@@ -33,8 +33,9 @@ WORKSPACE_INFO = {
 
 def initialize(app):
     if not isinstance(getattr(app, "navigation_state", None), dict):
-        app.navigation_state = {"stack": [], "restoring": False, "pending_target": None,
+        app.navigation_state = {"stack": [], "forward": [], "restoring": False, "pending_target": None,
                                 "query": "", "picker_cursor": 0, "picker_top": 0, "picker_page": 8}
+    app.navigation_state.setdefault("forward", [])
     return app.navigation_state
 
 
@@ -51,7 +52,7 @@ def save(app):
 
 
 def command_names():
-    return ["back", "workspaces", "workspace"]
+    return ["back", "forward", "workspaces", "workspace"]
 
 
 def _bounded_map(value):
@@ -74,17 +75,28 @@ def location(app):
     result["logs"]["entries"] = copy.deepcopy(logs.entries[:512])
     table = getattr(app, "table_state", None)
     if isinstance(table, dict):
-        result["table_context"] = {field: copy.deepcopy(table.get(field)) for field in ("facets", "sorts", "groups", "collapsed")}
+        result["table_context"] = {field: copy.deepcopy(table.get(field)) for field in ("facets", "sorts", "groups", "collapsed", "filters", "hidden", "order", "widths") if field in table}
+    tools = getattr(app, "table_tools_state", None)
+    if isinstance(tools, dict):
+        result["table_tools_context"] = {field: copy.deepcopy(tools[field]) for field in ("numeric", "dates", "filters", "recents", "header", "selected_resources", "resource_ids") if field in tools}
     layout = getattr(app, "layout_state", None)
     if layout is not None:
         result["panel_context"] = {field: copy.deepcopy(getattr(layout, field, None)) for field in ("focus", "maximized", "scroll")}
     log_workbench = getattr(app, "log_workbench_state", None)
     if isinstance(log_workbench, dict):
         result["log_view_context"] = {field: copy.deepcopy(log_workbench.get(field)) for field in ("view", "pan", "pan_source", "scroll", "collapsed", "preview", "current_group")}
+    log_tools = getattr(app, "log_tools_state", None)
+    if isinstance(log_tools, dict):
+        result["log_tools_context"] = {field: copy.deepcopy(log_tools.get(field)) for field in
+                                       ("page_source", "page_cursor", "page_top", "page_pan", "selection", "page_history", "result_cursor", "mark_cursor", "return_mode", "page_return")}
+        # Published page/search results and backend handles retain their exact
+        # source identity; they are never copied or persisted as raw buffers.
+        for field in ("page", "results", "page_files"):
+            result["log_tools_context"][field] = log_tools.get(field)
     analysis = getattr(app, "analysis_state", None)
     if isinstance(analysis, dict):
         result["analysis_context"] = {field: copy.deepcopy(analysis.get(field)) for field in
-                                      ("modal", "cursor", "scroll", "section", "job", "metric", "chart_job", "zoom", "pan", "window", "diff_kind", "diff_ids", "unchanged", "evidence_cursor", "evidence_focus", "modal_back")
+                                      ("modal", "cursor", "scroll", "section", "job", "metric", "chart_job", "zoom", "pan", "window", "preset", "chart_range", "sample_cursor", "diff_kind", "diff_ids", "unchanged", "evidence_cursor", "evidence_focus", "modal_back")
                                       if field in analysis}
         # Loaded comparisons are immutable results. Retain their reference
         # rather than duplicate potentially large passports in back history.
@@ -118,6 +130,7 @@ def record(app, target_tab=None, *, force=False):
         return False
     state["stack"].append(location(app))
     del state["stack"][:-MAX_BACK]
+    state["forward"].clear()
     state["pending_target"] = target_tab
     return True
 
@@ -134,11 +147,18 @@ def _restore_location(app, saved):
         app.reverse.update(saved.get("reverse", {}))
         if isinstance(getattr(app, "table_state", None), dict):
             app.table_state.update(copy.deepcopy(saved.get("table_context", {})))
+        if isinstance(getattr(app, "table_tools_state", None), dict):
+            app.table_tools_state.update(copy.deepcopy(saved.get("table_tools_context", {})))
         if getattr(app, "layout_state", None) is not None:
             for field, value in saved.get("panel_context", {}).items():
                 setattr(app.layout_state, field, copy.deepcopy(value))
         if isinstance(getattr(app, "log_workbench_state", None), dict):
             app.log_workbench_state.update(copy.deepcopy(saved.get("log_view_context", {})))
+        if isinstance(getattr(app, "log_tools_state", None), dict) and saved.get("log_tools_context"):
+            log_tools = app.log_tools_state
+            log_tools["generation"] += 1
+            log_tools["busy"] = False
+            log_tools.update(saved["log_tools_context"])
         if isinstance(getattr(app, "analysis_state", None), dict) and saved.get("analysis_context"):
             app.analysis_state.update(saved["analysis_context"])
         project = getattr(app, "project_state", None)
@@ -164,7 +184,9 @@ def _restore_location(app, saved):
                 setattr(app, field, saved[field])
         if isinstance(saved.get("days_index"), int) and saved["days_index"] != app.days_index:
             app.set_days(saved["days_index"])
-        app.mode = "analysis" if saved.get("mode") == "analysis" and saved.get("analysis_context") else "main"
+        mode = saved.get("mode")
+        log_mode = mode in ("log_tools_page", "log_tools_results", "log_tools_marks") and saved.get("log_tools_context")
+        app.mode = mode if log_mode or mode == "analysis" and saved.get("analysis_context") else "main"
         app.sel_anchor, app.click_row = None, None
         app.logs.clear_selection(reset_cursor=True)
         app.log_selection_expected, app.log_render_token = False, None
@@ -210,8 +232,23 @@ def back(app):
         app.say("Already at the first location; Tab switches pages, :workspaces opens Research")
         return False
     saved = state["stack"].pop()
+    state["forward"].append(location(app))
+    del state["forward"][:-MAX_BACK]
     _restore_location(app, saved)
     app.say("Back to " + TAB_NAMES.get(app.tab, app.tab))
+    return True
+
+
+def forward(app):
+    state = initialize(app)
+    if not state["forward"]:
+        app.say("No forward location; use Back before Forward")
+        return False
+    saved = state["forward"].pop()
+    state["stack"].append(location(app))
+    del state["stack"][:-MAX_BACK]
+    _restore_location(app, saved)
+    app.say("Forward to " + TAB_NAMES.get(app.tab, app.tab))
     return True
 
 
@@ -260,11 +297,11 @@ def run_command(app, args):
     if not args or args[0] not in command_names():
         return False
     cmd, words = args[0], args[1:]
-    if cmd == "back":
+    if cmd in ("back", "forward"):
         if words:
-            app.fail("usage: back")
+            app.fail("usage: " + cmd)
         else:
-            back(app)
+            (back if cmd == "back" else forward)(app)
         return True
     state = initialize(app)
     if cmd == "workspace" and words:
@@ -282,6 +319,9 @@ def handle_key(app, key):
     state = initialize(app)
     if app.mode == "main" and key in ("alt-left", "ctrl-b"):
         back(app)
+        return True
+    if app.mode == "main" and key == "alt-right":
+        forward(app)
         return True
     if app.mode == "main" and key == "ctrl-p":
         run_command(app, ["workspaces"])

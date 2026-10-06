@@ -15,6 +15,8 @@ import os
 import subprocess
 import threading
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Callable, Dict, List, Optional
 
 from .expr import Expr, ExprError, cluster_ns, job_ns
@@ -55,6 +57,9 @@ class AlertEngine:
         self.errors: Dict[str, str] = {r.name: r.error for r in self.rules if r.error}
         self.recent: List[dict] = []                   # the last alerts, newest last
         self.lock = threading.Lock()
+        self.snoozes = {}
+        self.quiet = None
+        self.quiet_zone = "America/Los_Angeles"
         for name, err in self.errors.items():
             store.event("alert_error", f"alert rule '{name}': {err}", name=name)
 
@@ -89,6 +94,7 @@ class AlertEngine:
                     self.errors[rule.name] = str(e)
                     self.store.event("alert_error", f"alert rule '{rule.name}': {e}", name=rule.name)
                 continue
+            rule.active.intersection_update(key for key, _name, _hit in hits)
             for key, name, hit in hits:
                 if not hit:
                     rule.active.discard(key)
@@ -110,6 +116,8 @@ class AlertEngine:
         return fired
 
     def fire(self, rule: Rule, ev: dict):
+        if self.notification_muted(rule.name, str(ev.get("job", "") or "*")):
+            return
         if "bell" in rule.actions:
             self.bell += 1
             if self.bell_fn:
@@ -133,12 +141,112 @@ class AlertEngine:
 
             threading.Thread(target=go, daemon=True).start()
 
+    def snooze(self, rule, seconds, job="*"):
+        """Mute notification delivery; condition evaluation and events continue."""
+        if rule not in {item.name for item in self.rules}:
+            raise ValueError("Choose a configured alert rule.")
+        seconds = float(seconds)
+        if not 0 < seconds <= 604800:
+            raise ValueError("Snooze duration must be between zero and seven days.")
+        if not isinstance(job, str) or not job or len(job) > 128 or not job.isprintable():
+            raise ValueError("Choose an exact job ID or * for the complete rule.")
+        with self.lock:
+            self._prune_snoozes(time.time())
+            if len(self.snoozes) >= 256 and (rule, job) not in self.snoozes:
+                raise ValueError("At most 256 alert snoozes are available.")
+            self.snoozes[(rule, job)] = time.time() + seconds
+
+    def _prune_snoozes(self, now):
+        """Caller holds the controls lock; remove expired bounded preferences."""
+        self.snoozes = {key: until for key, until in self.snoozes.items() if until > now}
+
+    def unsnooze(self, rule=None, job="*"):
+        with self.lock:
+            if rule is None:
+                self.snoozes.clear()
+            else:
+                self.snoozes.pop((rule, job), None)
+
+    def set_quiet(self, start=None, end=None, zone="America/Los_Angeles"):
+        if start is None:
+            with self.lock:
+                self.quiet = None
+            return
+        def minutes(value):
+            parts = str(value).split(":")
+            if len(parts) != 2 or not all(len(p) == 2 and p.isascii() and p.isdigit() for p in parts):
+                raise ValueError("Quiet hours use HH:MM.")
+            hour, minute = map(int, parts)
+            if not 0 <= hour < 24 or not 0 <= minute < 60:
+                raise ValueError("Quiet hours use valid 24-hour times.")
+            return hour * 60 + minute
+        window = minutes(start), minutes(end)
+        if window[0] == window[1]:
+            raise ValueError("Choose different start and end times, or use quiet off.")
+        if not isinstance(zone, str) or not zone or len(zone) > 96 or not zone.isprintable():
+            raise ValueError("Choose a valid IANA timezone name.")
+        ZoneInfo(zone)  # Validate the zone before changing the current controls.
+        with self.lock:
+            self.quiet, self.quiet_zone = window, zone
+
+    def notification_muted(self, rule, job="*", now=None):
+        now = time.time() if now is None else now
+        with self.lock:
+            self._prune_snoozes(now)
+            if any(self.snoozes.get(key, 0) > now for key in ((rule, "*"), (rule, job))):
+                return True
+            window, zone = self.quiet, self.quiet_zone
+        if window:
+            local = datetime.fromtimestamp(now, ZoneInfo(zone))
+            minute = local.hour * 60 + local.minute
+            start, end = window
+            return start <= minute < end if start < end else minute >= start or minute < end
+        return False
+
+    def controls_snapshot(self):
+        now = time.time()
+        with self.lock:
+            self._prune_snoozes(now)
+            return {"snoozes": [{"rule": rule, "job": job, "until": until}
+                                for (rule, job), until in self.snoozes.items() if until > now],
+                    "quiet": list(self.quiet) if self.quiet else None, "zone": self.quiet_zone}
+
+    def restore_controls(self, value):
+        """Restore bounded preferences; invalid controls never alter rules."""
+        import math
+        if not isinstance(value, dict):
+            return
+        valid = {item.name for item in self.rules}
+        now = time.time()
+        result = {}
+        entries = value.get("snoozes", [])
+        for entry in entries[:256] if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            rule, job, until = entry.get("rule"), entry.get("job"), entry.get("until")
+            if (isinstance(rule, str) and rule in valid and isinstance(job, str) and job.isprintable()
+                    and 0 < len(job) <= 128 and isinstance(until, (int, float)) and math.isfinite(until)
+                    and now < until <= now + 604800):
+                result[(rule, job)] = until
+        with self.lock:
+            self.snoozes = result
+        window, zone = value.get("quiet"), value.get("zone", "America/Los_Angeles")
+        if "quiet" in value and window is None:
+            self.set_quiet()
+        if (isinstance(window, (list, tuple)) and len(window) == 2
+                and all(isinstance(x, int) and not isinstance(x, bool) and 0 <= x < 1440 for x in window)
+                and isinstance(zone, str) and len(zone) <= 96):
+            try:
+                self.set_quiet(*(f"{m // 60:02}:{m % 60:02}" for m in window), zone=zone)
+            except (ValueError, KeyError):
+                pass
+
     def active_count(self) -> int:
-        return sum(len(r.active) for r in self.rules)
+        return sum(len(r.active.copy()) for r in self.rules)
 
     def active_text(self) -> List[str]:
         out = []
         for r in self.rules:
-            for key in sorted(r.active):
+            for key in sorted(r.active.copy()):
                 out.append(f"{r.name}" + (f" {key}" if key != "*" else ""))
         return out

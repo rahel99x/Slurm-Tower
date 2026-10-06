@@ -14,6 +14,7 @@ DEFAULTS: Dict[str, Any] = {
     "account": "",                       # empty: the first account of sshare -U
     "ascii": False,                      # solid Unicode blocks; auto-fallback for limited terminal encodings
     "color": True,
+    "mouse": True,                       # clicks and wheel input; keyboard controls always remain available
     "history_days": 2,                   # sacct window of the history tab
     "log_lines": 8,                      # stdout tail under the selected job
     "log_max_mb": 32,                    # the Log tab keeps the last this many MB of a file in memory (read once, then only what is appended)
@@ -74,6 +75,7 @@ TEMPLATE = '''# tower configuration (TOML).  Every key is optional; these are th
 # account = ""                  # empty: the first account of sshare -U
 ascii = false                   # solid Unicode blocks (use --ascii for a plain-character fallback)
 color = true
+mouse = true                    # enable terminal clicks and wheel input
 history_days = 2                # sacct window of the history tab
 log_lines = 8                   # stdout tail under the selected job
 log_max_mb = 32                 # the Log tab keeps the last this many MB of a file (read once, then only what is appended)

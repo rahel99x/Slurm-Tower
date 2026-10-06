@@ -374,3 +374,39 @@ def test_unexpected_worker_exception_remains_readable_in_published_buffer():
     assert not current.loading
     assert current.error == 'remote transport stopped unexpectedly'
     assert not session.begin_selection(current)
+
+
+def test_same_size_remote_rewrite_reloads_and_invalidates_selection():
+    files = Remote(b'first\n')
+    hub, session = ResearchHub({}, files), LogSession(files=files)
+    try:
+        original = load(session, hub)
+        assert session.begin_selection(original, 0)
+        files.data = b'other\n'
+        files.updated += 1
+        session.invalidate_remote()
+        latest = load(session, hub)
+        assert latest.raw_range(0, 0) == b'other\n'
+        assert original.raw_range(0, 0) == b'first\n'
+        assert latest.ident == original.ident and latest.size == original.size
+        assert latest.reloads == original.reloads + 1
+        assert not session.selection_active and session.cursor is None
+        assert all(thread.startswith('tower-research') for operation, thread in files.calls)
+    finally: hub.close()
+
+
+def test_remote_same_size_reload_race_preserves_previous_complete_bytes():
+    files = Remote(b'first\n')
+    hub, session = ResearchHub({}, files), LogSession(files=files)
+    try:
+        original = load(session, hub)
+        files.data = b'other\n'
+        files.updated += 1
+        files.after_read = lambda: setattr(files, 'updated', files.updated + 1)
+        session.invalidate_remote()
+        rejected = load(session, hub)
+        assert rejected.error and 'changed during inspection' in rejected.error
+        assert rejected.raw_range(0, 0) == b''  # Errored snapshots cannot be copied.
+        assert rejected.raw_lines == original.raw_lines
+        assert rejected.source_updated == original.source_updated
+    finally: hub.close()

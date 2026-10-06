@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import deque
 from typing import Optional
 
 from . import layout as L
@@ -21,6 +22,93 @@ PALETTE_256 = {"green": 114, "yellow": 221, "red": 203, "cyan": 81, "magenta": 1
 INPUT_BATCH_LIMIT = 32
 INPUT_BATCH_SECONDS = .008
 _NAVIGATION_ACTIONS = frozenset(("up", "down", "page_up", "page_down", "home", "end"))
+_INPUT_READERS = {}
+_ESCAPE_KEYS = {"\x1b[1;5D": "ctrl-left", "\x1b[1;5C": "ctrl-right",
+                "\x1b[1;3D": "alt-left", "\x1b[1;3C": "alt-right",
+                "\x1bb": "alt-b", "\x1bf": "alt-f", "\x1bd": "alt-d",
+                "\x1bu": "alt-u", "\x1br": "alt-r", "\x1b\x7f": "alt-backspace",
+                "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left"}
+_PASTE_START, _PASTE_END = "\x1b[200~", "\x1b[201~"
+_ESCAPE_KEYS.update({"\x1b" + chr(code): "alt-" + chr(code) for code in range(ord("a"), ord("z") + 1)})
+for _modifier, _number in (("alt", 3), ("ctrl", 5)):
+    for _suffix, _key in (("A", "up"), ("B", "down"), ("C", "right"), ("D", "left"), ("H", "home"), ("F", "end")):
+        _ESCAPE_KEYS[f"\x1b[1;{_number}{_suffix}"] = f"{_modifier}-{_key}"
+    for _code, _key in ((3, "delete"), (5, "pgup"), (6, "pgdn")):
+        _ESCAPE_KEYS[f"\x1b[{_code};{_number}~"] = f"{_modifier}-{_key}"
+_ESCAPE_KEYS["\x1b[127;5u"] = "ctrl-backspace"
+del _modifier, _number, _suffix, _key, _code
+
+
+class _InputReader:
+    """Decode fragmented pastes without executing payload keys or blocking frames."""
+    def __init__(self, window):
+        self.window = window
+        self.escape = ""
+        self.escape_time = 0.0
+        self.pasting = False
+        self.end = ""
+        self.text = []
+        self.queue = deque()
+
+    def read(self, curses):
+        if self.queue:
+            return self.queue.popleft()
+        deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting else None
+        for _ in range(256):
+            try:
+                value = self.window.get_wch()
+            except curses.error:
+                if self.escape and time.monotonic() - self.escape_time >= .03:
+                    pending, self.escape = self.escape, ""
+                    self.queue.extend((key_name(ch, curses), None) for ch in pending[1:])
+                    return "esc", None
+                return None
+            if self.pasting:
+                # keypad is disabled so the end delimiter and pasted control
+                # characters reach this parser in their original order.
+                char = value if isinstance(value, str) else ""
+                self.end += char
+                while self.end and not _PASTE_END.startswith(self.end):
+                    if len(self.text) < 4097:
+                        self.text.append(self.end[0])
+                    self.end = self.end[1:]
+                if self.end == _PASTE_END:
+                    self.pasting, self.end = False, ""
+                    self.window.keypad(True)
+                    text, self.text = "".join(self.text), []
+                    return "paste", text
+            elif self.escape:
+                char = value if isinstance(value, str) else ""
+                candidate = self.escape + char
+                if candidate == _PASTE_START:
+                    self.escape, self.pasting = "", True
+                    self.text, self.end = [], ""
+                    self.window.keypad(False)
+                elif candidate in _ESCAPE_KEYS:
+                    self.escape = ""
+                    return _ESCAPE_KEYS[candidate], None
+                elif any(seq.startswith(candidate) for seq in (*_ESCAPE_KEYS, _PASTE_START)):
+                    self.escape = candidate
+                else:
+                    self.escape = ""
+                    self.queue.extend((key_name(ch, curses), None) for ch in candidate[1:])
+                    return "esc", None
+            else:
+                name = key_name(value, curses)
+                if name == "esc":
+                    self.escape, self.escape_time = "\x1b", time.monotonic()
+                    deadline = self.escape_time + INPUT_BATCH_SECONDS
+                    self.window.timeout(0)
+                elif name == "mouse":
+                    try:
+                        return name, curses.getmouse()
+                    except curses.error:
+                        return None, None
+                else:
+                    return name, None
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+        return None
 
 
 def style_attr(style: str, theme: str, base: dict, colors: dict, bold: int) -> int:
@@ -166,54 +254,74 @@ def key_name(ch, curses) -> Optional[str]:
              9: "tab", 10: "enter", 13: "enter", 27: "esc", 32: "space", 127: "backspace", 8: "backspace"}
     if ch in table:
         return table[ch]
-    if ch in (1, 2, 16, 21, 23):
-        return {1: "ctrl-a", 2: "ctrl-b", 16: "ctrl-p", 21: "ctrl-u", 23: "ctrl-w"}[ch]
-    if ch == getattr(curses, "KEY_F6", -2):
-        return "f6"
+    if ch in (1, 2, 5, 7, 11, 16, 21, 23, 25, 26):
+        return {1: "ctrl-a", 2: "ctrl-b", 5: "ctrl-e", 7: "ctrl-g", 11: "ctrl-k",
+                16: "ctrl-p", 21: "ctrl-u", 23: "ctrl-w", 25: "ctrl-y", 26: "ctrl-z"}[ch]
+    if 1 <= ch <= 26:
+        return "ctrl-" + chr(ord("a") + ch - 1)
+    if getattr(curses, "KEY_F0", 100000) < ch <= getattr(curses, "KEY_F0", 100000) + 24:
+        return f"f{ch - curses.KEY_F0}"
     if hasattr(curses, "KEY_DC") and ch == curses.KEY_DC:
         return "delete"
     if 33 <= ch < 127:
         return chr(ch)
     if ch > 127:
         try:
-            if curses.keyname(ch) == b"kLFT3":
-                return "alt-left"
+            name = {b"kLFT3": "alt-left", b"kRIT3": "alt-right", b"kLFT5": "ctrl-left", b"kRIT5": "ctrl-right"}.get(curses.keyname(ch))
+            if name is None:
+                encoded = curses.keyname(ch).decode("ascii", "replace")
+                for prefix, key in (("kUP", "up"), ("kDN", "down"), ("kHOM", "home"), ("kEND", "end"),
+                                    ("kPRV", "pgup"), ("kNXT", "pgdn"), ("kDC", "delete")):
+                    if encoded in (prefix + "3", prefix + "5"):
+                        name = ("alt-" if encoded.endswith("3") else "ctrl-") + key
+                        break
+            if name:
+                return name
         except (curses.error, ValueError):
             pass
     return None
 
 
 def _read_input(stdscr, curses):
-    """Capture one event, including mouse coordinates before reading another."""
-    try:
-        name = key_name(stdscr.get_wch(), curses)
-    except curses.error:
-        return None
-    mouse = None
-    if name == "mouse":
-        try:
-            mouse = curses.getmouse()
-        except curses.error:
-            name = None
-    return name, mouse
+    reader = _INPUT_READERS.get(id(stdscr))
+    if reader is None or reader.window is not stdscr:
+        if len(_INPUT_READERS) >= 128:
+            _INPUT_READERS.pop(next(iter(_INPUT_READERS)))
+        reader = _INPUT_READERS[id(stdscr)] = _InputReader(stdscr)
+    return reader.read(curses)
 
 
 def _navigation_context(app):
     """A changed document needs a new frame before another navigation event."""
     logs = getattr(app, "logs", None)
-    return (app.mode, app.tab, getattr(app, "research_job_id", None),
+    analysis = getattr(app, "analysis_state", {})
+    table = getattr(app, "table_tools_state", {})
+    page = getattr(app, "log_tools_state", {}).get("page") or {}
+    return (app.mode, app.tab, analysis.get("modal"), analysis.get("chart_job"), analysis.get("metric"),
+            table.get("modal"), table.get("tab"), table.get("node"), table.get("action_job"),
+            page.get("path"), page.get("start"), page.get("end"), page.get("snapshot", {}).get("ident"),
+            getattr(app, "research_job_id", None),
             getattr(app, "research_view", None), getattr(app, "analytics_job", None),
             getattr(app, "log_job", None), getattr(logs, "path", None),
             getattr(logs, "browser", None))
 
 
 def _batchable_input(app, event, curses):
-    if app.mode != "main":
+    mode = app.mode
+    traversal = (mode in ("session_inbox", "log_tools_page", "log_tools_results", "log_tools_marks",
+                          "jump_picker", "locations_picker", "value_peek", "field_explanation")
+                 or mode == "analysis" and getattr(app, "analysis_state", {}).get("modal") in ("chart", "chart_events", "timeline", "diff", "inspect")
+                 or mode == "table_tools" and getattr(app, "table_tools_state", {}).get("modal") in ("headers", "marks", "node", "actions"))
+    if mode != "main" and not traversal:
         return False
     name, mouse = event
     if name is None:
         return True  # An unsupported key or mouse motion has no controller action.
     if name != "mouse":
+        if traversal:
+            arrows = ("up", "down", "home", "end", "pgup", "pgdn")
+            horizontal = mode == "log_tools_page" or mode == "analysis" and getattr(app, "analysis_state", {}).get("modal") == "chart"
+            return name in arrows or horizontal and name in ("left", "right")
         return app.keymap.get(name) in _NAVIGATION_ACTIONS
     if mouse is None:
         return True
@@ -227,9 +335,9 @@ def _batchable_input(app, event, curses):
     if buttons & click_mask:
         return False
     if buttons & getattr(curses, "BUTTON4_PRESSED", 0):
-        return app.keymap.get("up") in _NAVIGATION_ACTIONS
+        return traversal or app.keymap.get("up") in _NAVIGATION_ACTIONS
     if buttons & getattr(curses, "BUTTON5_PRESSED", 0):
-        return app.keymap.get("down") in _NAVIGATION_ACTIONS
+        return traversal or app.keymap.get("down") in _NAVIGATION_ACTIONS
     return True
 
 
@@ -237,13 +345,29 @@ def _apply_input(app, event, hits, curses):
     name, mouse = event
     if name is None or name == "resize":
         return
+    if name == "paste":
+        if app.mode == "terminal_probe":
+            app.handle(f"paste ({len(mouse)} characters)")
+        else:
+            from .command_ui import paste
+            paste(app, mouse)
+        return
     if name != "mouse":
         app.handle(name)
         return
     if mouse is None:
         return
+    if not getattr(app, "cfg", {}).get("mouse", True) and app.mode != "terminal_probe":
+        return
     _, mx, my, _, bstate = mouse
     shift = bool(bstate & getattr(curses, "BUTTON_SHIFT", 0))
+    if app.mode == "terminal_probe":
+        button = ("wheel-up" if bstate & getattr(curses, "BUTTON4_PRESSED", 0) else
+                  "wheel-down" if bstate & getattr(curses, "BUTTON5_PRESSED", 0) else
+                  "right" if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)) else
+                  "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED) else "motion")
+        app.click(my, mx, hits, button=button, shift=shift)
+        return
     if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)):
         app.click(my, mx, hits, button="right")
     elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
@@ -296,19 +420,25 @@ def run_curses(app, views, sampler, store, actions, cfg):
 
     def main(stdscr):
         try:
+            curses.raw()  # Word-edit undo/redo must receive Ctrl-Z/Ctrl-S intact.
+        except curses.error:
+            pass
+        try:
             curses.curs_set(0)
         except curses.error:
             pass
         stdscr.timeout(200)
         stdscr.keypad(True)
         if hasattr(curses, "set_escdelay") and "ESCDELAY" not in os.environ:
-            curses.set_escdelay(200)
+            curses.set_escdelay(25)
+        mouse_enabled = cfg.get("mouse", True) or app.mode == "terminal_probe"
         try:
-            curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+            curses.mousemask((curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION) if mouse_enabled else 0)
             curses.mouseinterval(0)
         except curses.error:
             pass
         palette = CursesPalette(curses, cfg["color"])
+        settings_generation = getattr(app, "terminal_settings_generation", 0)
 
         def paint(y, x0, segs, width, height):
             x = x0
@@ -327,12 +457,26 @@ def run_curses(app, views, sampler, store, actions, cfg):
         pending_input = None
         app.views_ref = views
         while not app.quit:
+            current_settings = getattr(app, "terminal_settings_generation", 0)
+            if settings_generation != current_settings:
+                palette = CursesPalette(curses, cfg["color"])
+                settings_generation = current_settings
+            current_mouse = cfg.get("mouse", True) or app.mode == "terminal_probe"
+            if current_mouse != mouse_enabled:
+                try:
+                    curses.mousemask((curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION) if current_mouse else 0)
+                except curses.error:
+                    pass
+                mouse_enabled = current_mouse
             app.tick()
             snap = store.snapshot()
             height, width = stdscr.getmaxyx()
             app.width = width
             rows, hits = views.compose(snap, app, width, height, actions)
             stdscr.timeout(100 if app.animations_enabled and app.completion.active else 200)
+            reader = _INPUT_READERS.get(id(stdscr))
+            if reader and (reader.escape or reader.pasting):
+                stdscr.timeout(5)
             app.last_hits = hits
             stdscr.erase()
             for y, segs in enumerate(rows[:height]):
@@ -366,7 +510,17 @@ def run_curses(app, views, sampler, store, actions, cfg):
                 else:
                     app.say("no stdout file yet for this job")
 
-    curses.wrapper(main)
+    bracketed = sys.stdout.isatty()
+    if bracketed:
+        sys.stdout.write("\033[?2004h")
+        sys.stdout.flush()
+    try:
+        curses.wrapper(main)
+    finally:
+        _INPUT_READERS.clear()
+        if bracketed:
+            sys.stdout.write("\033[?2004l")
+            sys.stdout.flush()
 
 
 def run_watch(app, views, sampler, store, actions, cfg, interval: float, color: bool, width_hint: int = 120):

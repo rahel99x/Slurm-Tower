@@ -18,6 +18,7 @@ from .research import RESEARCH_VIEWS, clean
 MAX_INPUT = 4096
 MAX_HISTORY = 50
 MAX_RESULTS = 100
+MAX_UNDO = 100
 DESCRIPTIONS = {
     "cancel": "Cancel the selected, marked, or explicit jobs (review required)",
     "hold": "Hold pending jobs after reviewing targets", "release": "Release held jobs after review",
@@ -62,6 +63,13 @@ DESCRIPTIONS = {
     "preflight": "Edit and validate a batch script's effective resources",
     "orchestrate": "Review and execute a workflow or scaling plan",
     "execution": "Inspect execution receipts, recovery, and observed results",
+    "jump": "Search cached jobs, runs, log files, views, workspaces, commands and locations",
+    "forward": "Return to a location after Back", "location": "Save, open, or delete an exact destination",
+    "settings": "Preview and save terminal, sampler and clipboard preferences",
+    "keybindings": "Edit, test and reset main-page keybindings",
+    "explain": "Explain a column's meaning, units, formula and source freshness",
+    "peek": "Read and copy the selected record's complete value",
+    "metricdisplay": "Set a metric's display label, declared unit and precision",
 }
 ID_COMMANDS = {"cancel", "hold", "release", "requeue", "top", "log", "resubmit", "investigate", "predict", "forecast", "blockers", "compare", "tag", "untag", "note", "pin", "inspect", "diff"}
 PATH_COMMANDS = {"metrics", "metric", "artifacts", "validate", "prepare", "submit", "passport", "scaling", "workflow", "tradeoffs", "predict", "forecast", "blockers", "choose", "array", "export", "project", "artifact", "preflight", "execution", "orchestrate"}
@@ -76,6 +84,7 @@ ARGUMENTS = {"density": ("comfortable", "compact", "focused"), "focus": ("main",
              "logpreview": ("on", "off"), "dashboard": ("list", "reset", "search", "pin", "unpin", "hide", "show", "expand", "collapse", "move", "color"),
              "timeline": ("events", "seek"), "orchestrate": ("workflow", "scaling"),
              "execution": ("resume", "retry", "recover", "collect")}
+ARGUMENTS.update({"settings": ("reset",), "keybindings": ("reset",), "location": ("list", "save", "open", "delete")})
 
 
 def initialize(app):
@@ -86,6 +95,8 @@ def initialize(app):
                              "help_page": 8, "help_total": 0, "confirm_token": None,
                              "confirm_scroll": 0, "confirm_focus": "cancel", "confirm_page": 8, "confirm_total": None,
                              "path_cache": {}, "confirm_cache": None, "confirm_controls_visible": None}
+    for key, value in (("undo", []), ("redo", []), ("paste_notice", ""), ("origin_mode", "main")):
+        app.command_state.setdefault(key, value)
     return app.command_state
 
 
@@ -95,7 +106,7 @@ def restore(app, data):
     history = data.get("history", [])
     if isinstance(history, list):
         state["history"] = [value[:MAX_INPUT] for value in history[-MAX_HISTORY:]
-                            if isinstance(value, str) and value.strip() and all(ch.isprintable() for ch in value)]
+                            if isinstance(value, str) and value.strip() and all(ch.isprintable() or ch in "\n\t" for ch in value)]
 
 
 def save(app):
@@ -104,6 +115,17 @@ def save(app):
 
 def command_names():
     return ["commands", "help"]
+
+
+def open_palette(app, text="", origin=None):
+    state = initialize(app)
+    if app.mode != "palette":
+        state["origin_mode"] = app.mode if origin is None else origin
+    state.update(paste_notice="", history_index=None)
+    state["undo"].clear()
+    state["redo"].clear()
+    app.mode = "palette"
+    _set_input(app, text, record=False)
 
 
 def parse_command_line(line):
@@ -150,13 +172,115 @@ def _sync_input(app):
     return state
 
 
-def _set_input(app, text, cursor=None, *, reset_results=True):
+def _set_input(app, text, cursor=None, *, reset_results=True, record=True):
     state = initialize(app)
+    old = getattr(app, "palette_edit", "")
+    if record and text[:MAX_INPUT] != old:
+        state["undo"].append((old[:MAX_INPUT], state["cursor"]))
+        del state["undo"][:-MAX_UNDO]
+        state["redo"].clear()
     app.palette_edit = text[:MAX_INPUT]
     state["input_seen"] = app.palette_edit
     state["cursor"] = len(app.palette_edit) if cursor is None else max(0, min(cursor, len(app.palette_edit)))
     if reset_results:
         state["result_cursor"], state["result_top"] = 0, 0
+
+
+def paste(app, text):
+    """Insert one bracketed paste as editable text. It never runs a command."""
+    if app.mode not in ("main", "palette"):
+        app.fail("Close this dialog before pasting a command")
+        return False
+    if not isinstance(text, str):
+        return False
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if any(not ch.isprintable() and ch not in "\n\t" for ch in text):
+        app.fail("Paste contains terminal control characters; paste plain command text")
+        return False
+    if app.mode == "main":
+        open_palette(app)
+    state = _sync_input(app)
+    cursor = state["cursor"]
+    room = MAX_INPUT - len(app.palette_edit)
+    inserted = text[:max(0, room)]
+    _set_input(app, app.palette_edit[:cursor] + inserted + app.palette_edit[cursor:], cursor + len(inserted))
+    state["paste_notice"] = ("Paste truncated to 4096 characters. " if len(inserted) != len(text) else "") + "Pasted text is editable; Enter runs one command only"
+    return True
+
+
+def _word_left(text, cursor):
+    while cursor and text[cursor - 1].isspace():
+        cursor -= 1
+    while cursor and not text[cursor - 1].isspace():
+        cursor -= 1
+    return cursor
+
+
+def _word_right(text, cursor):
+    while cursor < len(text) and not text[cursor].isspace():
+        cursor += 1
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    return cursor
+
+
+def _undo(app, redo=False):
+    state = _sync_input(app)
+    source, destination = (state["redo"], state["undo"]) if redo else (state["undo"], state["redo"])
+    if source:
+        destination.append((app.palette_edit, state["cursor"]))
+        del destination[:-MAX_UNDO]
+        text, cursor = source.pop()
+        _set_input(app, text, cursor, record=False)
+
+
+EXAMPLES = {
+    "sortby": "sortby jobs id asc", "tab": "tab history", "days": "days 7",
+    "theme": "theme reader", "density": "density compact", "log": "log JOBID",
+    "find": "find ERROR", "filter": "filter training", "location": "location save failure",
+    "jump": "jump JOBID", "settings": "settings", "explain": "explain ce", "peek": "peek name",
+    "columns": "columns show rss", "savedview": "savedview save gpu-failures",
+    "project": "project '/path with spaces/project'", "run": "run select RUN_ID",
+    "keybindings": "keybindings", "forward": "forward", "copy": "copy all",
+    "chart": "chart preset 30m; chart axis fixed 0 100; chart range 1 20; chart events",
+    "metricdisplay": "metricdisplay METRIC label 'Friendly label' | unit DECLARED_UNIT | precision 3 | reset",
+}
+
+
+def validation(app, text=None):
+    """Report parse and known argument errors without I/O or side effects."""
+    text = app.palette_edit if text is None else text
+    if not text.strip():
+        return "", "Type a command; Tab completes its name and arguments"
+    if any(not ch.isprintable() and ch not in "\n\t" for ch in text):
+        return "error", "Remove terminal control characters"
+    try:
+        args = parse_command_line(text)
+    except ValueError as exc:
+        return "error", str(exc) + "; close the quote before you run the command"
+    command, words = args[0], args[1:]
+    example = EXAMPLES.get(command, "")
+    if command not in app.commands():
+        return "warning", "Unknown command; select a completion or edit its name"
+    choices = {"theme": ("default", "mono", "high", "cb", "reader", "dark", "light", "terminal"),
+               "density": ("comfortable", "compact", "focused"), "tab": tuple(app.cursor)}
+    if command in choices and (len(words) != 1 or words[0] not in choices[command]):
+        return "warning", "Choose " + " | ".join(choices[command]) + "; example: " + example
+    if command == "days" and words:
+        try:
+            valid = len(words) == 1 and float(words[0]) in app.days_options
+        except ValueError:
+            valid = False
+        if not valid:
+            return "warning", "Accounting windows: " + ", ".join(str(value) for value in app.days_options)
+    if command in ID_COMMANDS and words and command not in ("note", "tag", "untag", "diff"):
+        ids = {job.id for job in app.store.snapshot().get("jobs", [])} | {job.id for job in app.store.snapshot().get("finished", [])}
+        unknown = [word for word in words if word not in ids and word not in ("all", "marked") and not word.startswith("-")]
+        if unknown and not any(word.startswith("-") for word in words):
+            return "warning", "Job ID is not in the cached inventory: " + ", ".join(unknown[:3]) + "; execution can query the scheduler"
+    if "\n" in text:
+        return "warning", "Multiline paste: Enter submits one command with whitespace-separated arguments"
+    return "", ("Example: " + example if example else "Enter runs; scheduler changes still require their action review")
 
 
 def _active_token(text, cursor):
@@ -304,6 +428,27 @@ def _argument_values(app, previous, prefix):
         return [(value, "saved workspace layout") for value in getattr(getattr(app, "layout_state", None), "named", {})]
     if command == "savedview" and len(previous) == 2 and previous[1] in ("load", "delete"):
         return [(value, "saved table view") for value in getattr(app, "table_state", {}).get("views", {})]
+    if command == "location" and len(previous) == 2 and previous[1] in ("open", "delete"):
+        return [(value, "saved exact location") for value in getattr(app, "navigation_tools_state", {}).get("locations", {})]
+    if command in ("explain", "peek"):
+        from .table_sort import TABLE_KEYS
+        result = getattr(app, "analysis_result", {}) or {}
+        metrics = result.get("series", {}) if isinstance(result, dict) else {}
+        if len(previous) == 2 and previous[1] == "metric":
+            return [(name, "published metric") for name in list(metrics)[:64]]
+        table = previous[1] if len(previous) > 1 and previous[1] in TABLE_KEYS else app.tab
+        values = [(key, "table field") for key in TABLE_KEYS.get(table, ())]
+        if len(previous) == 1:
+            values += [(key, "table; follow with a column") for key in TABLE_KEYS if key not in dict(values)]
+            values += [("metric", "published metric; follow with its exact name")]
+        return values
+    if command == "metricdisplay":
+        if len(previous) == 2:
+            return [(value, "metric display option") for value in ("label", "unit", "precision", "reset")]
+        if len(previous) == 3 and previous[2] == "precision":
+            return [(str(value), "decimal places") for value in range(13)]
+        if len(previous) == 3 and previous[2] == "unit":
+            return [(value, "declared presentation unit; source values are unchanged") for value in ("s", "ms", "%", "B", "KiB", "MiB", "GiB")]
     if command == "run" and len(previous) == 2 and previous[1] == "select":
         return [(value["run_id"], clean(value.get("experiment_id", "project run"), limit=256))
                 for value in getattr(app, "project_state", {}).get("runs", [])[:512]
@@ -315,14 +460,19 @@ def _argument_values(app, previous, prefix):
         choices = ["state=RUNNING", "state=PENDING", "state=FAILED", "state=COMPLETED", "state=TIMEOUT", "state=OUT_OF_MEMORY", "state=ACCOUNTING", "clear"]
         choices += ["partition=" + job.partition for job in app.store.snapshot().get("jobs", [])[:512]]
         return [(value, "field filter") for value in dict.fromkeys(choices)]
-    if command in ("dashboard", "chart"):
-        if command == "chart" or len(previous) == 2 and previous[1] not in ("list", "reset", "search"):
+    if command == "chart" and len(previous) >= 2:
+        choices = {"preset": ("5m", "30m", "2h", "all"), "axis": ("auto", "fixed", "log"), "range": ("clear",),
+                   "events": ("on", "off"), "shared": ("on", "off")}
+        if previous[1] in choices:
+            return [(value, "chart " + previous[1] + " option") for value in choices[previous[1]]] if len(previous) == 2 else []
+    if command in ("dashboard", "chart", "metricdisplay"):
+        if command in ("chart", "metricdisplay") or len(previous) == 2 and previous[1] not in ("list", "reset", "search"):
             result = getattr(app, "analysis_result", {}) or {}
             series = result.get("series", {}) if isinstance(result, dict) else {}
             names = list(dict.fromkeys(list(series)[:128] + getattr(app, "analysis_state", {}).get("order", []) + ["CPU per core (%)", "Memory (GB)", "GPU utilization (%)"]))
             choices = [(value, "observed metric") for value in names]
             if command == "chart" and len(previous) == 1:
-                choices += [(value, "chart option") for value in ("window", "zoom", "pan", "cursor")]
+                choices += [(value, "chart option") for value in ("window", "zoom", "pan", "cursor", "preset", "axis", "range", "events", "event", "shared")]
             return choices
     if command == "columns" and previous[-1] in ("show", "hide"):
         from .table_ui import definitions
@@ -430,7 +580,7 @@ def _palette_key(app, key):
     state = _sync_input(app)
     cursor, text = state["cursor"], app.palette_edit
     if key == "esc":
-        app.mode = "main"
+        app.mode = state.get("origin_mode", "main")
         _set_input(app, "")
         state["history_index"] = None
     elif key == "enter":
@@ -443,7 +593,11 @@ def _palette_key(app, key):
                 line = row["value"]
             elif row["kind"] == "command" and (text.strip().split(None, 1)[0] not in app.commands() or state["result_cursor"] > 0):
                 line = text[:row["start"]] + row["value"] + text[row["end"]:]
-        app.mode = "main"
+        status, message = validation(app, line)
+        if status == "error":
+            app.fail(message)
+            return
+        app.mode = state.get("origin_mode", "main")
         _set_input(app, "")
         state["history_index"] = None
         _record_history(app, line)
@@ -457,6 +611,20 @@ def _palette_key(app, key):
         _history_move(app, key == "pgup")
     elif key in ("left", "right", "home", "end"):
         state["cursor"] = {"left": max(0, cursor - 1), "right": min(len(text), cursor + 1), "home": 0, "end": len(text)}[key]
+    elif key in ("ctrl-left", "alt-b", "ctrl-right", "alt-f"):
+        state["cursor"] = _word_left(text, cursor) if key in ("ctrl-left", "alt-b") else _word_right(text, cursor)
+    elif key in ("ctrl-a", "ctrl-e"):
+        state["cursor"] = 0 if key == "ctrl-a" else len(text)
+    elif key in ("ctrl-w", "alt-backspace", "ctrl-backspace"):
+        start = _word_left(text, cursor)
+        _set_input(app, text[:start] + text[cursor:], start)
+    elif key == "alt-d":
+        end = _word_right(text, cursor)
+        _set_input(app, text[:cursor] + text[end:], cursor)
+    elif key in ("ctrl-u", "ctrl-k"):
+        _set_input(app, text[cursor:] if key == "ctrl-u" else text[:cursor], 0 if key == "ctrl-u" else cursor)
+    elif key in ("ctrl-z", "ctrl-y", "alt-u", "alt-r"):
+        _undo(app, key in ("ctrl-y", "alt-r"))
     elif key == "backspace":
         if cursor:
             _set_input(app, text[:cursor - 1] + text[cursor:], cursor - 1)
@@ -474,15 +642,24 @@ def _help_entries(app):
     common = [
         ("Navigation", "Tab / Shift-Tab / 1-9, 0", "Switch pages; 0 opens Research"),
         ("Navigation", ":back", "Restore the previous page, selection, filter, and scroll"),
+        ("Navigation", ":forward / Alt-Right", "Return to a location after Back; a new destination clears Forward"),
+        ("Navigation", ":jump / Ctrl-G", "Search cached jobs, runs, log files, saved views, workspaces, commands, and locations"),
+        ("Navigation", ":location save NAME / open NAME", "Save and restore an exact page, source identity, filters, column sorts, and reading position"),
         ("Navigation", ":workspaces", "Search and open any Research workspace"),
         ("Navigation", "Ctrl-B", "Return to the previous page; :back also works in every terminal"),
         ("Navigation", k("up") + " / " + k("down"), "Move the current selection"),
         ("Navigation", "PgUp / PgDn / Home / End", "Move by a page, or to the first / last item"),
         ("Commands", k("palette"), "Editable fuzzy command palette; Tab completes names, IDs, and quoted paths"),
         ("Commands", "Left / Right / Home / End", "Move the command editing cursor"),
+        ("Commands", "Ctrl-Left/Right or Alt-B/F; Ctrl-W or Alt-D", "Move by words; delete the previous or next word"),
+        ("Commands", "Ctrl-A/E; Ctrl-U/K; Alt-U/R or Ctrl-Z/Y", "Move to the start/end; delete to the start/end; undo/redo edits in the command palette"),
+        ("Commands", "Bracketed paste", "Insert text without execution; edit pasted multiline text, then press Enter to run one command"),
         ("Commands", "Up / Down", "Choose a command completion; PgUp / PgDn recalls command history"),
         ("Help", "/ then type", "Search this help; Backspace edits; Enter keeps results; Esc returns to the page"),
         ("Appearance", k("theme"), "Cycle themes; reader gives plain ASCII and static feedback"),
+        ("Appearance", ":settings", "Preview appearance, sampling, mouse and clipboard preferences; Enter applies, Esc restores"),
+        ("Appearance", ":keybindings", "Edit main-page keys, inspect conflicts, test a key, or restore default bindings"),
+        ("Figures", ":explain COLUMN / :peek COLUMN", "Explain the selected field or inspect and copy its complete underlying value; metric NAME selects a published metric"),
         ("Workspace", ":density comfortable|compact|focused", "Choose spacing and information density"),
         ("Workspace", ":focus main|details / :maximize", "Focus and enlarge independently scrollable panels"),
         ("Workspace", ":layout save NAME / load NAME / split 60", "Save, restore, or resize a workspace arrangement"),
@@ -777,16 +954,14 @@ def run_command(app, args):
         state.update(help_query=" ".join(args[1:])[:256], help_searching=False)
         app.mode, app.scroll = "help", 0
     else:
-        app.mode = "palette"
-        _set_input(app, " ".join(args[1:]))
-        state["history_index"] = None
+        open_palette(app, " ".join(args[1:]))
     return True
 
 
 def _palette_overlay(views, app, width, height):
     state = _sync_input(app)
     matches = suggestions(app)
-    page = max(1, height - 10)
+    page = max(1, height - 12)
     state["page"] = page
     index = max(0, min(state["result_cursor"], max(0, len(matches) - 1)))
     top = min(state["result_top"], max(0, len(matches) - page))
@@ -799,6 +974,7 @@ def _palette_overlay(views, app, width, height):
     # and screen-reader/ASCII modes retain the same editing behavior.
     cursor = state["cursor"]
     before, current, after = app.palette_edit[:cursor], app.palette_edit[cursor:cursor + 1] or " ", app.palette_edit[cursor + 1:]
+    before, current, after = (value.replace("\n", "↵" if not views.g.ascii else "|").replace("\t", " ") for value in (before, current, after))
     visible = max(1, width - 14)
     start = max(0, cursor - visible + 1)
     before = before[start:]
@@ -812,7 +988,10 @@ def _palette_overlay(views, app, width, height):
                       ("  " + cut(clean(row["description"], views.g.ascii), max(0, width - len(row["value"]) - 12), views.g.ascii), style if selected else "dim")])
     if not matches:
         lines.append([(" No completion matches. Enter runs the current command.", "dim")])
-    lines += [[("", "")], [(" Up/Down choose  Tab completes  Enter runs  Esc closes", "dim")],
+    status, hint = validation(app)
+    lines += [[("", "")], [(" " + clean(hint, views.g.ascii), "yellow" if status else "dim")],
+              [(" " + clean(state["paste_notice"], views.g.ascii), "cyan")] if state["paste_notice"] else [(" Alt-B/F moves words; Alt-U/R undoes/redoes", "dim")],
+              [(" Up/Down choose  Tab completes  Enter runs  Esc closes", "dim")],
               [(" Left/Right edit  PgUp/PgDn recalls history", "dim")]]
     result = box(views.g, lines, width, height, "Commands")
     state["result_hits"] = [(result[index + 3][0], top + index) for index in range(min(page, len(matches) - top))

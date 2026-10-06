@@ -1,5 +1,8 @@
 # The Slurm Tower runbook
 
+[README](../README.md) · [Controls](CONTROLS.md) ·
+[Tower 4.0 guides](QUALITY_OF_LIFE.md) · [Complete reference](reference.md)
+
 Run Tower in a terminal on your CARC login node. Setup is noninteractive and
 repeatable. It never submits or changes jobs, installs system packages, replaces
 your configuration, or asks for a password.
@@ -393,6 +396,27 @@ check the site's accounting delay and your terminal's clipboard settings when
 adopting them.
 
 ## 6. Troubleshoot the specific failure
+
+### Use the Tower 4.0 guides
+
+Open `?` for contextual help.
+Use the [Controls guide](CONTROLS.md) to find a key or command.
+Use the [50-improvement index](QUALITY_OF_LIFE.md) to find a feature procedure.
+
+| Task | Operating guide |
+| --- | --- |
+| Change column order, sort priority, filters, or marks | [Tables](guides/tables.md) |
+| Read older content or search complete log files | [Log search](guides/log-search.md) |
+| Compare logs, expand JSON, or fold repeated messages | [Log display](guides/log-view.md) |
+| Change settings, bindings, command input, or navigation | [Navigation](guides/navigation.md) |
+| Change chart windows, axes, ranges, events, or labels | [Charts](guides/charts.md) |
+| Inspect completion notices, exports, terminals, or alert quiet periods | [Operations](guides/operations.md) |
+| Page through declared text, CSV, or JSON output | [Artifacts](guides/artifacts.md) |
+
+Start each procedure with the actual job, project run, or file selected.
+Check the identity shown in the page header.
+Read coverage and freshness notices before you interpret measurements.
+Use the ASCII display if your terminal cannot render Unicode graphics correctly.
 
 ### Learn the Tower 3.0 workbench
 

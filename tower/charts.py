@@ -114,7 +114,8 @@ def _header(g: Glyphs, values: Sequence[Optional[float]], width: int, title: str
 
 
 def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float], width: int,
-                 times: Optional[Tuple[float, float]], sample_interval: Optional[float]) -> Tuple[List[Tuple[int, Optional[float], bool]], Tuple[float, float]]:
+                 times: Optional[Tuple[float, float]], sample_interval: Optional[float],
+                 envelope: bool = False) -> Tuple[List[Tuple[int, Optional[float], bool]], Tuple[float, float]]:
     """Bounded timestamp buckets with enough metadata to break curves across outages."""
     samples = [(timestamp, value) for timestamp, value in zip(sample_times, values) if math.isfinite(timestamp)]
     samples.sort(key=lambda item: item[0])
@@ -142,9 +143,42 @@ def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float
         known = all(value is not None for _, value, _ in bucket)
         value = _mean([value for _, value, _ in bucket]) if known else None
         bridge = known and bucket[0][2] and previous_last is not None and bucket[0][0] - previous_last <= gap_limit
-        points.append((x, value, bridge))
+        if envelope and known:
+            # Keep the first, last, minimum and maximum samples in their source
+            # order. Each raster column has at most four points. A narrow spike
+            # cannot disappear into a mean, and a bucket containing a gap stays
+            # unknown instead of manufacturing a continuous measurement.
+            indices = sorted({0, len(bucket) - 1,
+                              min(range(len(bucket)), key=lambda i: bucket[i][1]),
+                              max(range(len(bucket)), key=lambda i: bucket[i][1])})
+            previous_index = 0
+            for i, index in enumerate(indices):
+                connected = bridge if i == 0 else all(point[2] for point in bucket[previous_index + 1:index + 1])
+                points.append((x, bucket[index][1], connected))
+                previous_index = index
+        else:
+            points.append((x, value, bridge))
         previous_last = bucket[-1][0] if known else None
     return points, times
+
+
+def envelope_points(values: Sequence[Optional[float]], width: int) -> List[Tuple[int, Optional[float], bool]]:
+    """Bounded first/minimum/maximum/last buckets for equally spaced samples."""
+    vals = [_finite(value) for value in values]
+    if width <= 0:
+        return []
+    if len(vals) <= width:
+        return [(width - len(vals) + i, value, True) for i, value in enumerate(vals)]
+    points = []
+    for x in range(width):
+        chunk = vals[x * len(vals) // width:(x + 1) * len(vals) // width]
+        if any(value is None for value in chunk):
+            points.append((x, None, False))
+            continue
+        indices = sorted({0, len(chunk) - 1, min(range(len(chunk)), key=chunk.__getitem__),
+                          max(range(len(chunk)), key=chunk.__getitem__)})
+        points.extend((x, chunk[index], True) for index in indices)
+    return points
 
 
 def resample(values: Sequence[Optional[float]], width: int, how: str = "mean") -> List[Optional[float]]:
@@ -230,19 +264,25 @@ def _trace_axis(times: Tuple[float, float], samples: int, chart_w: int, indent: 
 def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height: int, lo: float = 0.0, hi: Optional[float] = None,
                unit: str = "", title: str = "", times: Optional[Tuple[float, float]] = None, color: Optional[Callable[[float], str]] = None,
                indent: str = "   ", axis_w: int = 7, sample_times: Optional[Sequence[float]] = None,
-               sample_interval: Optional[float] = None, elapsed: bool = False) -> List[Row]:
+               sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
+               axis_formatter: Optional[Callable[[float], str]] = None) -> List[Row]:
     """A vertical bar (area) chart ``height`` rows tall with eight sub-levels per row, a y axis on the left and a
     time axis below.  ``values`` are resampled to the chart width; None leaves a gap."""
     chart_w = max(0, min(MAX_COLUMNS, width - vlen(indent) - axis_w))
     height = max(0, min(MAX_HEIGHT, height))
     values = [_finite(v) for v in values]
+    lows = [None] * chart_w
     if sample_times is None:
-        vals = resample(values, chart_w)
+        vals = resample(values, chart_w, "max" if envelope else "mean")
+        if envelope:
+            for x, value, _ in envelope_points(values, chart_w):
+                lows[x] = value if lows[x] is None else min(lows[x], value) if value is not None else None
     else:
-        points, times = _time_points(values, sample_times, chart_w, times, sample_interval)
+        points, times = _time_points(values, sample_times, chart_w, times, sample_interval, envelope)
         vals = [None] * chart_w
         for x, value, _ in points:
-            vals[x] = value
+            vals[x] = value if vals[x] is None else max(vals[x], value) if value is not None else None
+            lows[x] = value if lows[x] is None else min(lows[x], value) if value is not None else None
     # Summary figures describe the source samples, not the bucket averages used to draw the chart.
     lo, hi = _bounds(values, lo, hi)
     levels = g.spark if not g.ascii else LEVELS_ASCII[1:]
@@ -253,11 +293,11 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
     for r in range(height):
         label = ""
         if r == 0:
-            label = fmt_num(hi, unit)
+            label = axis_formatter(hi) if axis_formatter else fmt_num(hi, unit)
         elif r == height - 1:
-            label = fmt_num(lo, unit)
+            label = axis_formatter(lo) if axis_formatter else fmt_num(lo, unit)
         elif height >= 5 and r == height // 2:
-            label = fmt_num(_mean((lo, hi)), unit)
+            label = axis_formatter(_mean((lo, hi))) if axis_formatter else fmt_num(_mean((lo, hi)), unit)
         segs: Row = [(indent + pad(cut(label, max(0, axis_w - 1), g.ascii), axis_w - 1, ">") + (g.box[5] if not g.ascii else "|"), "dim")]
         floor = (height - 1 - r) * nlev                      # sub-levels below this row
         row_style = ""
@@ -272,6 +312,13 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
             frac = _fraction(v, lo, hi)
             lv = int(round(frac * height * nlev))
             fill = min(nlev, max(0, lv - floor))
+            if envelope and lows[x] is not None and lows[x] < v:
+                bottom = int(round(_fraction(lows[x], lo, hi) * height * nlev))
+                if lv >= floor and bottom <= floor + nlev and fill > 0:
+                    # The envelope marks the observed range rather than hiding
+                    # its minimum beneath the filled maximum area.
+                    segs.append((":" if g.ascii else "│", color(frac) if color else "cyan+bold"))
+                    continue
             if fill > 0:
                 if color:
                     style = color(frac)
@@ -326,7 +373,8 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
                   hi: Optional[float] = None, unit: str = "", title: str = "",
                   times: Optional[Tuple[float, float]] = None, color: Optional[Callable[[float], str]] = None,
                   indent: str = "   ", axis_w: int = 7, sample_times: Optional[Sequence[float]] = None,
-                  sample_interval: Optional[float] = None, elapsed: bool = False) -> List[Row]:
+                  sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
+                  axis_formatter: Optional[Callable[[float], str]] = None) -> List[Row]:
     """A high-resolution telemetry curve using a 2 x 4 dot raster per terminal cell.
 
     Adjacent observed samples are connected; missing samples break the curve. Short
@@ -334,16 +382,16 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
     The explicit ASCII mode uses the equivalent filled area chart.
     """
     if g.ascii:
-        return vbar_chart(g, values, width, height, lo, hi, unit, title, times, color, indent, axis_w, sample_times, sample_interval, elapsed)
+        return vbar_chart(g, values, width, height, lo, hi, unit, title, times, color, indent, axis_w, sample_times, sample_interval, elapsed, envelope, axis_formatter)
     from .palette import gradient
     values = [_finite(v) for v in values]
     lo, hi = _bounds(values, lo, hi)
     chart_w = max(0, min(MAX_COLUMNS, width - vlen(indent) - axis_w))
     height = max(0, min(MAX_HEIGHT, height))
     if sample_times is None:
-        points = [(x, value, True) for x, value in enumerate(resample(values, chart_w * 2))]
+        points = envelope_points(values, chart_w * 2) if envelope else [(x, value, True) for x, value in enumerate(resample(values, chart_w * 2))]
     else:
-        points, times = _time_points(values, sample_times, chart_w * 2, times, sample_interval)
+        points, times = _time_points(values, sample_times, chart_w * 2, times, sample_interval, envelope)
     pixels_h = height * 4
     cells = [[0] * chart_w for _ in range(height)]
     dots = ((1, 2, 4, 64), (8, 16, 32, 128))
@@ -374,8 +422,8 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
     if title:
         rows.append(_header(g, values, width, title, unit, indent))
     for r, masks in enumerate(cells):
-        label = fmt_num(hi, unit) if r == 0 else (fmt_num(lo, unit) if r == height - 1 else
-                (fmt_num(_mean((lo, hi)), unit) if height >= 5 and r == height // 2 else ""))
+        axis_value = hi if r == 0 else lo if r == height - 1 else _mean((lo, hi)) if height >= 5 and r == height // 2 else None
+        label = (axis_formatter(axis_value) if axis_formatter else fmt_num(axis_value, unit)) if axis_value is not None else ""
         row: Row = [(indent + pad(cut(label, max(0, axis_w - 1), g.ascii), axis_w - 1, ">") + "│", "dim")]
         fraction = 1 - r / max(1, height - 1)
         style = color(fraction) if color else "fg:" + gradient("#38bdf8", "#c4b5fd", fraction)

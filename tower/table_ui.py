@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import copy
+import math
 import re
 
 from . import layout as L
@@ -11,25 +12,28 @@ from .table_sort import (TABLE_KEYS, chain, clear_sort, cycle_sort, describe_sor
                          valid_header, validate_chain)
 
 MAX_VIEWS = 32
-FIELDS = {"state", "partition", "tag", "name", "id"}
+FIELDS = {"state", "partition", "tag", "name", "id", "user"}
 REQUIRED = {"id", "name", "st", "state"}
 
 
 def initialize(app):
-    app.table_state = {"hidden": {}, "facets": {}, "views": {}, "sorts": {}, "cursor": 0, "tab": "jobs", "groups": False, "collapsed": []}
+    app.table_state = {"hidden": {}, "order": {}, "widths": {}, "filters": {}, "facets": {}, "views": {}, "sorts": {}, "cursor": 0, "tab": "jobs", "groups": False, "collapsed": []}
 
 
 def restore(app, data):
     if not isinstance(data, dict):
         return
-    for tab in ("jobs", "history"):
-        for key, check in (("hidden", _hidden), ("facets", _facets)):
+    for tab in TABLE_KEYS:
+        for key, check in (("hidden", _hidden), ("facets", _facets), ("order", _order), ("widths", _widths)):
             values = data.get(key, {})
             if isinstance(values, dict) and tab in values:
                 try:
                     app.table_state[key][tab] = check(values[tab], tab)
                 except ValueError:
                     pass
+        filters = data.get("filters", {})
+        if isinstance(filters, dict) and isinstance(filters.get(tab), str) and len(filters[tab]) <= 256:
+            app.table_state["filters"][tab] = filters[tab]
     sorts = data.get("sorts", {})
     if isinstance(sorts, dict):
         for table in TABLE_KEYS:
@@ -52,7 +56,7 @@ def restore(app, data):
 
 
 def save(app):
-    return {key: copy.deepcopy(app.table_state[key]) for key in ("hidden", "facets", "views", "sorts", "groups", "collapsed")}
+    return {key: copy.deepcopy(app.table_state[key]) for key in ("hidden", "order", "widths", "filters", "facets", "views", "sorts", "groups", "collapsed")}
 
 
 def command_names():
@@ -89,7 +93,34 @@ def group_rows(app, rows):
 
 def definitions(tab):
     from .views import JOB_COLS, Views
-    return JOB_COLS if tab == "jobs" else Views.FIN_COLS if tab in ("history", "recent") else []
+    if tab == "jobs":
+        return JOB_COLS
+    if tab in ("history", "recent"):
+        return Views.FIN_COLS
+    if tab == "group":
+        return Views.GROUP_COLS
+    labels = {"nodes": {"name": "NODE", "cpus": "ALLOC/CPUS", "loadpct": "LOAD%", "mem": "MEM USED", "gused": "GRES USED", "gutil": "GPU%", "jobs": "MY JOBS"},
+              "cluster": {"name": "PARTITION", "cidle": "CPUS IDLE", "calloc": "CPUS ALLOC", "mine": "MY RUN", "minep": "MY PEND", "gpus": "GPUS FREE/UP"},
+              "sources": {"name": "SOURCE", "every": "INTERVAL", "last": "LAST OK"}}
+    return [L.Column(key, labels.get(tab, {}).get(key, key.upper()), 4, 60)
+            for key in TABLE_KEYS.get(tab, ())]
+
+
+def _order(value, tab):
+    available = {column.key for column in definitions(tab)}
+    if (not isinstance(value, list) or len(value) > len(available) or
+            any(not isinstance(key, str) or key not in available for key in value) or len(value) != len(set(value))):
+        raise ValueError("invalid column order")
+    return list(value)
+
+
+def _widths(value, tab):
+    available = {column.key for column in definitions(tab)}
+    if (not isinstance(value, dict) or len(value) > len(available) or
+            any(key not in available or isinstance(width, bool) or not isinstance(width, int) or not 2 <= width <= 120
+                for key, width in value.items())):
+        raise ValueError("column widths must be between 2 and 120 terminal cells")
+    return dict(value)
 
 
 def _hidden(value, tab):
@@ -111,40 +142,54 @@ def _facets(value, tab):
 def _view(app, value):
     """Validate the complete restored view before changing any navigation."""
     from .views import SORTS
-    if not isinstance(value, dict) or value.get("tab") not in ("jobs", "history"):
+    if not isinstance(value, dict) or not isinstance(value.get("tab"), str) or value["tab"] not in TABLE_KEYS:
         raise ValueError("invalid table")
     tab = value["tab"]
-    text, sort = value.get("filter", ""), value.get("sort", app.sort.get(tab))
+    text, sort = value.get("filter", ""), value.get("sort", app.sort.get(tab, "name"))
     reverse, days = value.get("reverse", False), value.get("days", app.analytics_days_value())
-    if (not isinstance(text, str) or len(text) > 256 or sort not in SORTS[tab] or
+    if (not isinstance(text, str) or len(text) > 256 or sort not in SORTS.get(tab, ["name"]) or
             not isinstance(reverse, bool) or isinstance(days, bool) or
-            not isinstance(days, (int, float)) or days not in app.days_options):
+            not isinstance(days, (int, float)) or not math.isfinite(days) or not 0 < days <= 3650):
         raise ValueError("invalid table settings")
     result = {"tab": tab, "hidden": _hidden(value.get("hidden", []), tab),
+              "order": _order(value.get("order", []), tab), "widths": _widths(value.get("widths", {}), tab),
               "facets": _facets(value.get("facets", {}), tab), "filter": text,
               "sort": sort, "reverse": reverse, "days": days}
     if "sorts" in value:
         result["sorts"] = validate_chain(tab, value["sorts"])
+    if "numeric" in value or "dates" in value:
+        from .table_tools import validate_numeric, validate_dates
+        result["numeric"] = validate_numeric(value.get("numeric", []))
+        result["dates"] = validate_dates(value.get("dates"))
     return result
 
 
 def columns(app, tab, original):
-    hidden = getattr(app, "table_state", {}).get("hidden", {}).get(tab, [])
+    state = getattr(app, "table_state", {})
+    hidden = state.get("hidden", {}).get(tab, [])
     hidden = hidden if isinstance(hidden, list) else []
+    order = state.get("order", {}).get(tab, [])
+    positions = {key: index for index, key in enumerate(order)} if isinstance(order, list) else {}
+    original = sorted(original, key=lambda column: positions.get(column.key, len(positions)))
+    widths = state.get("widths", {}).get(tab, {})
+    original = [replace(column, lo=widths[column.key], hi=widths[column.key], flex=False)
+                if isinstance(widths, dict) and isinstance(widths.get(column.key), int) and not isinstance(widths[column.key], bool) and 2 <= widths[column.key] <= 120
+                else column for column in original]
     selected = chain(app, tab)
     if selected is not None:
         indicators = {key: f" {'^' if direction == 'asc' else 'v'}{index}"
                       for index, (key, direction) in enumerate(selected, 1)}
         return [replace(column, title=column.title + indicators[column.key],
-                        lo=max(column.lo, L.vlen(column.title + indicators[column.key])),
-                        hi=max(column.hi, L.vlen(column.title + indicators[column.key])))
+                        lo=column.lo if column.key in widths else max(column.lo, L.vlen(column.title + indicators[column.key])),
+                        hi=column.hi if column.key in widths else max(column.hi, L.vlen(column.title + indicators[column.key])))
                 if column.key in indicators else column for column in original
                 if column.key not in hidden or column.key in REQUIRED]
     key = app.sort.get(tab, "")
     mapping = {"state": "st" if tab == "jobs" else "state", "cpu_eff": "ce", "mem_eff": "me"}
     sorted_key = mapping.get(key, key)
     return [replace(column, title=column.title + (" v" if app.reverse.get(tab) else " ^"),
-                    lo=max(column.lo, L.vlen(column.title) + 2), hi=max(column.hi, L.vlen(column.title) + 2))
+                    lo=column.lo if column.key in widths else max(column.lo, L.vlen(column.title) + 2),
+                    hi=column.hi if column.key in widths else max(column.hi, L.vlen(column.title) + 2))
             if column.key == sorted_key else column for column in original
             if column.key not in hidden or column.key in REQUIRED]
 
@@ -156,20 +201,22 @@ def facets_fingerprint(app, tab):
 
 def fingerprint(app, tab):
     """Selection cache identity includes both filters and explicit sort state."""
-    return facets_fingerprint(app, tab), sort_fingerprint(app, tab)
+    from .table_tools import extra_fingerprint
+    return facets_fingerprint(app, tab), sort_fingerprint(app, tab), extra_fingerprint(app, tab)
 
 
 def matches(app, tab, record, snap):
     facets = dict(facets_fingerprint(app, tab))
-    values = {"state": getattr(record, "state", ""), "partition": getattr(record, "partition", ""),
-              "name": getattr(record, "name", ""), "id": getattr(record, "id", ""),
-              "tag": " ".join(snap.get("tags", {}).get(record.id, {}).get("tags", []))}
-    if record.id in snap.get("departed_jobs", {}):
+    get = record.get if isinstance(record, dict) else lambda key, default="": getattr(record, key, default)
+    values = {"state": get("state", ""), "partition": get("partition", ""),
+              "name": get("name", ""), "id": get("id", ""), "user": get("user", "") or "?",
+              "tag": " ".join(snap.get("tags", {}).get(get("id", ""), {}).get("tags", []))}
+    if get("id", "") in snap.get("departed_jobs", {}):
         values["state"] = "ACCOUNTING"
     for field, expected in facets.items():
         actual = str(values.get(field, "")).casefold()
         choices = [part.casefold() for part in str(expected).split(",")]
-        if field in ("state", "partition", "id"):
+        if field in ("state", "partition", "id", "user"):
             if actual not in choices:
                 return False
         elif field == "tag":
@@ -177,16 +224,29 @@ def matches(app, tab, record, snap):
                 return False
         elif not any(choice in actual for choice in choices):
             return False
-    return True
+    from .table_tools import numeric_matches
+    return numeric_matches(app, tab, record, snap)
 
 
 def chips(app, tab, width, ascii_=False):
     facets = facets_fingerprint(app, tab)
-    if not facets:
-        return []
     from .research import clean
-    value = clean(" Filters " + "  ".join(f"[{key}={value}]" for key, value in facets) + "  :facet clear", ascii_)
-    return [(L.cut(value, width, ascii_), "accent")]
+    from .table_tools import numeric_rules
+    entries = [(key, f"[{key}={value} x]") for key, value in facets]
+    rules = numeric_rules(app, tab)
+    entries += [(f"numeric:{index}", f"[{rule[0]}{rule[1]}{rule[3]} x]") for index, rule in enumerate(rules)]
+    app.table_chip_rule_ids = {f"numeric:{index}": tuple(rule) for index, rule in enumerate(rules)}
+    x, cells, segments = 9, [], [(" Filters ", "accent")]
+    for key, label in entries:
+        text = clean(label + "  ", ascii_)
+        if x >= width:
+            break
+        visible = L.cut(text, max(0, width - x), ascii_)
+        segments.append((visible, "accent"))
+        cells.append((key, x, min(width, x + L.vlen(label))))
+        x += L.vlen(visible)
+    app.table_chip_cells = (tab, cells)
+    return [("".join(text for text, _ in segments), "accent")] if entries else []
 
 
 def run_command(app, args):
@@ -233,9 +293,9 @@ def run_command(app, args):
             app.table_state["groups"] = not app.table_state["groups"] if not values else values == ["on"]
             app.say("Array task grouping " + ("on; Left/Right folds the selected array" if app.table_state["groups"] else "off"))
         return True
-    tab = values.pop(0) if values and values[0] in ("jobs", "history") else app.tab
-    if tab not in ("jobs", "history"):
-        app.fail("Choose Jobs or History, or specify that table in the command")
+    tab = values.pop(0) if values and values[0] in TABLE_KEYS else app.tab
+    if tab not in TABLE_KEYS:
+        app.fail("Choose a table, or specify jobs, recent, history, group, nodes, cluster or sources")
         return True
     state = app.table_state
     if command == "columns":
@@ -244,7 +304,28 @@ def run_command(app, args):
             state["tab"], state["cursor"], app.mode = tab, 0, "columns"
         elif values == ["reset"]:
             state["hidden"][tab] = []
+            state["order"][tab] = []
+            state["widths"][tab] = {}
             app.say(f"{tab} columns reset")
+        elif len(values) >= 2 and values[0] == "order":
+            try:
+                state["order"][tab] = _order([part for value in values[1:] for part in value.split(",")], tab)
+                app.say(f"{tab} column order updated")
+            except ValueError as exc:
+                app.fail(str(exc))
+        elif len(values) == 3 and values[0] == "width":
+            try:
+                updated = dict(state["widths"].get(tab, {}))
+                if values[2] == "auto":
+                    if values[1] not in available:
+                        raise ValueError("unknown column")
+                    updated.pop(values[1], None)
+                else:
+                    updated[values[1]] = int(values[2])
+                state["widths"][tab] = _widths(updated, tab)
+                app.say(f"{tab} column width updated")
+            except ValueError as exc:
+                app.fail(str(exc))
         elif len(values) >= 2 and values[0] in ("show", "hide"):
             requested = {part for value in values[1:] for part in value.split(",")}
             if not requested <= available or (values[0] == "hide" and requested & REQUIRED):
@@ -255,7 +336,7 @@ def run_command(app, args):
                 state["hidden"][tab] = sorted(hidden)
                 app.say(f"{tab} columns updated")
         else:
-            app.fail("Usage: columns [jobs|history] [show|hide KEYS|reset]")
+            app.fail("Usage: columns [TABLE] [show|hide KEYS|order KEYS|width KEY 2..120|width KEY auto|reset]")
     elif command == "facet":
         if values == ["clear"]:
             state["facets"][tab] = {}
@@ -285,9 +366,12 @@ def run_command(app, args):
                 if name not in state["views"] and len(state["views"]) >= MAX_VIEWS:
                     app.fail("At most 32 saved views; delete an unused view first")
                 else:
+                    from .table_tools import filter_text, numeric_rules
                     view = {"tab": tab, "hidden": list(state["hidden"].get(tab, [])),
-                        "facets": dict(state["facets"].get(tab, {})), "filter": app.filter,
-                        "sort": app.sort.get(tab), "reverse": bool(app.reverse.get(tab)),
+                        "order": list(state["order"].get(tab, [])), "widths": dict(state["widths"].get(tab, {})),
+                        "facets": dict(state["facets"].get(tab, {})), "filter": filter_text(app, tab),
+                        "numeric": list(numeric_rules(app, tab)), "dates": copy.deepcopy(getattr(app, "table_tools_state", {}).get("dates")) if tab == "history" else None,
+                        "sort": app.sort.get(tab, "name"), "reverse": bool(app.reverse.get(tab)),
                         "days": app.analytics_days_value()}
                     selected = chain(app, tab)
                     if selected is not None:
@@ -306,15 +390,26 @@ def run_command(app, args):
                     app.fail(f"Saved view {name} is damaged: {exc}; delete it and save a new view")
                     return True
                 target = view["tab"]
-                app.enter_tab(target)
+                app.enter_tab("jobs" if target == "recent" else target)
                 state["hidden"][target] = view["hidden"]
+                state["order"][target] = view["order"]
+                state["widths"][target] = view["widths"]
                 state["facets"][target] = view["facets"]
-                app.filter, app.sort[target] = view["filter"], view["sort"]
+                from .table_tools import set_filter_text
+                set_filter_text(app, target, view["filter"])
+                app.sort[target] = view["sort"]
+                if "numeric" in view and hasattr(app, "table_tools_state"):
+                    app.table_tools_state["numeric"][target] = list(view["numeric"])
+                    if target == "history":
+                        app.table_tools_state["dates"] = view["dates"]
                 app.reverse[target] = view["reverse"]
                 if "sorts" in view:
                     state["sorts"][target] = list(view["sorts"])
                 else:
                     reset_sort(app, target)
+                if view["days"] not in app.days_options:
+                    app.days_options.append(view["days"])
+                    app.days_options.sort()
                 app.set_days(app.days_options.index(view["days"]))
                 app.cursor[target], app.top[target] = 0, 0
                 app.say(f"Loaded table view {name}")
@@ -338,7 +433,7 @@ def handle_key(app, key):
     if app.mode != "columns":
         return False
     state = app.table_state
-    cols = definitions(state["tab"])
+    cols = ordered_definitions(app, state["tab"])
     if key in ("esc", "q", "enter"):
         app.mode = "main"
     elif key in ("up", "down", "home", "end"):
@@ -350,21 +445,52 @@ def handle_key(app, key):
             hidden = set(state["hidden"].get(state["tab"], []))
             hidden.symmetric_difference_update({column.key})
             state["hidden"][state["tab"]] = sorted(hidden)
+    elif key in ("left", "right") and cols:
+        index = state["cursor"]
+        other = max(0, min(len(cols) - 1, index + (-1 if key == "left" else 1)))
+        keys = [column.key for column in cols]
+        keys[index], keys[other] = keys[other], keys[index]
+        state["order"][state["tab"]] = keys
+        state["cursor"] = other
+    elif key in ("+", "=", "-", "a") and cols:
+        column = cols[state["cursor"]]
+        widths = state["widths"].setdefault(state["tab"], {})
+        if key == "a":
+            widths.pop(column.key, None)
+        else:
+            widths[column.key] = max(2, min(120, widths.get(column.key, max(column.lo, L.vlen(column.title))) + (-1 if key == "-" else 1)))
+    elif key == "r":
+        for field, value in (("order", []), ("widths", {}), ("hidden", [])):
+            state[field][state["tab"]] = value
+        state["cursor"] = 0
+    if key in ("esc", "q", "enter", "space", "left", "right", "+", "=", "-", "a", "r"):
+        callback = getattr(app, "save", None)
+        if callable(callback):
+            callback()
     return True
+
+
+def ordered_definitions(app, tab):
+    cols = definitions(tab)
+    order = getattr(app, "table_state", {}).get("order", {}).get(tab, [])
+    positions = {key: index for index, key in enumerate(order)}
+    return sorted(cols, key=lambda column: positions.get(column.key, len(positions)))
 
 
 def overlay(views, snap, app, width, height):
     if app.mode != "columns":
         return None
     state = app.table_state
-    cols = definitions(state["tab"])
+    cols = ordered_definitions(app, state["tab"])
     hidden = state["hidden"].get(state["tab"], [])
     cursor = state["cursor"]
     available = max(1, height - 5)
     start = max(0, cursor - available // 2)
-    rows = [[(" Space show/hide | arrows move | Enter done", "dim")]]
+    rows = [[(" Space show/hide | Up/Down select | Left/Right reorder", "dim")],
+            [(" +/- width | a automatic width | r reset | Enter done", "dim")]]
     for index, column in enumerate(cols[start:start + available], start):
         required = " (required)" if column.key in REQUIRED else ""
-        text = f" [{' ' if column.key in hidden else 'x'}] {column.title:16} {column.key}{required}"
+        width_text = str(state["widths"].get(state["tab"], {}).get(column.key, "auto"))
+        text = f" [{' ' if column.key in hidden else 'x'}] {column.title:16} {column.key} width {width_text}{required}"
         rows.append([(text, "sel" if index == cursor else "")])
     return L.box(views.g, rows, width, height, state["tab"].title() + " columns")

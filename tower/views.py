@@ -255,6 +255,10 @@ class Views:
             r1.append((f"   filter '{app.filter}'", "magenta"))
         if app.marks:
             r1.append((f"   {len(app.marks)} marked", "magenta"))
+        if getattr(app, "freeze_label", ""):
+            r1.append(("   " + app.freeze_label, "yellow+bold"))
+        if getattr(app, "inbox_unread", 0):
+            r1.append((f"   {app.inbox_unread} to review (:inbox)", "cyan"))
         if not app.gpu:
             r1.append(("   GPU sampling off", "dim"))
         eng = getattr(app.store, "alerts", None)
@@ -292,6 +296,7 @@ class Views:
         if trail:
             rows.append(trail)
         fields = chips(app, app.tab, width, self.g.ascii)
+        app.table_chip_y = len(rows) if fields else None
         if fields:
             rows.append(fields)
         return rows
@@ -729,6 +734,7 @@ class Views:
 
     def jobs_tab(self, snap: dict, app, actions, width: int, height: Optional[int], *, prepared_rows=None) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         from .table_ui import columns
+        from .table_tools import record_page
         from .table_sort import header_hits
         job_columns = columns(app, "jobs", JOB_COLS)
         self.cfg_tags = snap.get("tags", {})
@@ -817,6 +823,7 @@ class Views:
             hits += header_hits("recent", recent_cells, base + 1) + [(base + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
             out += recent_rows
         out += self.event_rows(events, width)
+        record_page(app, "jobs", len(shown) + (len(recent_shown) if fin_vis else 0))
         return out, hits
 
     # ---- history tab ------------------------------------------------------------------------------
@@ -873,6 +880,7 @@ class Views:
 
     def history_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         from .table_ui import columns
+        from .table_tools import date_label, record_page
         from .table_sort import chain, describe, header_hits
         fin_columns = columns(app, "history", self.FIN_COLS)
         self.cfg_tags = snap.get("tags", {})
@@ -887,7 +895,8 @@ class Views:
         core_h = sum(f.core_hours for f in fin)
         gpu_h = sum(f.gpu_hours for f in fin)
         effs = [f.cpu_eff for f in fin if f.cpu_eff is not None]
-        summary: Row = [(f" last {self.cfg['history_days']:g} days: {n} jobs  ", "bold")]
+        interval_label = date_label(app) if getattr(app, "table_tools_state", {}).get("dates") else f"last {app.analytics_days_value():g} days"
+        summary: Row = [(f" {interval_label}: {n} jobs  ", "bold")]
         for st, c in sorted(counts.items(), key=lambda kv: -kv[1]):
             summary.append((f"{st.lower()} {c}  ", "green" if st == "COMPLETED" else ("yellow" if st.startswith("CANCEL") else "red")))
         sort_label = describe(app, "history") if chain(app, "history") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
@@ -913,11 +922,13 @@ class Views:
         hits = header_hits("history", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
         if fin:
             out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
+        record_page(app, "history", len(shown))
         return out, hits
 
     # ---- cluster tab ------------------------------------------------------------------------------
     def cluster_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
-        from .table_ui import columns
+        from .table_ui import columns, matches
+        from .table_tools import filter_text, select_resource
         from .table_sort import header_hits, sort_rows
         parts = list(snap["partitions"])
         want = set(self.cfg["partitions"]) or None
@@ -926,6 +937,10 @@ class Views:
             parts = [p for p in parts if p.gpus or p.name in mine]
         else:
             parts = [p for p in parts if p.name in want]
+        text = filter_text(app, "cluster").casefold()
+        if text:
+            parts = [part for part in parts if text in part.name.casefold() or text in part.avail.casefold()]
+        parts = [part for part in parts if matches(app, "cluster", part, snap)]
         rows = []
         for p in parts:
             na = p.nodes_aiot.split("/") if p.nodes_aiot else ["", "", "", ""]
@@ -941,6 +956,7 @@ class Views:
                 Column("nidle", "IDLE", 4, 6, ">"), Column("nalloc", "ALLOC", 5, 6, ">"), Column("nother", "OTHER", 5, 6, ">"), Column("cidle", "CPUS IDLE", 9, 10, ">"),
                 Column("calloc", "CPUS ALLOC", 10, 11, ">"), Column("mine", "MY RUN", 6, 6, ">"), Column("minep", "MY PEND", 7, 7, ">"), Column("gpus", "GPUS FREE/UP", 12, 60, flex=True)]
         rows = sort_rows(app, "cluster", rows)
+        select_resource(app, "cluster", [row["name"] for row in rows])
         cells = []
         trows, _ = table(columns(app, "cluster", cols), rows, width, self.g.ascii, droppable=("nother", "calloc", "cidle", "limit"), header_cells=cells)
         out = [rule(self.g, width, "partitions")] + trows
@@ -967,7 +983,7 @@ class Views:
             out.append([(f"   {acc['account']} right now: {acc['running']} running jobs using {acc['cpus']} cpus and {acc['gpus']} gpus, {acc['pending']} pending (everyone in the account)", "dim")])
         out += self.weather_rows(snap, width)
         out += self.budget_rows(snap, width)
-        return out, header_hits("cluster", cells, 1)
+        return out, header_hits("cluster", cells, 1) + [(2 + index, "partition_row", row["name"]) for index, row in enumerate(rows)]
 
     def weather_rows(self, snap: dict, width: int) -> List[Row]:
         """Queue weather: pending work ahead per partition cluster-wide and what sbatch --test-only projects for typical jobs."""
@@ -1043,13 +1059,14 @@ class Views:
             bar_.append((" ", ""))
         if app.nodes_view == "map":
             rows = self.node_map(snap, app, width, None if height is None else height - 1)
-            return [bar_] + rows, []
+            return [bar_] + rows, [(y + 1, kind, payload) for y, kind, payload in getattr(app, "node_map_hits", [])]
         rows, hits = self.my_nodes(snap, app, width, height)
         return [bar_] + rows, [(y + 1, k, v) for y, k, v in hits]
 
     def node_map(self, snap: dict, app, width: int, height: Optional[int]) -> List[Row]:
         """Every node of the cluster as a cell per partition: state glyph, allocated cores, GPUs in use; mine marked."""
         g = self.g
+        app.node_map_hits = []
         cells = list(snap.get("nodemap", {}).values())
         if not cells:
             return [rule(g, width, "cluster map"), [("   sinfo -N has not answered yet", "dim")]]
@@ -1096,7 +1113,12 @@ class Views:
                     mark = g.mark if c.name in mine else " "
                     gpu = f" {c.gpus_used}/{c.gpus}g" if c.gpus else ""
                     text = f"{mark}{glyph} {cut(c.name, 9, g.ascii):<9}{c.cpus_alloc:>3}/{c.cpus:<3}{gpu}"
-                    row.append((pad(text, cell_w), ("cyan" if c.name in mine else style)))
+                    left = vlen(L.row_text(row))
+                    rendered = pad(text, cell_w)
+                    right = min(width, left + vlen(rendered))
+                    if left < right:
+                        app.node_map_hits.append((len(out), "node_cell", (c.name, left, right)))
+                    row.append((rendered, ("cyan" if c.name in mine else style)))
                     if not g.ascii:
                         frac = c.cpus_alloc / c.cpus if c.cpus else None
                         capacity += [("  ", "")] + gradient_bar(g, frac, 12, "#34d399", "#22d3ee")
@@ -1107,12 +1129,19 @@ class Views:
                     out.append(capacity)
         if height is not None:
             out = out[:height]
+        from .table_tools import select_resource
+        select_resource(app, "nodes", list(dict.fromkeys(payload[0] for _, _, payload in app.node_map_hits)))
         return out
 
     def my_nodes(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
-        from .table_ui import columns
+        from .table_ui import columns, matches
+        from .table_tools import filter_text, select_resource
         from .table_sort import chain, header_hits, sort_rows
         nodes = list(snap["nodes"].values())
+        text = filter_text(app, "nodes").casefold()
+        if text:
+            nodes = [node for node in nodes if text in node.name.casefold() or text in node.state.casefold() or text in node.partitions.casefold()]
+        nodes = [node for node in nodes if matches(app, "nodes", node, snap)]
         key, rev = app.sort.get("nodes", "name"), app.reverse.get("nodes", False)
         if chain(app, "nodes") is None:
             nodes.sort(key=(lambda n: n.name) if key == "name" else (lambda n: (n.load is None, -(n.load or 0))), reverse=rev)
@@ -1139,12 +1168,15 @@ class Views:
         cols = [Column("name", "NODE", 6, 16), Column("state", "STATE", 5, 14), Column("cpus", "ALLOC/CPUS", 10, 10, ">"), Column("load", "LOAD", 4, 7, ">"), Column("loadpct", "LOAD%", 5, 5, ">"),
                 Column("mem", "MEM USED", 8, 14, ">"), Column("gres", "GRES", 4, 16), Column("gused", "GRES USED", 9, 16), Column("gutil", "GPU%", 4, 4, ">"), Column("jobs", "MY JOBS", 7, 60, flex=True)]
         rows = sort_rows(app, "nodes", rows)
+        select_resource(app, "nodes", [row["name"] for row in rows])
         nodes = [row["_node"] for row in rows]
         cells = []
         trows, _ = table(columns(app, "nodes", cols), rows, width, self.g.ascii, droppable=("gused", "gres", "loadpct"), header_cells=cells)
         out = []
+        matrix_hits = []
         if nodes and self.visual_room(width, height, minimum=22):
             out += self.node_resource_rows(nodes, width)
+            matrix_hits = [(2 + index, "node_row", node.name) for index, node in enumerate(nodes[:8])]
         header_y = len(out) + 1
         out += [rule(self.g, width, "nodes running your jobs")] + trows
         if not rows:
@@ -1158,7 +1190,7 @@ class Views:
                         mean = snap["gpu_mean"].get(key)
                         out.append([(f"   {nd.name} gpu{s.index} ", ""), bar(self.g, s.util / 100, 20), (f" {int(s.util):>3}%  mem {s.used / 1024:.1f}/{s.total / 1024:.0f} GB  ", ""),
                                     (spark(self.g, snap["hist_gpu"].get(key, []), 20), "cyan"), (f"  mean {'?' if mean is None else f'{mean:.0f}%'}  job {j.id}", "dim")])
-        return out, header_hits("nodes", cells, header_y)
+        return out, matrix_hits + header_hits("nodes", cells, header_y) + [(header_y + 1 + index, "node_row", row["name"]) for index, row in enumerate(rows)]
 
     # ---- group tab --------------------------------------------------------------------------------
     GROUP_COLS = [Column("user", "USER", 4, 12), Column("id", "JOBID", 5, 16), Column("name", "NAME", 8, 28, flex=True), Column("part", "PART", 4, 9), Column("st", "ST", 2, 3),
@@ -1167,12 +1199,14 @@ class Views:
 
     def group_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
         from .table_ui import columns
+        from .table_tools import record_page
         from .table_sort import chain, describe, header_hits, sort_rows
         g = self.g
         jobs = list(snap.get("group", []))
         cascade = chain(app, "group")
         acc = snap.get("account", {})
         out: List[Row] = []
+        user_hits = []
         if not jobs:
             app.group_ids, app.selected_id = [], None
             out.append(rule(g, width, "group"))
@@ -1201,6 +1235,7 @@ class Views:
         for u, d in ordered_users[:user_limit]:
             style = "cyan" if u == app.user else ""
             meter = [bar(g, d["cpus"] / tot_cpu, 16)] if g.ascii else gradient_bar(g, d["cpus"] / tot_cpu, 16)
+            user_hits.append((len(out), "user_drill", u))
             out.append([(f"   {u:<12}", "bold+" + style if style else "bold")] + meter +
                        [(f"  {d['running']:>3} running on {d['cpus']:>5} cpus" + (f", {d['gpus']} gpus" if d["gpus"] else "") + f", {d['nodes']} nodes   {d['pending']} pending", style)])
         if user_limit < len(ordered_users) and (height is None or height - len(out) >= 5):
@@ -1208,6 +1243,9 @@ class Views:
         # the table
         rows = []
         for j in jobs:
+            from .table_ui import matches
+            if not matches(app, "group", j, snap):
+                continue
             st = "PD" if j.pending else {"RUNNING": "R", "COMPLETING": "CG", "CONFIGURING": "CF", "SUSPENDED": "S"}.get(j.state, j.state[:2])
             sub = stamp(j.submit)
             info = (j.reason + (f" {g.dot} waited {compact(clock.now() - sub)}" if sub else "")) if j.pending else f"started {when(j.start) if j.start else ''}".strip()
@@ -1250,7 +1288,8 @@ class Views:
         base = len(out) + 1
         sort_label = describe(app, "group") if chain(app, "group") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
         out += [rule(g, width, title + f", {sort_label}")] + trows
-        hits = header_hits("group", cells, base) + [(base + 1 + i, "group", r["id"]) for i, r in enumerate(shown)]
+        hits = user_hits + header_hits("group", cells, base) + [(base + 1 + i, "group", r["id"]) for i, r in enumerate(shown)]
+        record_page(app, "group", len(shown))
         return out, hits
 
     # ---- deps tab ---------------------------------------------------------------------------------
@@ -1487,13 +1526,7 @@ class Views:
         lines, start = buf.window(app.logs.top, page)
         total = buf.total
         search = app.logs.search
-        rx = None
-        if search:
-            import re
-            try:
-                rx = re.compile(search, re.IGNORECASE)
-            except re.error:
-                rx = re.compile(re.escape(search), re.IGNORECASE)
+        from .log_tools import retained_matches, count_retained
         marks = set(app.logs.bookmarks.get(path, []))
         pos = f"lines {start + 1}-{start + len(lines)} of {total}" if total else "empty file"
         pct = f" ({100 * (start + len(lines)) // total}%)" if total else ""
@@ -1504,7 +1537,13 @@ class Views:
         if buf.truncated:
             status.append((f" {g.dot} the first {buf.skipped_bytes / 1024 ** 2:.0f} MB are not loaded (log_max_mb)", "yellow"))
         if search:
-            status.append((f" {g.dot} search '{search}': {buf.count(search)} lines (N / P next / previous)", "magenta"))
+            count = count_retained(app, buf)
+            omitted = app.log_tools_state.get("retained_omitted", 0)
+            indexing = app.log_tools_state.get("retained_pending")
+            known = app.log_tools_state.get("retained_known_count")
+            result_label = ("indexing in background" if known is None else f"updating; previous {known} matches") if indexing else f"{count} lines"
+            status.append((f" {g.dot} search '{search}': {result_label} (N / P next / previous)" +
+                           (f"; {omitted} oversized regex lines omitted" if omitted else ""), "magenta"))
         if marks:
             status.append((f" {g.dot} {len(marks)} bookmark{'s' if len(marks) != 1 else ''} (' jumps)", "cyan"))
         if not g.ascii and width >= 100 and total:
@@ -1529,7 +1568,8 @@ class Views:
                 selected = app.logs.is_selected(idx)
                 if selected:
                     style = "sel"
-                elif rx is not None and (idx == app.logs.match or rx.search(display_line)):
+                elif search and (idx == app.logs.match or retained_matches(app, display_line,
+                     source_bytes=buf._line_bytes[idx] if idx < len(buf._line_bytes) else len(buf._partial_raw))):
                     style = "sel" if idx == app.logs.match else "yellow"
                 elif LOG_ERROR.search(display_line):
                     style = "red"
@@ -1585,9 +1625,14 @@ class Views:
 
     # ---- sources tab ------------------------------------------------------------------------------
     def sources_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
-        from .table_ui import columns
+        from .table_ui import columns, matches
+        from .table_tools import filter_text, record_page, select_resource
         from .table_sort import chain, header_hits, sort_rows
         hs = list(snap["health"].values())
+        text = filter_text(app, "sources").casefold()
+        if text:
+            hs = [health for health in hs if text in health.name.casefold() or text in health.error.casefold()]
+        hs = [health for health in hs if matches(app, "sources", {"name": health.name, "state": "off" if not health.enabled else "error" if health.error else "ok" if health.last_ok else "pending"}, snap)]
         if chain(app, "sources") is None:
             hs.sort(key=lambda h: h.name, reverse=app.reverse.get("sources", False))
         n = len(hs)
@@ -1607,6 +1652,7 @@ class Views:
                              error=h.error, _styles={"state": {"ok": "green", "error": "red", "off": "dim", "pending": "yellow"}[state]}))
         rows = sort_rows(app, "sources", rows)
         app.source_ids = [row["name"] for row in rows]
+        select_resource(app, "sources", app.source_ids)
         # Sources has no selected job ID: its identity is the name under the
         # current cursor in the last rendered order, including intervening keys.
         if previous != app.source_ids and chosen in app.source_ids:
@@ -1639,6 +1685,7 @@ class Views:
         if ev:
             out += self.event_rows(ev, width, limit=8)
         hits = header_hits("sources", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "source", r["name"]) for i, r in enumerate(shown)]
+        record_page(app, "sources", len(shown))
         return out, hits
 
     # ---- analytics tab ----------------------------------------------------------------------------
@@ -1950,6 +1997,12 @@ class Views:
     def compose(self, snap: dict, app, width: int, height: Optional[int], actions=None) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         width = max(0, width)
         app.completion.update(snap)
+        from .session_tools import observe, unread_count
+        from .table_tools import snapshot, freeze_status
+        observe(app, snap)
+        app.inbox_unread = unread_count(app)
+        app.freeze_label = freeze_status(app, snap)
+        snap = snapshot(app, snap)
         if height is not None and height <= 0:
             app.tab_hits, app.last_rows, app.last_hits = [], [], []
             return [], []

@@ -227,6 +227,8 @@ def test_jobs_queue_empty_still_selects_recent_logs(tmp_path, ascii_):
 
 def test_jobs_filter_can_select_recent_when_no_active_jobs_match(dashboard):
     dashboard.app.filter = "alpha-success"
+    from tower.table_tools import set_filter_text
+    set_filter_text(dashboard.app, "recent", "alpha-success")
     dashboard.render()
     assert dashboard.app.visible_ids == []
     dashboard.app.handle("l")
@@ -239,9 +241,19 @@ def test_jobs_recent_limit_is_applied_after_filtering(dashboard):
         dashboard.store.finished.append(job)
         dashboard.add_logs(job)
     dashboard.app.filter = "another-run-716"
+    from tower.table_tools import set_filter_text
+    set_filter_text(dashboard.app, "recent", "another-run-716")
     dashboard.render()
     dashboard.app.handle("l")
     dashboard.assert_log("716")
+
+
+def test_jobs_filter_does_not_change_independent_recents(dashboard):
+    before = list(dashboard.app.recent_ids)
+    dashboard.app.filter = "alpha-success"
+    dashboard.render()
+    assert dashboard.app.visible_ids == []
+    assert dashboard.app.recent_ids == before
 
 
 def test_recent_focus_is_visible_on_a_small_terminal(dashboard):

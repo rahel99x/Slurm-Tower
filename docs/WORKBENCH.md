@@ -3,6 +3,11 @@
 [Quick start](../README.md) · [Reference](reference.md) · [Runbook](runbook.md) ·
 [Project reporting standard](PROJECT_STANDARD.md) · [Planning guide](WAVE_TWO.md)
 
+This guide describes the original Tower 3.0 workbench.
+Tower 4.0 extends these workflows.
+Use the [50-improvement index](QUALITY_OF_LIFE.md) for the additional procedures.
+Use [Controls](CONTROLS.md) for the complete control index.
+
 Tower remains a terminal-only application for CARC and other Slurm clusters.
 Everything here renders as terminal characters, with Unicode block charts, an
 ASCII fallback, optional color and motion, and no extra runtime dependencies.
@@ -120,7 +125,9 @@ the others; turning all off restores source order. `:sortby [TABLE] COLUMN
 
 Jobs, Recents, History, Group, My Nodes, Sources, and Cluster partitions keep
 independent cascades (`jobs`, `recent`, `history`, `group`, `nodes`, `sources`,
-`cluster`). Recents orders its latest five retained records. JOBID uses natural
+`cluster`). Recents defaults to five retained records. Tower 4.0 adds count and
+time-window controls through `:recents`; see the [table guide](guides/tables.md#feature-09).
+JOBID uses natural
 numeric and array-task order: `2` before `10`, `123_2` before `123_10`. Measured
 values sort before rounding; unknowns remain last in both directions. Jobs pins
 remain first, and grouping presents the sorted observed array tasks together.

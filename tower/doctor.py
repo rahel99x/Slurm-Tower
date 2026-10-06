@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
+import stat
 import sys
 
 from .remote import SshBackend
@@ -17,6 +19,53 @@ OPTIONAL = {
     "sbatch": "queue forecasts and resubmission",
     "scancel": "job cancellation",
 }
+
+
+def terminal_evidence(cfg, *, state_dir="", environ=None, encoding=None):
+    """Inspect local terminal hints and paths without writing or connecting."""
+    env = os.environ if environ is None else environ
+    encoding = encoding or getattr(sys.stdout, "encoding", None) or "ascii"
+    checks = []
+    def add(name, ok, detail):
+        checks.append({"name": name, "status": "ok" if ok else "warning", "required": False, "detail": detail})
+    try:
+        "█▁⣿┌".encode(encoding)
+        unicode_ok = True
+    except (UnicodeError, LookupError):
+        unicode_ok = False
+    add("Output encoding", unicode_ok, f"{encoding}; use --ascii if block characters are unavailable.")
+    term = env.get("TERM", "dumb")
+    add("Terminal type", term not in ("", "dumb"), f"TERM={term}; interactive tests verify actual keys and glyphs.")
+    add("Color hints", term not in ("", "dumb") and not env.get("NO_COLOR"),
+        "Colors are disabled by NO_COLOR or a dumb terminal." if env.get("NO_COLOR") or term in ("", "dumb")
+        else "Color support is an environment hint. Use :terminaltest to inspect the displayed palette.")
+    add("Mouse and keys", False, "Use :terminaltest. Press keys and click the test grid; events never activate job actions.")
+    clipboard = cfg.get("clipboard", {})
+    from .clipboard import TOOLS
+    tools = [cmd[0] for cmd in TOOLS if shutil.which(cmd[0])]
+    display = bool(env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")) or sys.platform in ("darwin", "win32", "cygwin")
+    add("Clipboard transport", bool(clipboard.get("osc52", True)) or bool(clipboard.get("tools", True) and tools and display),
+        f"OSC52 {'enabled' if clipboard.get('osc52', True) else 'disabled'}; local tools {'enabled' if clipboard.get('tools', True) else 'disabled'}; installed tools: {', '.join(tools) or 'none'}; "
+        "SSH clipboard delivery depends on the local terminal. Exact file exports remain available.")
+    if env.get("TMUX"):
+        add("tmux clipboard", False, "Check set-clipboard in tmux and OSC52 support in the local terminal. :terminaltest clipboard requests a test copy.")
+    if env.get("SSH_CONNECTION") or env.get("SSH_TTY"):
+        add("SSH terminal", True, "This is an SSH session. Test the local terminal and any tmux layer; no extra SSH connection is opened.")
+    for label, path, writable in (("Configuration", getattr(cfg, "path", ""), False), ("State and exports", state_dir, True)):
+        if not path:
+            add(label, True, "No custom path is set." if not writable else "Persistence is disabled or its path is not supplied.")
+            continue
+        absolute = os.path.abspath(os.path.expanduser(path))
+        try:
+            info = os.stat(absolute, follow_symlinks=False)
+            regular = stat.S_ISDIR(info.st_mode) if writable else stat.S_ISREG(info.st_mode)
+            access = os.access(absolute, os.W_OK if writable else os.R_OK)
+            add(label, regular and access, absolute + (" is accessible." if regular and access else " is unavailable or has unsuitable permissions."))
+        except OSError:
+            parent = os.path.dirname(absolute)
+            add(label, os.path.isdir(parent) and os.access(parent, os.W_OK if writable else os.R_OK),
+                absolute + " does not exist. Check its parent path and permissions.")
+    return checks
 
 
 def diagnose(cfg, *, fake=False, host="", ssh_user=""):
@@ -60,6 +109,7 @@ def diagnose(cfg, *, fake=False, host="", ssh_user=""):
             for tool, purpose in OPTIONAL.items():
                 add(tool, tool in found, purpose, False)
 
+    checks.extend(terminal_evidence(cfg))
     ready = all(c["status"] != "error" for c in checks)
     return dict(mode=mode, ready=ready, checks=checks,
                 next_step=("tower --fake" if fake else "tower --host LOGIN" if host else "tower") if ready

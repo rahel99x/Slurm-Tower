@@ -37,6 +37,7 @@ class LogBuffer:
         self._count_key = None
         self._count_value = 0
         self.loading = False
+        self.source_updated = None          # mutation metadata of the published worker snapshot
         # A worker snapshot is a new Python object, while its logical retained
         # line identities survive append-only refreshes.
         self._session_token = object()
@@ -51,6 +52,7 @@ class LogBuffer:
 
     # ---- reading ----------------------------------------------------------------------------------
     def _reset(self):
+        self.source_updated = None
         self.lines, self.size, self.partial, self.truncated, self.skipped_bytes = [], 0, "", False, 0
         self._partial_raw, self._line_bytes, self.raw_lines, self._retained_bytes = b"", [], [], 0
 
@@ -354,10 +356,18 @@ class LogSession:
         def read():
             try:
                 before = metadata()
-                # Unchanged polls need only a shallow state copy. Copy retained
-                # containers only when refresh may append, rotate, or evict.
-                clone = (base._worker_copy() if before["ident"] != base.ident or before["size"] != base.size
+                # A producer can rewrite a file without changing its inode or
+                # byte size. Published mutation metadata detects that case;
+                # only the private worker copy is reset and reloaded.
+                rewritten = (before["ident"] == base.ident and before["size"] == base.size
+                             and base.source_updated is not None and before.get("updated") is not None
+                             and before["updated"] != base.source_updated)
+                # Unchanged polls retain the shallow-copy optimization.
+                clone = (base._worker_copy() if rewritten or before["ident"] != base.ident or before["size"] != base.size
                          else copy.copy(base))
+                if rewritten:
+                    clone._reset()
+                    clone.reloads += 1
                 clone.loading = False
                 class SnapshotFiles:
                     # LogBuffer uses this exact target snapshot rather than a
@@ -372,12 +382,13 @@ class LogSession:
                 changed = clone.refresh()
                 if clone.error:
                     raise OSError(clone.error)
-                if changed:
+                if changed or rewritten:
                     after = metadata()
                     if after["ident"] != before["ident"] or after["size"] < before["size"] or (after["size"] == before["size"] and after.get("updated") != before.get("updated")):
                         raise ValueError("Log changed during inspection; refresh to retry")
                     if clone.size != before["size"]:
                         raise ValueError("Log read was incomplete; refresh to retry")
+                clone.source_updated = before.get("updated")
             except Exception as exc:
                 # Keep the previous complete bytes, and mark them unavailable
                 # for selection rather than publish a half-refreshed buffer.

@@ -146,6 +146,20 @@ class App:
         self.say(f"theme {name}" + (" (plain text, no colour, no glyphs)" if name == "reader" else ""))
 
     @property
+    def filter(self):
+        from .table_tools import filter_text
+        return filter_text(self, getattr(self, "tab", "jobs"))
+
+    @filter.setter
+    def filter(self, text):
+        from .table_tools import set_filter_text
+        set_filter_text(self, getattr(self, "tab", "jobs"), text)
+
+    def settings_changed(self, values):
+        """Notify the terminal renderer after settings have been applied."""
+        self.terminal_settings_generation = getattr(self, "terminal_settings_generation", 0) + 1
+
+    @property
     def follow(self) -> bool:
         return self.logs.following
 
@@ -169,10 +183,12 @@ class App:
         self.top[tab] = top
         return top
 
-    def say(self, text: str, *, level="info", path=""):
+    def say(self, text: str, *, level="info", path="", job="", task=""):
         self.message, self.message_t = text, time.time()
         if hasattr(self, "activity"):
-            self.activity.post(text, level, path)
+            self.activity.post(text, level, path, job=job, task=task)
+            if path:
+                self.save()
 
     def fail(self, text: str):
         """Report a command failure independently of its human-readable wording."""
@@ -220,10 +236,12 @@ class App:
 
     def finished_jobs(self, snap=None, *, recent=False):
         """The same sorted/filtered accounting records drive rendering and every row action."""
-        snap = self.store.snapshot() if snap is None else snap
+        from .table_tools import snapshot, filter_text, history_matches, recent_matches, recent_limit
+        snap = snapshot(self, self.store.snapshot()) if snap is None else snap
         fin = list(snap["finished"])
         from .table_ui import matches
-        fin = [record for record in fin if matches(self, "jobs" if recent else "history", record, snap)]
+        fin = [record for record in fin if matches(self, "recent" if recent else "history", record, snap)
+               and (recent_matches(self, record) if recent else history_matches(self, record))]
         if recent:
             active = {j.id for j in snap["jobs"]}
             fin = [f for f in fin if f.id not in active]
@@ -239,12 +257,12 @@ class App:
                 fin.sort(key=keyfn, reverse=(key == "end") != self.reverse.get("history", False))
             else:
                 fin = sort_rows(self, "history", fin, value=lambda record, column: history_value(record, column, snap))
-        flt = self.filter.lower()
+        flt = filter_text(self, "recent" if recent else "history").lower()
         if flt.startswith("#"):
             fin = [f for f in fin if flt[1:] in [t.lower() for t in snap.get("tags", {}).get(f.id, {}).get("tags", [])]]
         elif flt:
             fin = [f for f in fin if any(flt in value.lower() for value in (f.name, f.id, f.state, f.partition))]
-        return fin[:5] if recent else fin
+        return fin[:recent_limit(self)] if recent else fin
 
     def history_jobs(self, snap=None):
         return self.finished_jobs(snap)
@@ -264,18 +282,19 @@ class App:
         return fin
 
     def recent_jobs(self, snap=None):
-        snap = self.store.snapshot() if snap is None else snap
+        from .table_tools import snapshot, filter_text, recent_limit, recent_matches
+        snap = snapshot(self, self.store.snapshot()) if snap is None else snap
         active = {j.id for j in snap["jobs"]}
         pending = [j for j in reversed(list(snap.get("departed_jobs", {}).values())) if j.id not in active]
         from .table_ui import matches
-        pending = [j for j in pending if matches(self, "jobs", j, snap)]
-        flt = self.filter.casefold()
+        pending = [j for j in pending if matches(self, "recent", j, snap) and recent_matches(self, j)]
+        flt = filter_text(self, "recent").casefold()
         if flt.startswith("#"):
             pending = [j for j in pending if flt[1:] in [t.casefold() for t in snap.get("tags", {}).get(j.id, {}).get("tags", [])]]
         elif flt:
             pending = [j for j in pending if any(flt in value.casefold() for value in (j.id, j.name, j.partition, "awaiting accounting"))]
         pending_ids = {j.id for j in pending}
-        recent = (pending + [f for f in self.finished_jobs(snap, recent=True) if f.id not in pending_ids])[:5]
+        recent = (pending + [f for f in self.finished_jobs(snap, recent=True) if f.id not in pending_ids])[:recent_limit(self)]
         from .table_ui import history_value, sort_rows
         return sort_rows(self, "recent", recent, value=lambda record, column: history_value(record, column, snap))
 
@@ -283,7 +302,8 @@ class App:
         """Reanchor exact identities before a queued click/command can use them."""
         active = "jobs" if table == "recent" else table
         if active == self.tab and self.views_ref is not None:
-            snap, selected = self.store.snapshot(), self.selected_id
+            from .table_tools import snapshot
+            snap, selected = snapshot(self, self.store.snapshot()), self.selected_id
             if active == "jobs":
                 self.visible_ids = [row["id"] for row in self.views_ref.job_rows(snap, self, self.actions)]
                 if selected not in self.visible_ids and self.table_state["groups"]:
@@ -328,6 +348,8 @@ class App:
         """Actions use the rendered order, including between frames."""
         known = self.store.health
         names = [name for name in self.source_ids if name in known]
+        if "sources" in getattr(self, "table_tools_state", {}).get("resource_ids", {}):
+            return names
         return names + [name for name in sorted(known) if name not in names]
 
     def resolve_log_path(self):
@@ -354,12 +376,41 @@ class App:
         return self.read_log_buffer(path)
 
     def read_log_buffer(self, path):
-        from .log_workbench import sync_source
+        from .log_workbench import sync_source, observe_buffer
+        from .log_tools import observe_buffer as observe_position
+        if (self.mode not in ("main", "filter", "palette")
+                or self.logs.search and getattr(self, "log_tools_state", {}).get("retained_pending")):
+            # The modal owns an exact immutable source snapshot. Refreshing its
+            # hidden tail would compete with explicit page/search navigation.
+            return self.logs.buffers.get(path)
         sync_source(self, path)
         if self.interactive and getattr(self.logs.files, "remote", False) and self.research is None:
             from .research import ResearchHub
             self.research = ResearchHub(self.cfg, self.logs.files)
-        return self.logs.buffer(path, worker=self.research, background=self.interactive)
+        buf = self.logs.buffer(path, worker=self.research, background=self.interactive)
+        observe_position(self, buf)
+        observe_buffer(self, buf)
+        return buf
+
+    def find_log_match(self, buf, backwards=False):
+        from .log_tools import find_retained
+        result = find_retained(self, buf, backwards=backwards)
+        return result[1] if result is not None else self.logs.find_next(buf, backwards=backwards)
+
+    def count_log_matches(self, buf):
+        from .log_tools import count_retained
+        return count_retained(self, buf) if buf is not None and self.logs.search else 0
+
+    def log_search_message(self, buf):
+        if not self.logs.search:
+            return "search cleared"
+        count = self.count_log_matches(buf)
+        state = self.log_tools_state
+        if state.get("retained_pending"):
+            known = state.get("retained_known_count")
+            return (f"Search index updating; {known} matches in the previous snapshot" if known is not None
+                    else "Indexing retained log in the background; navigation remains available")
+        return f"{count} lines match '{self.logs.search}'"
 
     def jobs_options(self):
         from .table_ui import fingerprint
@@ -382,6 +433,8 @@ class App:
         if binding and binding.get("job_id") != jid:
             clear_binding(self)
         if jid != self.log_job:
+            from .log_tools import before_source_change
+            before_source_change(self)
             self.logs.clear_selection(reset_cursor=True)
             self.log_selection_expected = False
             self.logs.which, self.logs.file_index = "out", 0
@@ -411,6 +464,8 @@ class App:
         self.logs.browser_cursor = max(0, min(self.logs.browser_cursor, len(entries) - 1))
         entry = entries[self.logs.browser_cursor]
         if not self.logs.entry or self.logs.entry["path"] != entry["path"]:
+            from .log_tools import before_source_change
+            before_source_change(self)
             self.logs.clear_selection(reset_cursor=True)
             self.log_selection_expected = False
             self.logs.path, self.logs.top, self.logs.match, self.logs.last_bookmark = "", None, None, None
@@ -454,7 +509,8 @@ class App:
         """The selected job follows the cursor even between two renders (keys can arrive faster than frames)."""
         if self.tab == "jobs":
             if self.views_ref is not None and self.jobs_selection_options != self.jobs_options():
-                snap = self.store.snapshot()
+                from .table_tools import snapshot
+                snap = snapshot(self, self.store.snapshot())
                 self.visible_ids = [r["id"] for r in self.views_ref.job_rows(snap, self, self.actions)]
                 self.recent_ids = [f.id for f in self.recent_jobs(snap)]
                 self.jobs_selection_options = self.jobs_options()
@@ -472,8 +528,25 @@ class App:
 
     def handle(self, key: str) -> None:
         """``key`` is a name: a-z A-Z 0-9 punctuation, or up down pgup pgdn home end tab btab enter esc space backspace."""
+        binding_test = self.mode == "bindings_editor" and self.navigation_tools_state.get("test")
+        if key == "ctrl-c" and self.mode != "terminal_probe" and not binding_test and key not in self.keymap:
+            self.quit = True
+            return
         self.sync_selection()
+        palette_contexts = {"analysis", "session_alerts", "terminal_diagnostics", "log_tools_page", "log_tools_results", "log_tools_marks",
+                            "project_preview", "export_preview", "locations_picker", "value_peek", "field_explanation", "layout", "columns"}
+        list_context = (self.mode == "session_inbox" and not self.session_tools_state.get("filtering")
+                        or self.mode in ("activity", "exports") and not self.activity.filtering
+                        or self.mode == "table_tools" and self.table_tools_state.get("edit") is None)
+        if key == ":" and (self.mode in palette_contexts or list_context):
+            from .command_ui import open_palette
+            open_palette(self)
+            return
         if workbench.handle_key(self, key):
+            return
+        if key == ":" and self.mode not in ("main", "filter", "palette", "confirm"):
+            from .command_ui import open_palette
+            open_palette(self)
             return
         if self.mode == "confirm":
             self.finish_confirm(key in ("y", "Y"))
@@ -496,8 +569,8 @@ class App:
                     self.logs.search, self.mode = self.filter_edit, "main"
                     self.logs.match = None
                     buf = self.read_log_buffer(self.logs.path) if self.logs.path else None
-                    i = self.logs.find_next(buf, backwards=True) if self.logs.search else None
-                    self.say(f"{buf.count(self.logs.search) if buf and self.logs.search else 0} lines match '{self.logs.search}'" if self.logs.search else "search cleared")
+                    i = self.find_log_match(buf, backwards=True) if self.logs.search else None
+                    self.say(self.log_search_message(buf))
                     return
                 self.filter, self.mode = self.filter_edit, "main"
                 self.cursor[self.tab] = 0
@@ -539,7 +612,9 @@ class App:
             return
         if self.sel_anchor is not None and action in ("up", "down", "page_up", "page_down", "home", "end"):
             n = len(self.last_rows) or 1
-            step = {"up": -1, "down": 1, "page_up": -10, "page_down": 10, "home": -n, "end": n}[action]
+            from .table_tools import page_size
+            page = page_size(self, self.tab)
+            step = {"up": -1, "down": 1, "page_up": -page, "page_down": page, "home": -n, "end": n}[action]
             self.sel_end = max(0, min(n - 1, self.sel_end + step))
             return
         n = len(self.visible_ids) if self.tab == "jobs" else None
@@ -618,7 +693,8 @@ class App:
         elif action == "export_json":
             self.export("json")
         elif action == "palette":
-            self.mode, self.palette_edit = "palette", ""
+            from .command_ui import open_palette
+            open_palette(self)
         elif action == "theme":
             self.set_theme(THEMES[(THEMES.index(self.theme) + 1) % len(THEMES)])
         elif action == "mark":
@@ -634,7 +710,8 @@ class App:
         elif action == "resubmit":
             ids = self.target_ids()
             if ids:
-                self.mode, self.palette_edit = "palette", f"resubmit {ids[0]} "
+                from .command_ui import open_palette
+                open_palette(self, f"resubmit {ids[0]} ")
             else:
                 self.say("no job selected")
         elif action == "mark_all":
@@ -689,8 +766,10 @@ class App:
         elif action in ("find_next", "find_prev"):
             if self.tab == "log":
                 buf = self.read_log_buffer(self.logs.path) if self.logs.path else None
-                i = self.logs.find_next(buf, backwards=(action == "find_prev"))
-                self.say(f"match at line {i + 1}" if i is not None else (f"no match for '{self.logs.search}'" if self.logs.search else "no search: / sets one"))
+                i = self.find_log_match(buf, backwards=(action == "find_prev"))
+                self.say(f"match at line {i + 1}" if i is not None else
+                         "Search index is updating; try N or P when indexing finishes" if self.log_tools_state.get("retained_pending") else
+                         f"no match for '{self.logs.search}'" if self.logs.search else "no search: / sets one")
         elif action == "wrap":
             self.logs.wrap = not self.logs.wrap
             self.say(f"long lines {'wrapped' if self.logs.wrap else 'cut'}")
@@ -699,6 +778,8 @@ class App:
                 self.logs.clear_selection(reset_cursor=True)
                 self.log_selection_expected = False
                 self.logs.entry, self.logs.browser = None, False
+                from .log_tools import before_source_change
+                before_source_change(self)
                 self.logs.which = "err" if self.logs.which == "out" else "out"
                 self.logs.file_index, self.logs.top, self.logs.match = 0, None, None
                 self.say(f"showing {'stderr' if self.logs.which == 'err' else 'stdout'}")
@@ -867,8 +948,9 @@ class App:
             return
         tab = self.tab
         n = len(self.history_jobs()) if tab == "history" else {"jobs": len(self.visible_ids) + len(self.recent_ids),
-             "sources": len(self.store.health), "group": len(getattr(self, "group_ids", [])), "deps": len(self.dep_ids)}.get(tab, 0)
-        page = 10
+             "sources": len(self.ordered_source_ids()), "group": len(getattr(self, "group_ids", [])), "deps": len(self.dep_ids)}.get(tab, 0)
+        from .table_tools import page_size
+        page = page_size(self, tab)
         cur = self.cursor.get(tab, 0)
         cur = {"up": cur - 1, "down": cur + 1, "page_up": cur - page, "page_down": cur + page, "home": 0, "end": 10 ** 9}[action]
         self.cursor[tab] = max(0, min(cur, max(0, n - 1)))
@@ -1023,8 +1105,31 @@ class App:
             from .research import ResearchHub
             self.research = ResearchHub(self.cfg, self.logs.files)
         service = self.research
+        selected_range = (self.logs.selection_path, self.logs.selection_anchor, self.logs.selection_end, self.logs.selection_all)
+        selected_token = self.logs._buffer_token, self.logs.selection_generation
+        def source_context():
+            record = self.log_record
+            project = getattr(self, "project_state", {})
+            project = project if isinstance(project, dict) else {}
+            binding = project.get("binding")
+            binding = binding if isinstance(binding, dict) else {}
+            return (self.logs.path, id(self.logs.files), self.log_job,
+                    getattr(record, "id", None), getattr(record, "start", None), getattr(record, "end", None),
+                    project.get("root"), *(binding.get(key) for key in
+                        ("run_id", "attempt", "project_root", "run_root", "path", "workdir")))
+        source = source_context()
+        # A completed read may still await publication between frames. Polling
+        # never waits, and its publication must not turn pinned old lines into
+        # a copy of a newly selected source or invalidated range.
+        service.poll_task()
         if getattr(service, "closed", False) or getattr(service, "pending", None):
             self.fail("A background command is still running; retry copy when it finishes")
+            return
+        current_range = (self.logs.selection_path, self.logs.selection_anchor, self.logs.selection_end, self.logs.selection_all)
+        current_token = self.logs._buffer_token, self.logs.selection_generation
+        if source_context() != source or (selected_range[0] is not None and
+                (current_range != selected_range or current_token != selected_token)):
+            self.fail("Log source or selected lines changed; select the source and lines again before copying")
             return
         selected_range = (self.logs.selection_path, self.logs.selection_anchor, self.logs.selection_end, self.logs.selection_all)
         selected_token = self.logs._buffer_token, self.logs.selection_generation
@@ -1096,6 +1201,7 @@ class App:
             from .research import ResearchHub
             self.research = ResearchHub(self.cfg, self.logs.files)
         service = self.research
+        service.poll_task()
         if service.closed or service.pending:
             self.fail("A background command is still running; retry report when it finishes")
             return
@@ -1441,8 +1547,8 @@ class App:
                 return
             self.logs.search, self.logs.match = " ".join(args), None
             buf = self.read_log_buffer(self.logs.path) if self.logs.path else None
-            i = self.logs.find_next(buf, backwards=True) if self.logs.search else None
-            self.say(f"{buf.count(self.logs.search) if buf and self.logs.search else 0} lines match" if self.logs.search else "search cleared")
+            i = self.find_log_match(buf, backwards=True) if self.logs.search else None
+            self.say(self.log_search_message(buf))
         elif cmd == "help":
             self.mode, self.scroll = "help", 0
         elif cmd == "quit":
@@ -1543,6 +1649,9 @@ class App:
         if workbench.handle_mouse(self, y, x, button, shift):
             return
         self.last_hits = list(hits)
+        from .table_tools import handle_click_hit
+        if handle_click_hit(self, y, x, hits, button=button, shift=shift):
+            return
         if button == "left" and not shift:
             from .table_ui import cycle_sort, valid_header
             for row, kind, payload in hits:
@@ -1746,7 +1855,37 @@ class App:
             if self.sampler:
                 self.sampler.refresh_all()
             return
-        ok, out = self.actions.run(self.confirm["action"], self.confirm["jobs"])
+        # A sampler refresh can change job state while the confirmation is
+        # open. Validate the complete, exact original scope against live
+        # records. A frozen view never supplies action applicability.
+        action, expected = self.confirm.get("action"), self.confirm.get("jobs", [])
+        if not self.actions or not expected:
+            self.fail("Action is no longer available; select the jobs and review a new confirmation")
+            return
+        live_jobs, invalid = [], []
+        from .model import stamp
+        for prior in expected:
+            current = self.store.job(prior.id)
+            if current is None:
+                invalid.append(f"{prior.id}: no longer in the active queue")
+                continue
+            if stamp(prior.start) is not None and prior.start != current.start:
+                invalid.append(f"{prior.id}: start time changed")
+                continue
+            if stamp(prior.submit) is not None and prior.submit != current.submit:
+                invalid.append(f"{prior.id}: submission identity changed")
+                continue
+            applicable, reason = self.actions.applicable(action, current)
+            if not applicable:
+                invalid.append(f"{prior.id}: {reason}")
+            else:
+                live_jobs.append(current)
+        if invalid:
+            self.fail("Action aborted: " + "; ".join(invalid[:4]) +
+                      (f"; {len(invalid) - 4} more changed targets" if len(invalid) > 4 else "") +
+                      "; select the jobs and review a new confirmation")
+            return
+        ok, out = self.actions.run(action, live_jobs)
         self.command_ok = ok
         ids = ", ".join(j.id for j in self.confirm["jobs"][:4]) + (" ..." if len(self.confirm["jobs"]) > 4 else "")
         pending = ""

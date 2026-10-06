@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import nullcontext
+from itertools import islice
 import math
 import statistics
 import time
 
-from . import charts, clock, layout as L
+from . import charts, chart_tools, clock, layout as L
 from .model import human, secs, short_duration, stamp
 from .research import clean
 
@@ -27,6 +28,8 @@ def initialize(app):
         app.analysis_state = {"pinned": [], "hidden": [], "order": [], "expanded": [], "colors": {},
                               "modal": "", "scroll": 0, "metric": "", "cursor": 0,
                               "zoom": 1.0, "pan": 0.0, "section": 0, "evidence_cursor": 0}
+    for key, value in chart_tools.restore({}).items():
+        app.analysis_state.setdefault(key, value)
     return app.analysis_state
 
 
@@ -44,15 +47,17 @@ def restore(app, ui):
     if isinstance(colors, dict):
         state["colors"] = {k: v for k, v in list(colors.items())[:MAX_METRICS]
                            if isinstance(k, str) and 0 < len(k) <= 96 and k.isprintable() and v in COLORS}
+    state.update(chart_tools.restore(saved))
 
 
 def save(app):
     state = initialize(app)
-    return {"analysis": {k: state[k] for k in ("pinned", "hidden", "order", "expanded", "colors")}}
+    return {"analysis": {**{k: state[k] for k in ("pinned", "hidden", "order", "expanded", "colors")},
+                         **chart_tools.restore(state)}}
 
 
 def command_names():
-    return ["dashboard", "inspect", "chart", "timeline", "diff"]
+    return ["dashboard", "inspect", "chart", "timeline", "diff", "metricdisplay"]
 
 
 def dashboard_names(app, series):
@@ -85,7 +90,8 @@ def observe_metrics(app, result, jid):
     state["phase_sources"] = previous
     events = list(state.get("metric_events", []))
     events.append({"t": timestamp, "kind": "phase", "job": jid,
-                   "text": f"Observed reported phase: {phase}", "source": result.get("path", "")})
+                   "text": f"Observed reported phase: {phase}", "source": result.get("path", ""),
+                   "path": result.get("path", "") if result.get("path") != "simulated application metrics" else ""})
     del events[:-MAX_METRICS]
     state["metric_events"] = events
 
@@ -128,7 +134,9 @@ def memory_series(app, jid):
     if store is None:
         return []
     with getattr(store, "lock", nullcontext()):
-        return list(getattr(store, "series", {}).get(jid, []))[-MAX_POINTS:]
+        retained = list(islice(reversed(getattr(store, "series", {}).get(jid, ())), MAX_POINTS))
+        retained.reverse()
+        return retained
 
 
 def _resource_series(app, jid):
@@ -159,7 +167,7 @@ def _analysis_jid(app):
 
 def chart_data(app, snap):
     state = initialize(app)
-    jid = state.get("chart_job") if state.get("modal") == "chart" else _analysis_jid(app)
+    jid = state.get("chart_job") if state.get("modal") in ("chart", "chart_events") else _analysis_jid(app)
     result = getattr(app, "analysis_result", {}) or {}
     series = result.get("series", {}) if isinstance(result, dict) else {}
     hub = getattr(app, "research", None)
@@ -176,8 +184,36 @@ def chart_data(app, snap):
     return _resource_series(app, jid), "Tower session resource samples", jid
 
 
-def viewport(points, state):
-    points = _points(points)
+def _chart_frame_series(app):
+    """Reuse the published frame while processing its bounded input batch."""
+    state = initialize(app)
+    frame = state.get("chart_frame", {})
+    if (frame.get("job") == state.get("chart_job") and "series" in frame
+            and frame.get("generation") == getattr(getattr(app, "research", None), "generation", None)
+            and frame.get("result") == id(getattr(app, "analysis_result", None))):
+        return frame["series"]
+    series, _, _ = chart_data(app, app.store.snapshot())
+    return series
+
+
+def _viewport_key(state, name, points):
+    return (state.get("chart_job"), name, id(points), len(points),
+            state.get("zoom", 1), state.get("pan", 0), state.get("window"))
+
+
+def _chart_visible_points(app, series, name):
+    state = initialize(app)
+    points = series.get(name, [])
+    cached = state.get("chart_visible", {})
+    if cached.get("key") == _viewport_key(state, name, points):
+        return cached["points"]
+    visible, _ = viewport(points, state)
+    state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
+    return visible
+
+
+def viewport(points, state, *, normalized=False):
+    points = points if normalized else _points(points)
     if not points:
         return [], (0.0, 0.0)
     t0, t1 = points[0]["t"], points[-1]["t"]
@@ -218,18 +254,63 @@ def _crosshair(rows, width, height, points, selected, times, ascii_):
     return out
 
 
-def chart_rows(g, app, points, width, height, name, source, *, interactive=True):
+def _highlight_interval(rows, width, height, selected, times, ascii_=False):
+    """Show the selected source interval without adding or changing a value."""
+    plot_width = max(0, min(charts.MAX_COLUMNS, width - 10))
+    if not selected or not plot_width or times[1] <= times[0]:
+        return rows
+    first, last = selected[0]["t"], selected[-1]["t"]
+    if last < times[0] or first > times[1]:
+        return rows
+    raster = 1 if ascii_ else 2
+    left = 10 + round(charts._fraction(first, *times) * (plot_width * raster - 1)) // raster
+    right = 10 + round(charts._fraction(last, *times) * (plot_width * raster - 1)) // raster
+    output = list(rows)
+    for y in range(1, min(len(rows), height + 1)):
+        line, position = [], 0
+        for value, style in rows[y]:
+            for char in value:
+                size = L.vlen(char)
+                line.append((char, style + "+rev" if left <= position <= right else style))
+                position += size
+        output[y] = line
+    return output
+
+
+def chart_rows(g, app, points, width, height, name, source, *, interactive=True, snapshot=None):
     state = initialize(app)
     full = _points(points)
-    visible, times = viewport(full, state if interactive else {})
+    visible, times = viewport(full, state if interactive else {}, normalized=True)
+    if interactive:
+        state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
     values = [p["value"] for p in visible]
     color = state["colors"].get(name, COLORS[sum(ord(c) for c in name) % len(COLORS)])
     known = [v for v in values if v is not None]
+    label, unit, precision = chart_tools.display(state, name)
+    preference = chart_tools.preference(state, name)
+    axis = state["axes"].get(name, {"mode": "auto"})
+    plotted, low, high, undefined = chart_tools.axis_values(values, axis)
+    def axis_label(value):
+        if axis["mode"] == "log":
+            try:
+                value = 10 ** value
+            except OverflowError:
+                return ">1e308"
+        return chart_tools.format_value(value, preference)
     deltas = [b["t"] - a["t"] for a, b in zip(full, full[1:]) if 0 < b["t"] - a["t"] < math.inf]
     cadence = statistics.median(deltas) if deltas else None
-    rows = charts.braille_chart(g, values, width, height, lo=min([0.0] + known), title=clean(name, g.ascii),
+    rows = charts.braille_chart(g, plotted, width, height, lo=low, hi=high, title=clean(label, g.ascii),
                                sample_times=[p["t"] for p in visible], times=times,
-                               sample_interval=cadence, color=lambda _: color)
+                               sample_interval=cadence, color=lambda _: color, axis_formatter=axis_label)
+    selected_points = chart_tools.interval(full, state, name) if interactive else []
+    rows = _highlight_interval(rows, width, height, selected_points, times, g.ascii)
+    # Summary and exact inspection always describe the original measurements,
+    # including values undefined on a logarithmic axis.
+    if rows:
+        rows[0] = charts._header(g, values, width, clean(label, g.ascii), unit, "   ")
+        if precision is not None and known:
+            summary = f" {label}  last {chart_tools.format_value(values[-1], preference)}  mean {chart_tools.format_value(charts._mean(known), preference)}  max {chart_tools.format_value(max(known), preference)}"
+            rows[0] = L.clip_row([(clean(summary, g.ascii), "cyan+bold")], width)
     if interactive and visible:
         state["cursor"] = max(0, min(len(visible) - 1, int(state.get("cursor", 0))))
         selected = visible[state["cursor"]]
@@ -238,11 +319,55 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True)
         step = f"  step {selected['step']}" if selected.get("step") is not None else ""
         exact = repr(selected["value"]) if selected["value"] is not None else "unavailable"
         rows.append([(clean(f" {_time(selected['t'])}  t={selected['t']!r}  value {exact}{step}", g.ascii), "yellow+bold")])
+    description = f" Axis {axis['mode']}"
+    if axis.get("low") is not None:
+        description += f" [{axis['low']!r}, {axis['high']!r}]"
+        clipped = sum(value is not None and (value < axis["low"] or value > axis["high"]) for value in values)
+        description += f" | {clipped} outside bounds"
+    if axis["mode"] == "log":
+        description += f" | {undefined} nonpositive samples undefined"
+    description += f" | ID {name}" + (f" | declared unit {unit}" if unit else " | unit not declared")
+    rows.append([(clean(description, g.ascii), "dim")])
+    if selected_points:
+        stats = chart_tools.statistics_for(selected_points, full)
+        formatting = lambda value: chart_tools.format_value(value, preference)
+        rows.append([(clean(f" Range t={selected_points[0]['t']!r} to {selected_points[-1]['t']!r} | {stats['count']}/{stats['samples']} known samples", g.ascii), "yellow+bold")])
+        rows.append([(clean(f" Min {formatting(stats['minimum'])} | median {formatting(stats['median'])} | mean {formatting(stats['mean'])} | max {formatting(stats['maximum'])}", g.ascii), "cyan")])
+        rows.append([(clean(f" P05 {formatting(stats['p05'])} | P95 {formatting(stats['p95'])} | P99 {formatting(stats['p99'])}", g.ascii), "cyan")])
+        coverage = f"{stats['time_coverage']:.1%}" if stats['time_coverage'] is not None else "unavailable"
+        rows.append([(clean(f" Coverage: samples {stats['sample_coverage']:.1%} | observed time {coverage} | missing {stats['missing']}; no gap filling", g.ascii), "dim")])
     age = max(0, clock.now() - full[-1]["t"]) if full else None
     gaps = sum(1 for p in visible if p["value"] is None)
     outages = sum(b["t"] - a["t"] > cadence * 2.5 for a, b in zip(visible, visible[1:])) if cadence else 0
     rows.append([(clean(f" Source: {source} | {len(visible)}/{len(full)} samples | latest {short_duration(age)} ago | gaps {gaps + outages}", g.ascii), "dim")])
+    if interactive and state.get("chart_events") and getattr(app, "store", None):
+        events = chart_events(app, snapshot if snapshot is not None else app.store.snapshot(), times)
+        state["chart_event_items"] = events
+        if events:
+            rows.append(event_markers(g, events, times, width))
     return rows
+
+
+def chart_events(app, snap, times=None):
+    """Actual observed events for the pinned chart job, with original citations."""
+    jid = initialize(app).get("chart_job") or _analysis_jid(app)
+    events = [event for event in timeline_events(app, snap)
+              if event.get("kind") not in ("resource", "recorded")
+              and (not event.get("job") or event.get("job") == str(jid))]
+    numbered = [dict(event, number=i + 1) for i, event in enumerate(events[-MAX_EVENTS:])]
+    return [event for event in numbered if times is None or times[0] <= event["t"] <= times[1]]
+
+
+def event_markers(g, events, times, width):
+    """Timestamp aligned marker strip; collisions retain all entries in picker."""
+    plot_width = max(0, min(charts.MAX_COLUMNS, width - 10))
+    cells = [" "] * plot_width
+    raster = 1 if g.ascii else 2
+    for i, event in enumerate(events):
+        x = round(charts._fraction(event["t"], *times) * (plot_width * raster - 1)) // raster if times[1] > times[0] else plot_width - 1
+        if 0 <= x < plot_width:
+            cells[x] = ("|" if g.ascii else "│") if cells[x] == " " else ("*" if g.ascii else "◆")
+    return L.clip_row([(" Events e ", "yellow+bold"), ("".join(cells), "yellow+bold")], width)
 
 
 def open_inspector(app, jid=None):
@@ -254,7 +379,7 @@ def open_inspector(app, jid=None):
         return False
     if getattr(app, "mode", "main") == "analysis" and state.get("modal") != "inspect":
         history = list(state.get("modal_back", []))
-        history.append({key: state.get(key) for key in ("modal", "job", "scroll", "cursor", "section", "metric", "chart_job", "zoom", "pan", "window")})
+        history.append({key: state[key] for key in ("modal", "job", "scroll", "cursor", "section", "metric", "chart_job", "zoom", "pan", "window", "preset", "chart_range", "sample_cursor") if key in state})
         state["modal_back"] = history[-8:]
     else:
         state["modal_back"] = []
@@ -276,6 +401,7 @@ def timeline_events(app, snap):
         items.append({"t": event["t"], "kind": event.get("kind", "event"),
                       "text": event.get("text") or f"{event.get('name', '')} {event.get('state', '')}",
                       "job": str(event.get("job") or ""), "path": event.get("path", ""),
+                      "source": event.get("source", ""),
                       "line": event.get("line"), "line_basis": event.get("line_basis", "original")})
     for citation in list(getattr(app, "research_evidence", {}).values())[:128]:
         if _finite(citation.get("t")):
@@ -304,6 +430,76 @@ def timeline_events(app, snap):
     for item in items:
         unique[(item["t"], item.get("kind"), item.get("job"), item.get("text"))] = item
     return sorted(unique.values(), key=lambda item: item["t"])[-MAX_EVENTS:]
+
+
+def _chart_control(app, args, series):
+    """Validate chart controls before mutating preferences or opening a view."""
+    if not args or args[0] not in ("preset", "axis", "range", "events", "event", "shared"):
+        return False
+    state = initialize(app)
+    action, parameters = args[0], args[1:]
+    name = state.get("metric") if state.get("metric") in series else next(iter(series), "")
+    try:
+        if action == "preset":
+            if len(parameters) != 1 or parameters[0] not in dict(chart_tools.PRESETS):
+                raise ValueError("chart preset 5m|30m|2h|all")
+            window = dict(chart_tools.PRESETS)[parameters[0]]
+            state.update(preset=parameters[0], cursor=0, zoom=1.0, pan=1.0 if window else 0.0)
+            if window:
+                state["window"] = window
+            else:
+                state.pop("window", None)
+        elif action == "axis":
+            axis = {"mode": parameters[0]} if parameters else {}
+            if len(parameters) == 3:
+                axis.update(low=float(parameters[1]), high=float(parameters[2]))
+            if len(parameters) not in (1, 3) or not name or not chart_tools.valid_axis(axis) or axis.get("mode") == "auto" and len(parameters) != 1:
+                raise ValueError("chart axis auto|fixed LOW HIGH|log [POSITIVE_LOW POSITIVE_HIGH]")
+            state["axes"][name] = axis
+            state["axes"] = dict(list(state["axes"].items())[-MAX_METRICS:])
+            app.say(f"{name}: {axis['mode']} axis.")
+        elif action == "range":
+            if parameters == ["clear"]:
+                state.pop("chart_range", None)
+            else:
+                points, _ = viewport(series.get(name, []), state)
+                if len(parameters) != 2:
+                    raise ValueError("chart range FIRST LAST|clear (visible sample numbers, starting at 1)")
+                first, last = [int(value) - 1 for value in parameters]
+                if not 0 <= first < len(points) or not 0 <= last < len(points):
+                    raise ValueError("The selected range must use visible sample numbers, starting at 1.")
+                state["chart_range"] = {"metric": name, "start": points[first]["t"], "end": points[last]["t"]}
+        elif action == "shared":
+            if parameters not in (["on"], ["off"]):
+                raise ValueError("chart shared on|off")
+            state["shared_scale"] = parameters == ["on"]
+            app.say("Comparison axes: " + ("shared." if state["shared_scale"] else "independent."))
+            app.save()
+            return True
+        elif action == "events":
+            if parameters:
+                if parameters not in (["on"], ["off"]):
+                    raise ValueError("chart events [on|off]")
+                state["chart_events"] = parameters == ["on"]
+            else:
+                state.update(modal="chart_events", cursor=0, scroll=0)
+                app.mode = "analysis"
+                return True
+        elif action == "event":
+            events = chart_events(app, app.store.snapshot())
+            index = int(parameters[0]) - 1 if len(parameters) == 1 else -1
+            if not 0 <= index < len(events):
+                raise ValueError("chart event NUMBER (the 1-based number in the chart event picker)")
+            _open_timeline_event(app, events[index])
+            return True
+    except (ValueError, OverflowError, TypeError) as exc:
+        app.fail(str(exc) if str(exc) else "Invalid chart control.")
+        return True
+    state.update(modal="chart", scroll=0, metric=name)
+    if action in ("axis", "events"):
+        app.save()
+    app.mode = "analysis"
+    return True
 
 
 def _open_timeline_event(app, event, *, seek=False):
@@ -339,6 +535,28 @@ def run_command(app, args):
     if getattr(app, "mode", "main") == "main":
         state["modal_back"] = []
     cmd, args = args[0], args[1:]
+    if cmd == "metricdisplay":
+        try:
+            if len(args) < 2 or not chart_tools.text(args[0]):
+                raise ValueError
+            name, action, values = args[0], args[1], args[2:]
+            preference = dict(state["metric_display"].get(name, {}))
+            if action == "reset" and not values:
+                state["metric_display"].pop(name, None)
+            elif action in ("label", "unit") and values and chart_tools.text(" ".join(values)):
+                preference[action] = " ".join(values)
+                state["metric_display"][name] = preference
+            elif action == "precision" and len(values) == 1 and 0 <= int(values[0]) <= 12:
+                preference[action] = int(values[0])
+                state["metric_display"][name] = preference
+            else:
+                raise ValueError
+            state["metric_display"] = dict(list(state["metric_display"].items())[-MAX_METRICS:])
+            app.save()
+            app.say(f"Display preference saved for {name}; original samples and ID are unchanged.")
+        except (ValueError, TypeError, OverflowError):
+            app.fail("metricdisplay METRIC label TEXT|unit DECLARED_UNIT|precision 0..12|reset")
+        return True
     if cmd == "inspect":
         if len(args) > 1:
             app.fail("inspect [JOBID]")
@@ -389,9 +607,11 @@ def run_command(app, args):
             app.fail("dashboard [list|reset|search TEXT|pin|unpin|hide|show|expand|collapse METRIC|move METRIC POSITION|color METRIC COLOR]")
         return True
     if cmd == "chart":
-        if state.get("modal") != "chart":
+        if state.get("modal") not in ("chart", "chart_events"):
             state["chart_job"] = _analysis_jid(app)
         series, _, _ = chart_data(app, app.store.snapshot())
+        if _chart_control(app, args, series):
+            return True
         if args and args[0] in ("zoom", "pan", "cursor", "window"):
             try:
                 value = float(args[1]) if len(args) == 2 else float("nan")
@@ -400,12 +620,14 @@ def run_command(app, args):
                 if args[0] == "zoom" and 1 <= value <= 1024:
                     state["zoom"] = value
                     state.pop("window", None)
+                    state.pop("preset", None)
                 elif args[0] == "pan" and 0 <= value <= 1:
                     state["pan"] = value
                 elif args[0] == "cursor" and value >= 1 and value == int(value):
                     state["cursor"] = min(MAX_POINTS - 1, int(value) - 1)
                 elif args[0] == "window" and 0 < value <= 365 * 86400:
                     state.update(window=value, pan=1.0, cursor=0)
+                    state.pop("preset", None)
                 else:
                     raise ValueError
             except (ValueError, IndexError, OverflowError):
@@ -417,6 +639,7 @@ def run_command(app, args):
                 return True
             state.update(metric=args[0], cursor=0, zoom=1.0, pan=0.0)
             state.pop("window", None)
+            state["preset"] = "all"
         state.update(modal="chart", scroll=0)
         app.mode = "analysis"
         return True
@@ -512,6 +735,9 @@ def handle_key(app, key):
                 return True
         return False
     if key in ("esc", "q", "ctrl-b", "alt-left"):
+        if state.get("modal") == "chart_events":
+            state.update(modal="chart", scroll=0, cursor=state.get("sample_cursor", 0))
+            return True
         history = state.get("modal_back", [])
         if history:
             state.update(history[-1])
@@ -522,27 +748,54 @@ def handle_key(app, key):
         return True
     modal = state.get("modal")
     if modal == "chart":
-        series, _, _ = chart_data(app, app.store.snapshot())
+        series = _chart_frame_series(app)
         names = list(series)
         name = state.get("metric") if state.get("metric") in names else names[0] if names else ""
-        points, _ = viewport(series.get(name, []), state)
+        points = _chart_visible_points(app, series, name)
         if key in ("left", "right", "up", "down", "home", "end"):
             change = -1 if key in ("left", "up") else 1
             state["cursor"] = 0 if key == "home" else max(0, len(points) - 1) if key == "end" else max(0, min(max(0, len(points) - 1), state.get("cursor", 0) + change))
         elif key in ("+", "=", "-", "_"):
             state.pop("window", None)
+            state.pop("preset", None)
             state["zoom"] = max(1.0, min(1024.0, state.get("zoom", 1.0) * (2 if key in ("+", "=") else .5)))
             state["cursor"] = 0
         elif key in ("[", "]"):
             state["pan"] = max(0.0, min(1.0, state.get("pan", 0.0) + (-.1 if key == "[" else .1)))
             state["cursor"] = 0
+        elif key in ("pgup", "pgdn"):
+            page = max(1, state.get("chart_page", 10))
+            state["scroll"] = max(0, state.get("scroll", 0) + (-page if key == "pgup" else page))
         elif key in ("tab", "btab") and names:
             index = names.index(name)
             next_name = names[(index + (1 if key == "tab" else -1)) % len(names)]
-            next_points, _ = viewport(series[next_name], state)
+            next_points = _chart_visible_points(app, series, next_name)
             timestamp = points[min(state.get("cursor", 0), len(points) - 1)]["t"] if points else None
             closest = min(range(len(next_points)), key=lambda i: abs(next_points[i]["t"] - timestamp)) if next_points and timestamp is not None else 0
             state.update(metric=next_name, cursor=closest)
+        elif key == "t":
+            presets = [item[0] for item in chart_tools.PRESETS]
+            current = state.get("preset", "all")
+            if current not in presets:
+                current = "all"
+            _chart_control(app, ["preset", presets[(presets.index(current) + 1) % len(presets)]], series)
+        elif key in ("a", "g"):
+            _chart_control(app, ["axis", "auto" if key == "a" else "log"], series)
+        elif key == "r" and points:
+            selected = points[min(state.get("cursor", 0), len(points) - 1)]
+            existing = state.get("chart_range", {})
+            if existing.get("selecting") and existing.get("metric") == name:
+                existing.update(end=selected["t"], selecting=False)
+            else:
+                state["chart_range"] = {"metric": name, "start": selected["t"], "end": selected["t"], "selecting": True}
+        elif key == "e":
+            state["sample_cursor"] = state.get("cursor", 0)
+            _chart_control(app, ["events"], series)
+        elif key == "s":
+            _chart_control(app, ["shared", "off" if state["shared_scale"] else "on"], series)
+        selected_range = state.get("chart_range", {})
+        if selected_range.get("selecting") and selected_range.get("metric") == name and points:
+            selected_range["end"] = points[min(state.get("cursor", 0), len(points) - 1)]["t"]
     elif modal == "inspect" and key in ("tab", "btab", "left", "right"):
         state["section"] = (state.get("section", 0) + (1 if key in ("tab", "right") else -1)) % len(SECTIONS)
         state["scroll"] = 0
@@ -565,10 +818,21 @@ def handle_key(app, key):
             state["cursor"] = 0 if key == "home" else max(0, len(events) - 1) if key == "end" else max(0, min(max(0, len(events) - 1), state.get("cursor", 0) + delta))
         elif key in ("enter", "s") and events:
             _open_timeline_event(app, events[min(state.get("cursor", 0), len(events) - 1)], seek=key == "s")
+    elif modal == "chart_events":
+        events = chart_events(app, app.store.snapshot())
+        if key in ("up", "down", "home", "end", "pgup", "pgdn"):
+            delta = -1 if key == "up" else 1 if key == "down" else -10 if key == "pgup" else 10
+            state["cursor"] = 0 if key == "home" else max(0, len(events) - 1) if key == "end" else max(0, min(max(0, len(events) - 1), state.get("cursor", 0) + delta))
+        elif key == "enter" and events:
+            _open_timeline_event(app, events[min(state.get("cursor", 0), len(events) - 1)])
+    elif modal == "diff" and key == "s":
+        state["shared_scale"] = not state["shared_scale"]
+        app.say("Comparison axes: " + ("shared." if state["shared_scale"] else "independent."))
+        app.save()
     elif modal == "diff" and key == "u":
         state["unchanged"] = not state.get("unchanged", False)
         state["scroll"] = 0
-    if modal not in ("chart", "timeline"):
+    if modal not in ("chart", "timeline", "chart_events"):
         if key in ("up", "down", "pgup", "pgdn", "home", "end"):
             delta = -1 if key == "up" else 1 if key == "down" else -10 if key == "pgup" else 10
             state["scroll"] = 0 if key == "home" else max(0, state.get("row_count", 0) - 1) if key == "end" else max(0, state.get("scroll", 0) + delta)
@@ -667,7 +931,8 @@ def _job_diff_rows(g, snap, app, width):
     ids = state.get("diff_ids", [])[:6]
     jobs = [app.job_record(jid, snap) for jid in ids]
     row = lambda text, style="": [(clean(text, g.ascii), style)]
-    rows = [row(" Comparing " + ", ".join(ids), "cyan+bold"), row(" u shows / hides unchanged fields; sample curves align on first observed sample.", "dim")]
+    rows = [row(" Comparing " + ", ".join(ids), "cyan+bold"), row(" u shows / hides unchanged fields; sample curves align on first observed sample.", "dim"),
+            row(" Axis scales " + ("shared per metric" if state["shared_scale"] else "independent per job") + " | s toggles the scale lock.", "cyan")]
     fields = [("Name", lambda j: j.name), ("State", lambda j: j.state), ("Partition", lambda j: j.partition),
               ("CPUs", lambda j: j.cpus), ("GPUs", lambda j: j.gpus), ("Nodes", lambda j: j.nodes),
               ("Memory requested", lambda j: human(j.mem_bytes if hasattr(j, "mem_bytes") else j.req_mem) if (j.mem_bytes if hasattr(j, "mem_bytes") else j.req_mem) else None),
@@ -685,9 +950,14 @@ def _job_diff_rows(g, snap, app, width):
         pointsets = {jid: points for jid, points in pointsets.items() if points}
         if not pointsets:
             continue
-        rows.append(row(" " + metric + " / aligned measured curves", "cyan+bold"))
+        label, unit, _ = chart_tools.display(state, metric)
+        preference = chart_tools.preference(state, metric)
+        axis = state["axes"].get(metric, {"mode": "auto"})
+        rows.append(row(" " + label + " / aligned measured curves / ID " + metric, "cyan+bold"))
         finite = [p["value"] for points in pointsets.values() for p in points if p["value"] is not None]
-        lo, hi = min([0.0] + finite), max(finite, default=1.0)
+        _, shared_lo, shared_hi, _ = chart_tools.axis_values(finite, axis)
+        if shared_hi is None:
+            shared_hi = max(finite, default=1.0)
         span = max((points[-1]["t"] - points[0]["t"] for points in pointsets.values()), default=1.0)
         if not math.isfinite(span):
             span = 1.0
@@ -697,9 +967,26 @@ def _job_diff_rows(g, snap, app, width):
                 rows.append(row(f" {jid}: no measured {metric} samples", "dim"))
                 continue
             t0 = points[0]["t"]
-            rows.extend(charts.braille_chart(g, [p["value"] for p in points], width, 3, lo=lo, hi=hi,
+            values = [p["value"] for p in points]
+            plotted, lo, hi, undefined = chart_tools.axis_values(values, axis)
+            if state["shared_scale"]:
+                lo, hi = shared_lo, shared_hi
+            def axis_label(value):
+                if axis["mode"] == "log":
+                    try:
+                        value = 10 ** value
+                    except OverflowError:
+                        return ">1e308"
+                return chart_tools.format_value(value, preference)
+            curve = charts.braille_chart(g, plotted, width, 3, lo=lo, hi=hi,
                                             title=jid, sample_times=[p["t"] - t0 for p in points],
-                                            times=(0, span), elapsed=True, color=lambda _, i=i: COLORS[i % len(COLORS)]))
+                                            times=(0, span), elapsed=True, axis_formatter=axis_label,
+                                            color=lambda _, i=i: COLORS[i % len(COLORS)])
+            if curve:
+                curve[0] = charts._header(g, values, width, jid, unit, "   ")
+            rows.extend(curve)
+            if undefined:
+                rows.append(row(f" {jid}: {undefined} nonpositive samples undefined on logarithmic axis.", "yellow"))
     if not any(all_series.values()):
         rows.append(row(" No resource samples observed for these jobs in this session. Accounting values remain visible above.", "dim"))
     return rows
@@ -713,20 +1000,44 @@ def overlay(views, snap, app, width, height):
     modal = state.get("modal", "")
     inner = max(1, min(160, width - 8))
     page = max(1, height - 6)
+    state["chart_page"] = page
     row = lambda text, style="": [(clean(text, g.ascii), style)]
     if modal == "inspect":
         rows = _inspector_rows(g, snap, app, inner)
         title = "Job inspector / " + str(state.get("job", ""))
         footer = row(" Tab / arrows: section   Up / Down: scroll   l: logs   e: evidence   Esc: back", "dim")
     elif modal == "chart":
-        series, source, _ = chart_data(app, snap)
+        series, source, jid = chart_data(app, snap)
+        state["chart_frame"] = {"series": series, "job": jid,
+                                "generation": getattr(getattr(app, "research", None), "generation", None),
+                                "result": id(getattr(app, "analysis_result", None))}
         names = list(series)
         name = state.get("metric") if state.get("metric") in names else names[0] if names else ""
         state["metric"] = name
-        rows = chart_rows(g, app, series.get(name, []), inner, max(1, min(20, page - 5)), name or "No metric samples", source)
+        extra = 4 if state.get("chart_range", {}).get("metric") == name else 0
+        rows = chart_rows(g, app, series.get(name, []), inner, max(1, min(20, page - 10 - extra)), name or "No metric samples", source, snapshot=snap)
         window = f" | window {state['window']:g}s" if state.get("window") else ""
         rows.append(row(f" Zoom x{state.get('zoom', 1):g} | pan {state.get('pan', 0):.0%}{window}", "cyan"))
+        active_preset = state.get("preset", "all" if state.get("zoom", 1) == 1 and not state.get("window") else "custom")
+        presets = "  ".join(("[" + label + "]") if active_preset == label else label for label, _ in chart_tools.PRESETS)
+        if active_preset == "custom":
+            presets += "  [custom]"
+        rows.append(row(" t: time " + presets + " | a: auto axis | g: log axis | r: select range | e: events", "cyan"))
         title, footer = "Chart inspector", row(" Arrows: sample  +/-: zoom  [ ]: pan  Tab: metric  Home/End  Esc: back", "dim")
+    elif modal == "chart_events":
+        events = chart_events(app, snap)
+        state["cursor"] = max(0, min(max(0, len(events) - 1), state.get("cursor", 0)))
+        rows = []
+        for i, event in enumerate(events):
+            selected = i == state["cursor"]
+            rows.append(row(f" {'>' if selected else ' '} {event['number']:3} {_time(event['t'])} {event.get('kind', '')} | job {event.get('job') or 'global'}", "rev+bold" if selected else "cyan"))
+            rows.append(row("      " + str(event.get("text", "")), "bold" if selected else "dim"))
+            rows.append(row("      Source: " + (event.get("path") or event.get("source") or "Tower observed event") +
+                            (" | original line " + str(event["line"]) if event.get("line") is not None else " | original line unavailable"), "dim"))
+        if not rows:
+            rows = [row(" No timestamped events observed for this chart job. Historical phases remain unknown.", "dim")]
+        state["scroll"] = max(0, state["cursor"] * 3 - page // 2)
+        title, footer = "Chart events / " + str(state.get("chart_job") or _analysis_jid(app)), row(" Arrows: event | Enter: exact job or cited file | Esc: chart", "dim")
     elif modal == "timeline":
         events = timeline_events(app, snap)
         state["cursor"] = max(0, min(max(0, len(events) - 1), state.get("cursor", 0)))
@@ -746,7 +1057,7 @@ def overlay(views, snap, app, width, height):
             rows.insert(0, row(" Left " + str(comparison.get("left", {}).get("id", "?")) + " / Right " + str(comparison.get("right", {}).get("id", "?")), "cyan+bold"))
         else:
             rows = _job_diff_rows(g, snap, app, inner)
-        title, footer = "Run comparison", row(" Up / Down: scroll   u: show / hide unchanged fields   Esc: back", "dim")
+        title, footer = "Run comparison", row(" Up / Down: scroll   u: unchanged fields   s: shared scales   Esc: back", "dim")
     else:
         series, _, _ = chart_data(app, snap)
         rows = [row(" Metric dashboard arrangement", "cyan+bold")]

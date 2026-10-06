@@ -135,6 +135,7 @@ def build(args, cfg: Config) -> Session:
     store = Store(state_dir=sdir, persist=sdir is not None, series_keep=int(cfg["series_keep"]))
     if args.interval:
         cfg.set("intervals.jobs", args.interval)
+        cfg.ui_locked_settings = set(getattr(cfg, "ui_locked_settings", ())) | {"intervals.jobs"}
     intervals = dict(cfg["intervals"])
     bell_fn = (lambda: sys.stdout.write("\a")) if args.watch else None
     notifier = Notifier(cfg["notify"]["command"], cfg["notify"]["events"], bell=bell_fn, bell_kinds=("started",) if (args.bell or cfg["bell"]) else ())
@@ -419,6 +420,7 @@ def main(argv=None):
             return 1
         if args.no_color or os.environ.get("NO_COLOR"):
             cfg.set("color", False)
+            cfg.ui_locked_settings = set(getattr(cfg, "ui_locked_settings", ())) | {"color"}
         if args.doctor:
             from .doctor import diagnose, render
             result = diagnose(cfg, fake=args.fake, host=args.host, ssh_user=args.ssh_user)

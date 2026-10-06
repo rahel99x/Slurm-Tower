@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import os
 
-from . import layout as L, projects
+from . import layout as L, projects, artifact_pages
+from .log_presentation import json_page
 from .research import clean
 
 MODES = {"project_runs", "project_outputs", "project_preview"}
@@ -15,7 +16,9 @@ def initialize(app):
     state = app.project_state
     defaults = {"root": "", "runs": [], "warnings": [], "run_warnings": [], "binding": None, "logs": [], "status": "empty", "summary": "Choose a project with :project PATH",
                 "generation": 0, "busy": False, "run_cursor": 0, "run_top": 0, "output_cursor": 0, "output_top": 0, "filter": "", "filtering": False,
-                "collapsed": [], "tree": None, "preview": None, "preview_scroll": 0, "restore_run_id": "", "notices_open": False, "notices_scroll": 0}
+                "collapsed": [], "tree": None, "preview": None, "preview_scroll": 0, "restore_run_id": "", "notices_open": False, "notices_scroll": 0,
+                "preview_node": None, "preview_pages": [(0, 0)], "preview_page": 0, "preview_columns": None,
+                "preview_sort": None, "preview_column": 0, "preview_collapsed": [], "preview_format": None}
     for key, value in defaults.items():
         state.setdefault(key, value)
     return state
@@ -88,6 +91,8 @@ def cycle_log_entry(app):
     current = resolve_log_entry(app)
     current_index = next((index for index, entry in enumerate(entries) if current and entry.get("path") == current.get("path")), -1)
     chosen = dict(entries[(current_index + 1) % len(entries)])
+    from .log_tools import before_source_change
+    before_source_change(app)
     app.logs.entry, app.logs.file_index = chosen, 0
     if chosen.get("role") in ("stdout", "stderr"):
         app.logs.which = "err" if chosen["role"] == "stderr" else "out"
@@ -108,6 +113,8 @@ def clear_binding(app):
         app.research.passport, app.research.passport_diff = backup["passport_record"], backup["passport_diff"]
         app.cfg["logs"]["manifest_file"] = backup["log_manifest"]
     if state.get("binding") or backup is not None:
+        from .log_tools import before_source_change
+        before_source_change(app)
         state.update(binding=None, logs=[], run_warnings=[], tree=None, preview=None, restore_run_id="")
         app.research_job_id, app.log_job, app.log_record = None, None, None
         if app.research is not None and backup is None:
@@ -134,7 +141,7 @@ def _hub(app):
     return app.research
 
 
-def _task(app, title, worker, complete):
+def _task(app, title, worker, complete, failed=None):
     state = initialize(app)
     hub = _hub(app)
     if state["busy"]:
@@ -148,6 +155,8 @@ def _task(app, title, worker, complete):
             return
         state["busy"] = False
         if isinstance(value, Exception):
+            if failed is not None:
+                failed()
             state["summary"] = f"{title}: {clean(value)}"
             app.fail(state["summary"])
             return
@@ -181,6 +190,8 @@ def _refresh_runs(app, root):
 
 
 def _apply_run(app, value):
+    from .log_tools import before_source_change
+    before_source_change(app)
     state = initialize(app)
     binding = value["binding"]
     if "binding_backup" not in state:
@@ -264,11 +275,109 @@ def _preview(app, node):
     hub = _hub(app)
 
     def complete(value):
-        state.update(preview=value, preview_scroll=0)
+        state.update(preview=value, preview_scroll=0, preview_node=node, preview_pages=[(0, 0)], preview_page=0,
+                     preview_columns=None, preview_sort=None, preview_column=0, preview_collapsed=[], preview_format=None)
         app.mode = "project_preview"
         app.say(value["summary"])
 
-    _task(app, "Preview " + clean(node["path"]), lambda: projects.preview_artifact(root, node["specification"], files=hub.files), complete)
+    _task(app, "Preview " + clean(node["path"]), lambda: artifact_pages.read_page(root, node["specification"], files=hub.files), complete)
+
+
+def _preview_page(app, direction=0, *, reset=False):
+    state = initialize(app)
+    node = state.get("preview_node")
+    if not node or not state.get("tree"):
+        raise ValueError("Open a declared artifact first with :outputs")
+    if state["busy"]:
+        raise ValueError("An artifact page is already being read")
+    preview = state.get("preview") or {}
+    pages = [(0, 0)] if reset else list(state["preview_pages"])
+    page_index = 0 if reset else state["preview_page"] + direction
+    if page_index < 0:
+        app.say("First artifact page")
+        return False
+    if page_index >= len(pages):
+        if not preview.get("has_next"):
+            app.say("Last artifact page")
+            return False
+        pages.append((preview["next_offset"], preview["next_row"]))
+    offset, row = pages[page_index]
+    root = state["tree"]["root"]
+    hub = _hub(app)
+    columns = None if state["preview_columns"] is None else list(state["preview_columns"])
+    sort = state["preview_sort"]
+    collapsed = list(state["preview_collapsed"])
+    specification = dict(node["specification"])
+    if state["preview_format"] is not None:
+        specification["format"] = state["preview_format"]
+    def failed():
+        state["preview_sort"] = preview.get("sort")
+        state["preview_columns"] = preview.get("columns")
+    def complete(value):
+        old_identity = preview.get("identity")
+        if not reset and old_identity is not None and value.get("identity") != old_identity:
+            app.fail("Artifact changed between pages; reopen it to use a consistent file")
+            return
+        state.update(preview=value, preview_scroll=0, preview_pages=pages, preview_page=page_index)
+        app.say(value["summary"])
+    return _task(app, "Read artifact page " + str(page_index + 1),
+                 lambda: artifact_pages.read_page(root, specification, files=hub.files, offset=offset,
+                                                  row=row, columns=columns, sort=sort, collapsed=collapsed), complete, failed)
+
+
+def _csv_column(preview, value):
+    header = preview.get("header", [])
+    if value.isascii() and value.isdigit() and 1 <= int(value) <= len(header):
+        return int(value) - 1
+    if value in header:
+        return header.index(value)
+    raise ValueError("Choose an existing CSV header or its 1-based column number")
+
+
+def _artifact_control(app, rest):
+    state = initialize(app)
+    preview = state.get("preview") or {}
+    if app.mode != "project_preview":
+        raise ValueError("Open a declared output in :outputs before using artifact page controls")
+    if state["busy"]:
+        raise ValueError("An artifact page is already being read")
+    if rest in (["next"], ["prev"]):
+        _preview_page(app, 1 if rest == ["next"] else -1)
+    elif rest == ["refresh"]:
+        _preview_page(app, reset=True)
+    elif rest in (["text"], ["structured"]):
+        state["preview_format"] = "text" if rest == ["text"] else None
+        state["preview_columns"], state["preview_sort"] = None, None
+        _preview_page(app, reset=True)
+    elif rest and rest[0] == "columns" and len(rest) >= 2:
+        if preview.get("format") != "csv":
+            raise ValueError("Column selection requires a CSV artifact")
+        columns = None if rest[1:] == ["all"] else list(dict.fromkeys(_csv_column(preview, item) for item in rest[1:]))
+        state["preview_columns"] = columns
+        _preview_page(app, reset=True)
+    elif rest and rest[0] == "sort" and len(rest) == 3:
+        if preview.get("format") != "csv" or rest[2] not in ("asc", "desc", "off"):
+            raise ValueError("artifact sort COLUMN asc|desc|off (CSV global sorting)")
+        column = _csv_column(preview, rest[1])
+        if rest[2] != "off" and preview.get("size", 0) > artifact_pages.SORT_BYTES:
+            raise ValueError("Global CSV sorting supports at most 8 MiB; no partial sort was applied")
+        state["preview_sort"] = None if rest[2] == "off" else (column, rest[2])
+        _preview_page(app, reset=True)
+    elif rest and rest[0] == "json" and len(rest) == 2:
+        if preview.get("format") != "json":
+            raise ValueError("JSON node controls require a structured JSON artifact")
+        path = "" if rest[1] == "/" else rest[1]
+        if path in state["preview_collapsed"]:
+            state["preview_collapsed"].remove(path)
+        else:
+            state["preview_collapsed"].append(path)
+        nodes, more = json_page(preview["json_value"], state["preview_collapsed"])
+        preview.update(nodes=nodes, lines=[item["text"] for item in nodes], row=0, next_row=len(nodes),
+                       has_next=more, truncated=more,
+                       summary=f"{preview.get('size', 0)} source bytes; JSON nodes 1-{len(nodes)}; expandable tree")
+        state.update(preview_scroll=0, preview_pages=[(0, 0)], preview_page=0)
+    else:
+        raise ValueError("artifact next|prev|refresh|text|structured|columns COLUMN...|sort COLUMN asc|desc|off|json /POINTER")
 
 
 def run_command(app, args):
@@ -313,6 +422,9 @@ def run_command(app, args):
             else:
                 raise ValueError("run select RUN_ID | run passport RELATIVE_PATH | run clear")
         elif command in ("outputs", "artifact"):
+            if command == "artifact" and rest not in ([], ["browse"]):
+                _artifact_control(app, rest)
+                return True
             if rest not in ([], ["browse"]):
                 raise ValueError(command + " [browse]")
             _outputs(app)
@@ -367,7 +479,47 @@ def handle_key(app, key):
     page = max(1, getattr(app, "height", 24) - 12)
     action = getattr(app, "keymap", {}).get(key, key)
     if app.mode == "project_preview":
+        preview = state.get("preview") or {}
+        if key in ("[", "]"):
+            try:
+                _preview_page(app, -1 if key == "[" else 1)
+            except (ValueError, OSError) as exc:
+                app.fail(clean(exc))
+            return True
+        if preview.get("format") == "csv" and key in ("left", "right", "enter", "c"):
+            header = preview.get("header", [])
+            if not header:
+                return True
+            if key in ("left", "right"):
+                state["preview_column"] = (state["preview_column"] + (-1 if key == "left" else 1)) % len(header)
+            else:
+                column = state["preview_column"]
+                try:
+                    if key == "enter":
+                        sort = state["preview_sort"]
+                        direction = "desc" if sort == (column, "asc") else "off" if sort == (column, "desc") else "asc"
+                        _artifact_control(app, ["sort", str(column + 1), direction])
+                    else:
+                        indexes = list(state["preview_columns"] if state["preview_columns"] is not None else range(len(header)))
+                        if column in indexes and len(indexes) > 1:
+                            indexes.remove(column)
+                        elif column not in indexes:
+                            indexes.append(column)
+                            indexes.sort()
+                        state["preview_columns"] = indexes
+                        _preview_page(app, reset=True)
+                except (ValueError, OSError) as exc:
+                    app.fail(clean(exc))
+            return True
+        if preview.get("format") == "json" and key in ("enter", "space"):
+            nodes = preview.get("nodes", [])
+            item = nodes[min(state["preview_scroll"], len(nodes) - 1)] if nodes else {}
+            if item.get("expandable"):
+                _artifact_control(app, ["json", item["node"] or "/"])
+            return True
         count = len((state.get("preview") or {}).get("lines", []))
+        if preview.get("format") == "csv":
+            count = max(0, count - 1)
         cursor_key = "preview_scroll"
     else:
         items = _visible_runs(state) if app.mode == "project_runs" else _visible_outputs(state)
@@ -468,10 +620,30 @@ def overlay(views, snap, app, width, height):
         preview = state.get("preview") or {}
         lines.append(row(" " + preview.get("path", "") + " | " + preview.get("format", "text"), "bold"))
         lines.append(row(" " + preview.get("summary", ""), "yellow" if preview.get("truncated") or preview.get("status") != "ready" else "dim"))
-        lines.append(row(" Arrows / PgUp / PgDn scroll | Esc returns to the same artifact", "dim"))
+        lines.append(row(" Arrows / PgUp / PgDn scroll | [ previous page | ] next page | Esc outputs", "dim"))
+        if preview.get("format") == "csv":
+            header = preview.get("header", [])
+            column = min(state["preview_column"], max(0, len(header) - 1))
+            name = header[column] if header else "none"
+            lines.append(row(f" Column {column + 1}: {name} | Left/Right choose | Enter sort asc/desc/off | c show/hide", "cyan"))
+            shown = []
+            for index in preview.get("columns", []):
+                name = header[index]
+                sorting = preview.get("sort")
+                if sorting and sorting[0] == index:
+                    name += " ^" if sorting[1] == "asc" else " v"
+                shown.append(("[" + name + "]") if index == column else name)
+            lines.append(row(" " + " | ".join(shown), "bold+cyan"))
+        elif preview.get("format") == "json":
+            lines.append(row(" Enter expands/folds selected JSON node; :artifact json /POINTER", "cyan"))
         page = max(1, height - 11)
-        start = min(state["preview_scroll"], max(0, len(preview.get("lines", [])) - 1))
-        for index, text in enumerate(preview.get("lines", [])[start:start + page], start):
-            lines.append(row(f" {index + 1:>4}  {text}"))
+        display_lines = preview.get("lines", [])[1:] if preview.get("format") == "csv" else preview.get("lines", [])
+        start = min(state["preview_scroll"], max(0, len(display_lines) - 1))
+        page = max(1, height - len(lines) - 5)
+        for index, text in enumerate(display_lines[start:start + page], start):
+            selected = index == state["preview_scroll"]
+            marker = ">" if g.ascii else "›"
+            number = preview.get("row", 0) + index + 1
+            lines.append(row(f" {marker if selected else ' '} {number:>4}  {text}", "rev+bold" if selected else ""))
         title = "artifact preview"
     return L.box(g, lines, width, height, title)

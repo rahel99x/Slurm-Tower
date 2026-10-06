@@ -50,6 +50,14 @@ def test_rich_pages_fit_and_preserve_mouse_selection(visual_dashboard, width, he
             if kind in {"job", "group", "dep"}:
                 views.compose(store.snapshot(), app, width, height, actions)
                 assert app.selected_id == key
+            elif kind == "node_row":
+                assert app.mode == "table_tools"
+                assert app.table_tools_state["node"] == key
+                app.handle("esc")
+                assert app.mode == "main"
+            elif kind == "partition_row":
+                assert app.tab == "jobs"
+                assert app.table_state["facets"]["jobs"]["partition"] == key
 
 
 def test_resource_cards_keep_unknown_and_real_zero_distinct(visual_dashboard):

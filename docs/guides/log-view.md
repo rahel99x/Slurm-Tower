@@ -1,0 +1,132 @@
+# Log presentation guide
+
+## Open an exact source
+
+1. Select a job in Jobs, Recents, or History.
+2. Press `l`.
+3. Use the log file catalog to select a registered source.
+4. Press Enter to read that source.
+
+The file name and path identify the source. A source can be stdout, stderr, a worker log, or a declared external log. Tower reads files in the background. A file adapter error does not cause a local-file fallback.
+
+For full-file search, older pages, named bookmarks, and saved reading positions, use the [log search guide](log-search.md).
+
+<a id="feature-24"></a>
+
+## Align two streams by time
+
+Enter `:logview split`. Tower chooses distinct registered stdout and stderr files. If those roles are absent, Tower uses the selected file and another registered file.
+
+Use `:logalign on` to align reported ISO 8601 timestamps. Equal, unique instants occupy the same row. Events at different instants occupy separate rows. Zoned timestamps use UTC for comparison. Unzoned timestamps retain their wall-clock values; confirm that the sources use the same time zone.
+
+Tower states when timing is missing, mixed, or backwards. In these cases, it shows positional rows. Repeated equal timestamps stay separate. An aligned row does not prove that two events have the same cause.
+
+Use `:logalign off` for positional rows. Press `[` to choose the left original source for copy. Press `]` to choose the right original source for copy.
+
+<a id="feature-25"></a>
+
+## Compare two log files
+
+Enter `:logdiff` to compare the registered pair. To choose a pair, enter:
+
+```text
+:logdiff LEFT_ID RIGHT_ID exact
+:logdiff LEFT_ID RIGHT_ID ignore-time
+```
+
+Press `O` to open the file catalog. Source IDs appear in brackets after each file label. Tower refuses unknown IDs. Register files from different execution attempts in the same declared log inventory to compare them. Tower does not discover unrelated attempt files.
+
+Removed lines have a minus sign. Added lines have a plus sign. Exact comparison preserves timestamp fields. `ignore-time` replaces the first reported ISO timestamp for comparison only. The original text remains available.
+
+Press `[` or `]` to choose the exact original copy source. Press `o` on a diff row to open its underlying source line. Press Esc to return to the selected source. `Y` copies its complete file, subject to the normal clipboard or export result. It does not copy the diff panel.
+
+<a id="feature-26"></a>
+
+## Inspect structured log records
+
+Enter `:logview json`. Use the arrows to select a node. Press Enter or Space to fold or expand the selected object or array.
+
+To filter records by a field, enter:
+
+```text
+:logjson severity error
+:logjson worker.rank 2
+:logjson clear
+```
+
+Fields use dot-separated names. Numeric path elements select array indexes. Values use case-insensitive text containment. The header gives the count of filtered source lines. Plain lines remain visible when no field filter is active.
+
+Press `o` on a structured row to return to its original source location. If the file changed or the location left the retained window, Tower reports that condition. Press `v` in the original view to select source lines. Press `y` to copy them.
+
+<a id="feature-27"></a>
+
+## Fold repeated messages
+
+Enter `:logfold on`. Tower folds consecutive groups of at least three repeated messages. It ignores the first ISO timestamp when it checks repetition. Each summary states the original line range, repetition count, and hidden-line count.
+
+Use the arrows to select a group. Press Enter or Space to expand it. Press the same key on an expanded group to fold it again. Enter `:logfold off` or press Esc to return to the original view.
+
+Press `o` to inspect the original group. Selection and copying use original source bytes. A folded summary is never substituted for the source text.
+
+<a id="feature-28"></a>
+
+## Read new lines while following is paused
+
+Scroll away from the end to pause following. The status line shows the number of unread retained lines as new data arrives. It counts a partial line once when that line becomes complete.
+
+Enter `:logunread` to visit the first unread retained source line. Press End to resume following and clear the indicator. Replacement or truncation of the source resets the indicator. If the first unread line left the retained window, Tower reports that it cannot locate that line.
+
+## Controls and limits
+
+| Control | Function |
+| --- | --- |
+| Up / Down | Move the presentation cursor |
+| Page Up / Page Down | Move by a viewport-sized step |
+| Home / End | Select the first or last presentation row |
+| Left / Right | Pan horizontally |
+| `:logpan 0` | Return to the first display column |
+| Enter / Space | Expand or fold a JSON node or repeated-message group |
+| `[` / `]` | Select the left or right original source in paired views |
+| `o` | Open the selected structured, folded, or diff row in its original source |
+| Esc | Return to original source lines |
+| `v` / `y` in a presentation | Return to the original view for source selection |
+| `Y` | Copy the complete selected original file |
+
+Each presentation inspects at most 64 KiB and 240 original lines per source. The header states whether that inspection covers the complete source or a bounded tail. Line labels are relative when earlier data is omitted. Use full-file search and older pages for other content.
+
+Structured records have bounded nesting and collection sizes. Invalid or oversized records stay as original text. Presentation preferences do not change file bytes. The same controls work with ASCII glyphs.
+
+## Integration methods
+
+The `tower.log_workbench` methods use the existing terminal event loop and the shared background reader.
+
+| Method | Function |
+| --- | --- |
+| `initialize(app)` | Create bounded presentation state. |
+| `restore(app, state)` / `save(app)` | Restore or save display preferences. Runtime readers and source paths are excluded. |
+| `sync_source(app, path)` | Reset horizontal position when the exact source changes. |
+| `command_names()` / `run_command(app, args)` | Register and execute presentation controls. |
+| `visible_entries(app, entries)` | Apply file-group folds without changing source identities. |
+| `handle_key(app, key)` / `handle_mouse(app, y, x, button, shift)` | Move the presentation cursor and prevent clicks through to hidden source rows. |
+| `display_line(app, line)` | Apply horizontal panning in terminal display columns. |
+| `status_label(app)` | Give visible horizontal-offset and unread indicators. |
+| `observe_buffer(app, buf)` | Observe a published source buffer without file reads. Call this after publication. |
+| `first_unread(app, buf)` | Move to the first unread location in the retained original source. |
+| `render_browser(views, snap, app, width, height, rows, hits)` | Render the registered file catalog with cached metadata and source IDs. |
+| `overlay(views, snap, app, width, height)` | Render the active alternate presentation. |
+| `open_citation(app, citation)` | Choose a cited exact source. |
+| `apply_citation(app, buf)` | Check source identity and locate the citation in a published buffer. |
+
+The `tower.log_presentation` methods perform no file reads.
+
+| Method | Function |
+| --- | --- |
+| `timestamp(line)` | Parse a reported ISO timestamp and its timing basis. Preserve up to nine fractional digits. |
+| `aligned(left, right)` | Return source-index pairs and an explicit timing-status message. |
+| `diff_rows(left, right, ignore_time=False)` | Return changed rows with their original left and right indexes. |
+| `parse_json(line)` | Parse a bounded structured record, or return no structured value. |
+| `field_value(value, path)` | Read a declared dot-separated field or array index. |
+| `json_rows(value, collapsed, prefix, base_depth)` | Produce a bounded JSON tree for a log presentation. |
+| `json_page(value, collapsed, start, limit)` | Produce a node page and a next-page indicator. |
+| `structured_rows(lines, collapsed, field, query)` | Produce source-indexed structured rows and a filtered-line count. |
+| `folded_rows(lines, expanded)` | Produce reversible repeated-message groups with exact source ranges. |

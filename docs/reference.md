@@ -1,12 +1,19 @@
 # Slurm Tower: complete reference
 
-[Quick start](../README.md) · [Runbook](runbook.md) · [Terminal workbench](WORKBENCH.md)
+[Quick start](../README.md) · [Runbook](runbook.md) · [Controls](CONTROLS.md) ·
+[Tower 4.0 improvements](QUALITY_OF_LIFE.md) · [Terminal workbench](WORKBENCH.md)
 
 This reference describes the terminal dashboard and its underlying metrics.
 Unicode block visuals are the normal terminal presentation, with portable ASCII
 and accessible themes available.
 ASCII reports present the complete snapshot as portable plain text.
 Run Tower directly on your CARC login node; the runbook provides a low-impact profile.
+
+Tower 4.0 adds table inspection, complete-file log search, navigation tools,
+graph controls, completion review, and paged artifact previews.
+The [50-improvement index](QUALITY_OF_LIFE.md) links each feature to its operating guide.
+The [Controls guide](CONTROLS.md) lists launch modes, key bindings, and command families.
+Use those guides with the metric and architecture definitions in this reference.
 
 ```bash
 tower                        # interactive (curses); q quits, ? lists the keys
@@ -28,7 +35,7 @@ tower --report report.txt    # the whole dashboard as a plain ASCII text report
 
 ## Install and configure
 
-Start with the [quick start](../README.md#start-on-your-carc-login-node) or the
+Start with the [quick start](../README.md#1-install-on-carc) or the
 [adaptive runbook](runbook.md). The commands below use `tower` after installing
 the Bash alias or Python package; `./scripts/tower` from the checkout accepts
 the same arguments.
@@ -209,8 +216,10 @@ Turning every column off restores the source sequence. Equal rows retain that
 sequence, and sorting applies to all rows before paging.
 
 The seven independent table scopes are `jobs`, `recent`, `history`, `group`,
-`nodes` (My Nodes), `sources`, and `cluster` (partitions). Recents sorts its latest
-five retained records, independently from History. Numeric JOBIDs and array task
+`nodes` (My Nodes), `sources`, and `cluster` (partitions). Recents sorts its
+retained candidate records independently from History. The default size is five.
+Use `:recents` to change the size or time window; see the [table guide](guides/tables.md#feature-09).
+Numeric JOBIDs and array task
 IDs use natural order (`2` before `10`, `123_2` before `123_10`). Measurements use
 their original numeric values rather than rounded labels; unknown values stay
 last in either direction. Jobs pins remain first, and optional array grouping

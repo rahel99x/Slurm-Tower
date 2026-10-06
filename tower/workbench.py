@@ -4,8 +4,9 @@ from __future__ import annotations
 import importlib
 from functools import lru_cache
 
-FEATURES = ("workspace_layout", "navigation_ui", "command_ui", "table_ui",
-            "activity_ui", "project_ui", "log_workbench", "analysis_ui", "execution_ui")
+FEATURES = ("workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
+            "table_ui", "table_tools", "activity_ui", "session_tools", "project_ui",
+            "log_workbench", "log_tools", "analysis_ui", "execution_ui")
 
 
 @lru_cache(maxsize=1)
@@ -36,10 +37,16 @@ def command_names():
 
 
 def handle_key(app, key):
+    if app.mode == "terminal_probe":
+        from .session_tools import handle_key as probe_key
+        return probe_key(app, key)
     return any(feature.handle_key(app, key) for feature in modules())
 
 
 def handle_mouse(app, y, x, button="left", shift=False):
+    if app.mode == "terminal_probe":
+        from .session_tools import handle_mouse as probe_mouse
+        return probe_mouse(app, y, x, button=button, shift=shift)
     for feature in modules():
         callback = getattr(feature, "handle_mouse", None)
         if callback and callback(app, y, x, button=button, shift=shift):
