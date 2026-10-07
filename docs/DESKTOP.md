@@ -194,6 +194,17 @@ History and completed-job efficiency then remain unavailable or empty.
 Sources reports the accounting error.
 Tower does not manufacture completed jobs to fill History.
 
+If Sources shows `finished: sacct: error: Slurm accounting storage is disabled`,
+the scheduler has no active accounting storage backend.
+Installing the `sacct` command alone does not enable that backend.
+Follow [Enable Slurm accounting on a Fedora desktop](FEDORA_ACCOUNTING.md)
+to add persistent job history with MariaDB and `slurmdbd`.
+
+To stop unavailable accounting queries for the current Tower session,
+enter `:source finished off` and `:source fin_details off` in the command palette.
+These source toggles do not persist across Tower restarts.
+They suppress the queries; they do not supply completed-job history.
+
 When accounting is delayed, Recents can show jobs as awaiting accounting.
 That status does not prove success or failure.
 Keep the exact job's logs for application evidence.
