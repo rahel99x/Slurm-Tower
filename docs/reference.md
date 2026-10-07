@@ -495,6 +495,23 @@ State lives in `~/.local/state/tower/`: `ui.json` (tab, sort, log lines, toggles
 log of every transition and every action (an audit trail: what was cancelled, held or requeued, when, and whether
 Slurm accepted it).  `--no-state` reads and writes neither.
 
+Set `state_namespace` to isolate state for different scheduler environments.
+The default is an empty string, which retains the normal state directory.
+A namespace must contain 1–64 ASCII letters, digits, underscores, or hyphens.
+Nonempty namespaces use `<state_base>/profiles/<namespace>/<connection_digest>/`.
+The connection digest includes backend, host, scheduler user, local owner, profile, and SSH connection options.
+It separates preferences, log bookmarks, tags, events, exports, and recorded resource samples.
+The supplied `desktop` profile uses `state_namespace = "desktop"`.
+Existing state is retained in its original directory.
+The normal base follows `XDG_STATE_HOME`, or defaults to `~/.local/state/tower/`.
+Fake sessions, replay, and `--no-state` do not enable persistent state.
+See the [Fedora desktop guide](DESKTOP.md#keep-desktop-state-separate) for the local setup procedure.
+
+Set `show_all_partitions = true` to include every reported partition in Cluster.
+The default is `false`, which retains the existing relevant-partition display.
+The desktop profile enables this option to show idle CPU-only partitions.
+A nonempty `partitions` list still restricts the displayed partition names.
+
 ## The twenty features at a glance
 
 This table describes the original monitoring features. The twenty new UI/UX

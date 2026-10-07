@@ -22,6 +22,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -125,13 +126,37 @@ def forecast_scope(backend, cfg: Config, user: str):
                 user=user, ssh_user=ssh_user, ssh_options_sha256=options)
 
 
+def state_namespace(cfg: Config) -> str:
+    """Validate an optional path component before any backend or state writes."""
+    value = cfg.get("state_namespace", "")
+    if not isinstance(value, str) or value and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+        raise ValueError("state_namespace must be empty or 1-64 ASCII letters, digits, underscores, or hyphens")
+    return value
+
+
+def scoped_state_dir(backend, cfg: Config, user: str) -> str:
+    """Keep opt-in connection state separate without querying the scheduler."""
+    namespace = state_namespace(cfg)
+    base = state_dir()
+    if not namespace:
+        return base
+    context = forecast_scope(backend, cfg, user)
+    if context is None:
+        raise ValueError("state_namespace requires a known local owner and connection host")
+    import hashlib
+    identity = json.dumps(context, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return os.path.join(base, "profiles", namespace, digest)
+
+
 def build(args, cfg: Config) -> Session:
+    state_namespace(cfg)
     user = args.user or cfg["user"] or os.environ.get("USER", "")
     if args.fake and not user:
         user = "alex"
     backend, files, replay, user = make_backend(args, cfg, user)
     slurm = Slurm(backend, user, timeout=cfg["timeouts"]["command"], gpu_timeout=cfg["timeouts"]["gpu"], action_timeout=cfg["timeouts"]["action"])
-    sdir = None if (args.no_state or args.fake or args.replay) else state_dir()
+    sdir = None if (args.no_state or args.fake or args.replay) else scoped_state_dir(backend, cfg, user)
     store = Store(state_dir=sdir, persist=sdir is not None, series_keep=int(cfg["series_keep"]))
     if args.interval:
         cfg.set("intervals.jobs", args.interval)

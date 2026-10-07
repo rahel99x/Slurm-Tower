@@ -933,9 +933,9 @@ class Views:
         parts = list(snap["partitions"])
         want = set(self.cfg["partitions"]) or None
         mine = {j.partition for j in snap["jobs"]}
-        if want is None:
+        if want is None and not self.cfg.get("show_all_partitions", False):
             parts = [p for p in parts if p.gpus or p.name in mine]
-        else:
+        elif want is not None:
             parts = [p for p in parts if p.name in want]
         text = filter_text(app, "cluster").casefold()
         if text:

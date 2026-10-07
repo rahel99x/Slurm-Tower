@@ -15,10 +15,11 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.0 |
+| Release | Tower 4.1 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
+[Fedora desktop setup](docs/DESKTOP.md) ·
 [Controls](docs/CONTROLS.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
@@ -94,6 +95,35 @@ tower
 Resolve local Git changes if the first command fails.
 Keep the existing configuration and state directories.
 See [update and removal](docs/runbook.md#7-update-or-remove) for the complete procedure.
+
+### Run Tower on a Fedora desktop
+
+Use the desktop profile when Slurm is already installed directly on Fedora.
+Run these commands from your existing checkout as your normal desktop user:
+
+```bash
+git pull --ff-only
+python3 scripts/setup.py --mode local --profile desktop
+python3 scripts/install_shell.py --profile desktop --apply
+source ~/.bashrc
+tower --version
+tower --doctor
+tower --once --tab sources
+tower
+```
+
+The desktop profile uses local Slurm commands and normal user detection.
+It samples Jobs every two seconds and accounting every ten seconds.
+Cluster shows reported local partitions, including idle CPU-only partitions.
+GPU sampling, forecast probes, and allocation-budget queries remain disabled.
+The desktop alias ignores `CARC_ACCOUNT`.
+Use `SLURM_TOWER_ACCOUNT` when you need an explicit desktop account override.
+Desktop preferences, bookmarks, tags, and recorded resource samples use separate state from CARC.
+
+An empty queue is normal when you have no jobs.
+History requires working Slurm accounting.
+Sources reports unavailable accounting; Tower keeps missing results unknown.
+See the [Fedora desktop guide](docs/DESKTOP.md) for preflight checks, first installation, and troubleshooting.
 
 ## 2. Try Tower without a cluster
 
@@ -361,7 +391,8 @@ Python 3.11 and later read TOML.
 Use JSON with Python 3.10.
 Start with [config.example.json](docs/config.example.json) for cluster profiles.
 
-Normal UI state is stored under `~/.local/state/tower/`.
+The normal UI state base is `~/.local/state/tower/`.
+The desktop profile selects a separate connection directory with `state_namespace = "desktop"`.
 Use `--no-state` to disable normal state reads and writes.
 The [configuration reference](docs/reference.md#configuration) describes every section.
 The [navigation guide](docs/guides/navigation.md) describes interactive settings and key bindings.
@@ -379,6 +410,7 @@ See [Documentation style](docs/DOCUMENTATION_STYLE.md) for terminology and proce
 | Task | Guide |
 | --- | --- |
 | Install, update, or diagnose a CARC launch | [Adaptive runbook](docs/runbook.md) |
+| Use an existing Slurm installation on Fedora | [Desktop setup](docs/DESKTOP.md) |
 | Find a key, command, CLI option, or mouse action | [Controls](docs/CONTROLS.md) |
 | Find any of the 50 quality-of-life changes | [Improvement index](docs/QUALITY_OF_LIFE.md) |
 | Sort, filter, mark, and inspect table records | [Table guide](docs/guides/tables.md) |

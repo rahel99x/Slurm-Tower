@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 DEFAULTS: Dict[str, Any] = {
     "user": "",                          # empty: $USER
     "account": "",                       # empty: the first account of sshare -U
+    "state_namespace": "",               # optional isolated state namespace, further separated by connection identity
     "ascii": False,                      # solid Unicode blocks; auto-fallback for limited terminal encodings
     "color": True,
     "mouse": True,                       # clicks and wheel input; keyboard controls always remain available
@@ -37,6 +38,7 @@ DEFAULTS: Dict[str, Any] = {
     },
     "alerts": [],                        # [[alerts]] name = ..., when = "<expression over a job>", every = 1800, actions = ["bell", "event", "notify", "command"], scope = "job" | "cluster"
     "partitions": [],                    # cluster tab: partitions to show (empty: those with GPUs or with your jobs)
+    "show_all_partitions": False,        # include idle CPU-only partitions when no explicit partition list is supplied
     "weather": True,                     # queue weather: pending work ahead per partition and sbatch --test-only probes
     "weather_probes": [],                # the probes: [{partition="gpu", gres="gpu:a100:1", cpus=8, mem="32G", limit="01:00:00"}, ...]; empty: one per GPU type and per partition with your jobs
     "budget": True,                      # the account's allocation from sreport and sacctmgr (used this month, last 7 days, limits)
@@ -73,6 +75,8 @@ DEFAULTS: Dict[str, Any] = {
 TEMPLATE = '''# tower configuration (TOML).  Every key is optional; these are the defaults.
 # user = ""                     # empty: $USER
 # account = ""                  # empty: the first account of sshare -U
+state_namespace = ""            # optional state isolation; use desktop for a local computer
+show_all_partitions = false      # empty partition list: also show idle CPU-only partitions
 ascii = false                   # solid Unicode blocks (use --ascii for a plain-character fallback)
 color = true
 mouse = true                    # enable terminal clicks and wheel input

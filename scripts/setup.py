@@ -50,6 +50,28 @@ def select_mode(mode, host):
     return "remote" if host else "local" if shutil.which("squeue") else "demo"
 
 
+def select_profile(mode, requested):
+    """Resolve an explicit example profile without changing existing defaults."""
+    profile = requested or ("" if mode == "demo" else "carc")
+    if not profile:
+        return ""
+    profiles = json.loads((ROOT / "docs" / "config.example.json").read_text(encoding="utf-8"))["profiles"]
+    if profile not in profiles or not isinstance(profiles[profile], dict):
+        raise SetupError(f"Unknown setup profile {profile!r}. Choose one of: {', '.join(sorted(profiles))}.")
+    if mode == "local" and profiles[profile].get("host"):
+        raise SetupError("Local setup needs a profile without an SSH host. Use --profile desktop or --mode remote --host LOGIN.")
+    return profile
+
+
+def launch_flags(mode, host, profile):
+    flags = ["--config", str(ROOT / "docs" / "config.example.json"), "--profile", profile] if profile else []
+    if mode == "demo":
+        flags.append("--fake")
+    elif mode == "remote":
+        flags += ["--host", host]
+    return flags
+
+
 def prepare_venv(path):
     path = path.expanduser().resolve()
     if path == ROOT or path in ROOT.parents:
@@ -94,7 +116,7 @@ def publish_report(source, destination):
     return True
 
 
-def validate(python, mode, host, report):
+def validate(python, mode, host, report, profile=""):
     with tempfile.TemporaryDirectory(prefix="tower-setup-") as temporary:
         scratch = Path(temporary)
         config = scratch / "config.json"
@@ -125,14 +147,17 @@ def validate(python, mode, host, report):
             raise SetupError("The report smoke test did not produce a complete ASCII snapshot.")
         publish_report(preview, report)
         print(f"Checking {mode} capabilities...", flush=True)
-        flags = ["--fake"] if mode == "demo" else ["--host", host] if mode == "remote" else []
-        run([*command, "--doctor", *flags], timeout=45)
+        doctor = [python, ROOT / "tower", "--no-state", "--no-plugins"]
+        if not profile:
+            doctor += ["--config", config]
+        run([*doctor, "--doctor", *launch_flags(mode, host, profile)], timeout=45)
 
 
 def parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     ap.add_argument("--mode", choices=("auto", "demo", "local", "remote"), default="auto", help="auto chooses remote with --host, local with squeue, otherwise demo")
     ap.add_argument("--host", default="", help="SSH hostname or user@hostname for remote mode; uses existing SSH authentication")
+    ap.add_argument("--profile", default="", help="profile from docs/config.example.json; local/remote default to carc, use desktop for your computer")
     ap.add_argument("--venv", type=Path, default=ROOT / ".venv", help="isolated Python environment to create or reuse")
     ap.add_argument("--report", type=Path, default=ROOT / ".tower" / "demo.txt", help="save a demo ASCII report; existing files are preserved")
     ap.add_argument("--dev", action="store_true", help="also install editable package, pytest and build tools (requires pip index access)")
@@ -148,10 +173,11 @@ def main(argv=None):
         if os.name != "posix":
             raise SetupError("Use Linux, macOS, or Windows Subsystem for Linux (WSL); the terminal dashboard uses POSIX curses.")
         mode = select_mode(args.mode, args.host)
+        profile = select_profile(mode, args.profile)
         python = prepare_venv(args.venv)
         if args.dev:
             install_dev(python)
-        validate(python, mode, args.host, args.report)
+        validate(python, mode, args.host, args.report, profile)
         if args.test:
             print("Running tests...", flush=True)
             try:
@@ -159,13 +185,11 @@ def main(argv=None):
             except SetupError as exc:
                 raise SetupError(f"{exc}\nIf pytest is unavailable, rerun setup with --dev --test.") from exc
         command = [str(python), str(ROOT / "tower")]
-        launch_flags = ["--fake"] if mode == "demo" else ["--config", str(ROOT / "docs" / "config.example.json"), "--profile", "carc"]
-        if mode == "remote":
-            launch_flags += ["--host", args.host]
-        command += launch_flags
+        flags = launch_flags(mode, args.host, profile)
+        command += flags
         print(f"\nReady ({mode}). Launch in a terminal:\n  {shlex.join(command)}")
         if args.venv.expanduser().resolve() == ROOT / ".venv":
-            print(f"Or, from this checkout:\n  {shlex.join(['./scripts/tower', *launch_flags])}")
+            print(f"Or, from this checkout:\n  {shlex.join(['./scripts/tower', *flags])}")
         print("Press ? for help; q to quit. Read docs/runbook.md for cluster configuration and troubleshooting.")
         return 0
     except (SetupError, ValueError, OSError) as exc:

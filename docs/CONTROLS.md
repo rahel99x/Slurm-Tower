@@ -40,6 +40,20 @@ Key bindings in configuration can replace the defaults below.
 Run `type tower` to identify which shell command will run.
 Use the [runbook](runbook.md#use-one-tower-shell-command) to install or inspect the managed alias.
 
+### Select a local setup profile
+
+| Command | Function |
+| --- | --- |
+| `python3 scripts/setup.py --mode local` | Set up the default CARC profile |
+| `python3 scripts/setup.py --mode local --profile desktop` | Set up local desktop Slurm settings |
+| `python3 scripts/install_shell.py --profile desktop` | Preview the desktop alias |
+| `python3 scripts/install_shell.py --profile desktop --apply` | Back up `.bashrc` and install the desktop alias |
+
+Source the updated `.bashrc` to load the alias.
+Use `tower --version`, `tower --doctor`, and `tower --once --tab sources` to inspect the installation.
+Use the [Fedora desktop guide](DESKTOP.md) when Slurm is installed directly on your desktop.
+Use the [runbook](runbook.md#3-adapt-setup-to-your-environment) for other setup modes.
+
 ## Global navigation keys
 
 | Key | Function |
@@ -545,9 +559,21 @@ See the [scripted-mode reference](reference.md#scripted-mode-and-expressions) fo
 
 Use `--config`, `TOWER_CONFIG`, or the default file under `~/.config/tower/`.
 Use `NO_COLOR=1` to disable color.
-The managed Bash alias can use `CARC_ACCOUNT` for an account override.
 Use `--account ACCOUNT` for a single launch override.
 
-Normal persistent state is stored under `~/.local/state/tower/`.
+| Variable | Managed Bash alias behavior |
+| --- | --- |
+| `SLURM_TOWER_PROFILE` | A nonempty value overrides the installed profile |
+| `SLURM_TOWER_ACCOUNT` | Sets an account for any profile; an empty value suppresses legacy account injection |
+| `CARC_ACCOUNT` | Provides a fallback only for the CARC profile when the generic account variable is unset |
+| `TOWER_CONFIG` | Selects a custom configuration instead of the supplied example |
+| `SLURM_TOWER_ROOT` | Selects the checkout used by the managed launcher |
+
+The desktop alias ignores `CARC_ACCOUNT`.
+See [Desktop account overrides](DESKTOP.md#account-and-profile-overrides) for examples.
+
+The normal persistent state base is `~/.local/state/tower/`.
+The desktop profile uses `state_namespace = "desktop"` to separate connection state.
+See [Desktop state](DESKTOP.md#keep-desktop-state-separate) for the default directory layout.
 The [configuration reference](reference.md#configuration) defines profiles, intervals, timeouts, thresholds, alerts, clipboard options, and plugins.
 The [documentation style](DOCUMENTATION_STYLE.md) defines the terminology used in these guides.

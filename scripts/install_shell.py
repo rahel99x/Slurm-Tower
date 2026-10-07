@@ -16,8 +16,9 @@ BEGIN = "# >>> Slurm Tower alias >>>"
 END = "# <<< Slurm Tower alias <<<"
 
 
-def shell_block(root: Path | None = ROOT) -> str:
+def shell_block(root: Path | None = ROOT, profile: str = "carc") -> str:
     location = shlex.quote(str(root)) if root is not None else '"$HOME/projects/Slurm-Tower"'
+    default_profile = shlex.quote(profile)
     return f'''{BEGIN}
 # The checkout's launcher uses its own .venv; your active environment stays intact.
 export SLURM_TOWER_ROOT={location}
@@ -25,15 +26,21 @@ unalias tower dash dash2 2>/dev/null || :
 unset -f tower dash dash2 2>/dev/null || :
 _slurm_tower() {{
   local root="$SLURM_TOWER_ROOT"
+  local profile={default_profile}
+  profile="${{SLURM_TOWER_PROFILE:-$profile}}"
+  local account="${{SLURM_TOWER_ACCOUNT-}}"
+  if [ "$profile" = carc ] && [ "${{SLURM_TOWER_ACCOUNT+x}}" != x ]; then
+    account="${{CARC_ACCOUNT:-}}"
+  fi
   if [ ! -x "$root/scripts/tower" ]; then
     printf 'tower: checkout not found at %s; set SLURM_TOWER_ROOT to your Slurm-Tower directory.\\n' "$root" >&2
     return 127
   fi
   local -a command=("$root/scripts/tower"
     --config "${{TOWER_CONFIG:-$root/docs/config.example.json}}"
-    --profile "${{SLURM_TOWER_PROFILE:-carc}}" --unicode)
-  if [ -n "${{CARC_ACCOUNT:-}}" ]; then
-    command+=(--account "$CARC_ACCOUNT")
+    --profile "$profile" --unicode)
+  if [ -n "$account" ]; then
+    command+=(--account "$account")
   fi
   "${{command[@]}}" "$@"
 }}
@@ -91,12 +98,13 @@ def apply(path: Path, original: bytes, updated: bytes) -> Path | None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bashrc", type=Path, default=Path.home() / ".bashrc", help="Bash configuration to update; symlinks are preserved")
+    parser.add_argument("--profile", default="carc", help="default Tower profile for the alias; SLURM_TOWER_PROFILE can override it")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--output", type=Path, help="write a complete updated preview to a new file")
     mode.add_argument("--apply", action="store_true", help="back up and atomically update the Bash configuration")
     args = parser.parse_args(argv)
     try:
-        block = shell_block()
+        block = shell_block(ROOT, args.profile)
         if not args.output and not args.apply:
             print(block)
             return 0

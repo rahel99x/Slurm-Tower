@@ -1,9 +1,12 @@
 # The Slurm Tower runbook
 
 [README](../README.md) · [Controls](CONTROLS.md) ·
-[Tower 4.0 guides](QUALITY_OF_LIFE.md) · [Complete reference](reference.md)
+[Desktop setup](DESKTOP.md) · [Tower 4.0 guides](QUALITY_OF_LIFE.md) ·
+[Complete reference](reference.md)
 
-Run Tower in a terminal on your CARC login node. Setup is noninteractive and
+Run Tower on your CARC login node or in a terminal with working local Slurm tools.
+Use the [desktop guide](DESKTOP.md) for Slurm installed directly on Fedora.
+Setup is noninteractive and
 repeatable. It never submits or changes jobs, installs system packages, replaces
 your configuration, or asks for a password.
 
@@ -31,7 +34,25 @@ Module names and available versions vary, so no specific module name is assumed.
 
 The application uses standard-library Python and POSIX curses on Linux, macOS,
 or WSL. There are no runtime packages, databases, servers, or build tools to install.
-Do not install system software or start a Slurm controller to use Tower.
+Use the site's existing Slurm installation.
+Tower setup does not start or configure a Slurm controller.
+
+### Use Slurm already installed on Fedora
+
+Check the local scheduler as your normal desktop user:
+
+```bash
+python3 --version
+python3 -c 'import curses, venv; print("Python terminal modules are available")'
+scontrol ping
+sinfo
+squeue -u "$USER"
+```
+
+These scheduler checks are read-only.
+An empty user queue is normal.
+Use the desktop setup procedure below when the existing local scheduler responds.
+See [Fedora prerequisites](DESKTOP.md#1-check-the-local-environment) if Python or commands are missing.
 
 ## 2. Get the source and set up locally
 
@@ -63,6 +84,28 @@ environments are reused; unrelated directories are rejected. Keep the checkout:
 the `./scripts/tower` launcher runs its source with `.venv/bin/python` when present,
 otherwise `python3`. To run without setup, use `python3 -m tower` from the checkout.
 
+### Select the desktop profile
+
+For Slurm installed directly on Fedora, run these commands from the checkout:
+
+```bash
+python3 scripts/setup.py --mode local --profile desktop
+./scripts/tower --config docs/config.example.json --profile desktop
+```
+
+The desktop profile clears configured host, user, account, and partition restrictions.
+It uses local commands and normal identity detection.
+Cluster includes reported idle CPU-only partitions.
+Jobs samples every 2 seconds, live resources every 5 seconds, and accounting every 10 seconds.
+It disables live GPU sampling, queue forecast probes, and allocation-budget queries.
+The desktop profile also uses a separate state namespace.
+Desktop preferences, log bookmarks, tags, and recorded resource samples stay separate from existing CARC state.
+See [Desktop state](DESKTOP.md#keep-desktop-state-separate) for the directory layout.
+
+Setup accepts `--profile PROFILE` from the supplied example configuration.
+It checks the selected profile and prints the corresponding launcher.
+The default profile remains `carc` for compatibility with existing installations.
+
 ### Use one `tower` shell command
 
 After setting up the application, install the optional Bash alias from the new
@@ -83,14 +126,31 @@ the low-impact `carc` profile and Unicode visuals. It preserves the rest of your
 shell configuration.
 Rerunning the helper updates the same managed block.
 
+For desktop use, select the profile during alias installation:
+
+```bash
+python3 scripts/install_shell.py --profile desktop --apply
+source ~/.bashrc
+type tower
+```
+
+The desktop alias uses local scheduler settings.
+It ignores `CARC_ACCOUNT`.
+Use the helper without `--apply` to preview the selected profile's alias block.
+
 The launcher uses the Slurm-Tower checkout's own `.venv`, independently of an
 active virtual environment for another project. Run normal setup first so that `.venv` exists;
 without it, the source launcher falls back to `python3` on `PATH`. Keep this
 checkout at its current location, or rerun the helper after moving it.
 
-The alias passes your arguments through and uses `CARC_ACCOUNT` when that shell
-variable is set. When it is empty, Tower retains its normal account detection.
-You can override the account for one invocation with `tower --account ACCOUNT`.
+The alias passes your arguments through.
+`SLURM_TOWER_PROFILE` overrides the profile selected during alias installation.
+`SLURM_TOWER_ACCOUNT` supplies an account override for any resolved profile.
+An explicitly empty value suppresses legacy account injection.
+When that variable is unset, only the CARC profile can use `CARC_ACCOUNT`.
+Without an account override, Tower retains normal account detection.
+Use `tower --account ACCOUNT` to override the account for one invocation.
+Use the [desktop guide](DESKTOP.md#account-and-profile-overrides) for examples.
 
 ```bash
 tower --doctor
@@ -152,6 +212,7 @@ the live dashboard's visual preference.
 | Your environment | Setup | Launch |
 | --- | --- | --- |
 | CARC or another Slurm login node | `python3 scripts/setup.py --mode local` | `./scripts/tower --config docs/config.example.json --profile carc` |
+| Slurm installed directly on Fedora | `python3 scripts/setup.py --mode local --profile desktop` | `./scripts/tower --config docs/config.example.json --profile desktop` |
 | Try the simulated cluster | `python3 scripts/setup.py --mode demo` | `./scripts/tower --fake` |
 | Let setup detect it | `python3 scripts/setup.py` | Use the command it prints |
 | Optional SSH transport from another machine | `python3 scripts/setup.py --mode remote --host your-ssh-alias` | `./scripts/tower --host your-ssh-alias` |
@@ -179,8 +240,9 @@ pytest, and packaging tools using the configured pip index with normal verificat
 Development tools are unnecessary for everyday monitoring. Setup exits `0` when
 requested checks pass and `1` with a specific failure otherwise (`2` indicates
 invalid command-line syntax). Demo validation still completes if local or remote
-prerequisites are missing. Successful local and remote setup prints a launch command
-using the included low-impact `carc` profile; demo setup prints `--fake`.
+prerequisites are missing. Successful local and remote setup prints the selected
+example profile's launch command. The default profile is `carc`; select `desktop`
+explicitly for the local desktop configuration. Demo setup prints `--fake`.
 
 ### Optional SSH transport
 

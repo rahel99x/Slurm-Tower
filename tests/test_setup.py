@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -27,6 +28,44 @@ def test_setup_selects_mode_without_contacting_cluster(monkeypatch):
         setup.select_mode("local", "research")
     with pytest.raises(setup.SetupError, match="SSH hostname"):
         setup.select_mode("remote", "-oProxyCommand=anything")
+
+
+def test_setup_rejects_unknown_or_remote_local_profile_before_creating_files(tmp_path, monkeypatch, capsys):
+    def forbidden(_path):
+        pytest.fail("Invalid profile created or reused an environment")
+    monkeypatch.setattr(setup, "prepare_venv", forbidden)
+    for profile, message in (("unknown-profile", "Unknown setup profile"), ("remote", "without an SSH host")):
+        assert setup.main(["--mode", "local", "--profile", profile, "--venv", str(tmp_path / "env")]) == 1
+        assert message in capsys.readouterr().err
+        assert not (tmp_path / "env").exists()
+
+
+@pytest.mark.parametrize("requested,expected", [("desktop", "desktop"), ("", "carc")])
+def test_local_setup_checks_and_prints_selected_profile_without_running_slurm(tmp_path, requested, expected):
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    called = tmp_path / "slurm-was-called"
+    for name in ("squeue", "scontrol", "sinfo", "sacct", "sstat", "sshare", "sreport", "sacctmgr", "sbatch", "scancel"):
+        tool = binaries / name
+        tool.write_text("#!/bin/sh\nprintf '%s\\n' \"$0\" >> " + shlex.quote(str(called)) + "\nexit 97\n")
+        tool.chmod(0o755)
+    personal = tmp_path / "personal.json"
+    personal.write_text("invalid personal settings must not affect setup")
+    env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ.get("PATH", ""),
+               TOWER_CONFIG=str(personal), XDG_CONFIG_HOME=str(tmp_path / "config"), XDG_STATE_HOME=str(tmp_path / "state"))
+    command = [sys.executable, str(ROOT / "scripts" / "setup.py"), "--mode", "local",
+               "--venv", str(tmp_path / "environment with spaces"), "--report", str(tmp_path / "report.txt")]
+    if requested:
+        command += ["--profile", requested]
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Slurm Tower / local environment" in result.stdout and "Ready (local)" in result.stdout
+    launch = next(line.strip() for line in result.stdout.splitlines() if line.startswith("  ") and "--profile " in line)
+    args = shlex.split(launch)
+    assert args[args.index("--profile") + 1] == expected and "--fake" not in args
+    assert args[args.index("--config") + 1] == str(ROOT / "docs" / "config.example.json")
+    assert not called.exists(), "Setup must only inspect local Slurm capabilities"
+    assert personal.read_text() == "invalid personal settings must not affect setup"
 
 
 def test_setup_covers_every_research_workspace():
