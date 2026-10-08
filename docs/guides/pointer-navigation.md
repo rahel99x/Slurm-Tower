@@ -107,6 +107,8 @@ Sorting and filtering define that order.
 A simple click continues to select one row without starting a range.
 Hold Shift during a drag to add the range to existing marks.
 Press Esc before release to cancel capture and restore the previous marks.
+Runtime header changes do not add a job beneath a stationary pointer.
+Resizing the terminal stops the drag and keeps its marked job IDs.
 
 Marking jobs does not cancel them.
 Supported group actions use the existing marked IDs and their normal review.

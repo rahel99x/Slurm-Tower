@@ -62,6 +62,33 @@ def test_release_on_another_row_also_completes_range_without_motion_event(dashbo
     assert app.marks == {"2", "3", "4"}
 
 
+@pytest.mark.parametrize("intervening_event", [None, "motion", "drag"])
+def test_live_header_reflow_cannot_change_endpoint_under_stationary_pointer(dashboard, intervening_event):
+    app, _, _ = dashboard
+    send(app, "2", "press")
+    send(app, "4", "drag")
+    y, x = point(app, "4")
+    # Selecting an unlinked job can remove the auto-linked header. The same
+    # coordinate now paints job 5, while displayed order and IDs stay intact.
+    app.last_hits = [(row - 1, kind, value) if kind == "job" else (row, kind, value)
+                     for row, kind, value in app.last_hits]
+    assert next(value for row, kind, value in app.last_hits if row == y and kind == "job") == "5"
+    if intervening_event:
+        assert drag.handle_mouse(app, y, x + 1, button=intervening_event)
+    assert drag.handle_mouse(app, y, x, button="release")
+    assert app.marks == {"2", "3", "4"} and app.selected_id == "4"
+    assert not drag.active(app)
+
+
+def test_resize_during_capture_keeps_exact_marked_ids_and_stops_drag(dashboard):
+    app, _, _ = dashboard
+    send(app, "2", "press")
+    send(app, "4", "drag")
+    app.width -= 1
+    assert send(app, "6", "release")
+    assert app.marks == {"2", "3", "4"} and not drag.active(app)
+
+
 def test_shift_drag_extends_marks_and_drag_back_shrinks_only_new_range(dashboard):
     app, _, _ = dashboard
     app.marks = {"10"}

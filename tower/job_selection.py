@@ -53,6 +53,7 @@ def _valid(app, capture):
     return (getattr(app, "mode", "main") == "main" and app.tab == capture["tab"]
             and getattr(app, "toolbar_state", {}).get("menu") is None
             and not getattr(app, "toolbar_state", {}).get("panel")
+            and (getattr(app, "width", None), getattr(app, "height", None)) == capture["size"]
             and _order(app) == capture["ids"])
 
 
@@ -95,8 +96,14 @@ def handle_mouse(app, y, x, button="left", shift=False):
             return button in ("release", "motion", "drag")
         if button in ("motion", "drag", "release"):
             identifier = _hit(app, y, x)
-            if identifier and (identifier != capture["anchor"] or capture["moved"]):
+            # Runtime status or auto-link headers may move the table while the
+            # pointer stays still. Only vertical pointer movement chooses a
+            # new endpoint; release retains the last deliberately marked ID.
+            if (identifier and y != capture["point"][0]
+                    and (identifier != capture["anchor"] or capture["moved"])):
                 _range(app, capture, identifier)
+            if identifier:
+                capture["point"] = (y, x)
             if button == "release":
                 state["capture"] = None
                 if capture["moved"]:
@@ -116,7 +123,8 @@ def handle_mouse(app, y, x, button="left", shift=False):
     if identifier not in ids:
         return False
     state["capture"] = {"tab": app.tab, "anchor": identifier, "ids": ids,
-                        "base": set(app.marks), "extend": bool(shift), "moved": False}
+                        "base": set(app.marks), "extend": bool(shift), "moved": False,
+                        "point": (y, x), "size": (getattr(app, "width", None), getattr(app, "height", None))}
     # A press retains ordinary row selection. Marks change only on a range drag.
     app.cursor[app.tab] = ids.index(identifier)
     app.sync_selection()
