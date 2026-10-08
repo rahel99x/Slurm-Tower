@@ -267,6 +267,46 @@ def test_timeline_seek_updates_real_replay_clock_only_when_explicit(app):
     assert app.analysis_state["modal"] == "timeline" and app.mode == "analysis"
 
 
+@pytest.mark.parametrize("modal", ["timeline", "chart_events"])
+@pytest.mark.parametrize("width", [40, 80, 160])
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_visible_event_links_open_exact_job_with_mouse(app, modal, width, ascii_):
+    jid = "2" if modal == "timeline" else "1"
+    app.store.events = deque([{"t": 42, "kind": "failed", "job": jid, "text": "Original job event"}])
+    app.analysis_state.update(modal=modal, chart_job=jid, cursor=0, scroll=0)
+    app.mode = "analysis"
+    A.overlay(SimpleNamespace(g=L.Glyphs(ascii_)), app.store.snapshot(), app, width, 24)
+    links = app.analysis_state["control_hits"]
+    assert links and all(0 <= value["left"] < value["right"] <= width for _, _, value in links)
+    y, _, value = links[-1]
+    assert A.handle_mouse(app, y, value["left"], button="left")
+    assert app.analysis_state["modal"] == "inspect"
+    assert app.analysis_state["job"] == jid and app.detail_id == jid
+
+
+def test_timeline_open_does_not_seek_and_invalid_index_preserves_context(app):
+    from tower.record import ReplayClock
+    clock = ReplayClock(0, 100, paused=True)
+    app.replay = SimpleNamespace(clock=clock)
+    app.store.events = deque([{"t": 42, "kind": "failed", "job": "2", "text": "failed"}])
+    A.run_command(app, ["timeline"])
+    app.command_ok = True
+    A.run_command(app, ["timeline", "open", "2"])
+    assert not app.command_ok and app.analysis_state["modal"] == "timeline" and clock.now() == 0
+    A.run_command(app, ["timeline", "open", "1"])
+    assert app.detail_id == "2" and app.analysis_state["modal"] == "inspect" and clock.now() == 0
+
+
+def test_event_mouse_target_keeps_painted_identity_when_live_events_change(app):
+    app.store.events = deque([{"t": 42, "kind": "failed", "job": "2", "text": "Painted original"}])
+    A.run_command(app, ["timeline"])
+    A.overlay(SimpleNamespace(g=L.Glyphs(False)), app.store.snapshot(), app, 100, 24)
+    y, _, value = app.analysis_state["control_hits"][0]
+    app.store.events.appendleft({"t": 1, "kind": "started", "job": "1", "text": "New earlier event"})
+    assert A.handle_mouse(app, y, value["left"], button="left")
+    assert app.detail_id == "2" and app.analysis_state["job"] == "2"
+
+
 def test_inspector_drilldown_records_modal_context_before_opening_logs(app, monkeypatch):
     from tower import navigation_ui
     opened = []

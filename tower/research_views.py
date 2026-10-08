@@ -16,15 +16,13 @@ def render(views, snap, app, width, height):
     row = lambda value, style="": [(text(value), style)]
     heading = lambda value: L.rule(g, width, text(value))
     view = app.research_view
-    nav = [(" ", "")]
-    for key, label in RESEARCH_VIEWS:
-        nav.append((f" {label} ", "rev+bold" if key == view else "dim"))
-    if L.vlen(L.row_text(nav)) > width:
-        number = [key for key, _ in RESEARCH_VIEWS].index(view) + 1
-        nav = row(f" < {number}/{len(RESEARCH_VIEWS)} {dict(RESEARCH_VIEWS)[view]} >", "cyan+bold")
+    from .control_rows import buttons
+    nav, nav_hits = buttons(g, width, [(key, label, ("command", "view " + key)) for key, label in RESEARCH_VIEWS],
+                            selected=view, group="research_nav", prefix="research-view:")
+    app.research_nav_rows = len(nav)
     hub = getattr(app, "research", None)
     if hub is None:
-        return [nav, row(" Research services are unavailable.", "yellow")], []
+        return nav + [row(" Research services are unavailable.", "yellow")], nav_hits
     context = hub.context(snap, app)
     result = hub.request(context)
     analysis = analysis_ui.initialize(app)
@@ -34,6 +32,9 @@ def render(views, snap, app, width, height):
         app.analysis_result_generation = context.get("generation")
         analysis_ui.observe_metrics(app, result, app.analysis_result_job)
     rows, hits = [], []
+    paint_offset = None
+    from .scrolling import viewport as scroll_viewport
+    scroll_context = (view, context.get("jid"), context.get("generation"), width)
     job = context["job"]
     if view in ("experiment", "evidence"):
         rows.append(row(f" Job {job.id}  {job.name}  {job.state}" if job else " No job selected", "cyan+bold"))
@@ -58,9 +59,15 @@ def render(views, snap, app, width, height):
         # makes 64-metric dashboards cost roughly the visible cards per frame.
         tail_rows = len(result.get("errors", [])[:8]) + int(bool(result.get("truncated")))
         total_rows = len(rows) + sum((10 if name in analysis["expanded"] else 5) + 4 + int(name in analysis["pinned"]) for name in names) + tail_rows
-        visible_height = max(0, height - 1) if height is not None else total_rows
-        render_start = max(0, min(app.research_scroll, max(0, total_rows - visible_height)))
-        render_end = render_start + visible_height
+        visible_height = max(0, height - len(nav)) if height is not None else total_rows
+        window = getattr(app, "research_document_window", None)
+        if getattr(app, "research_document_mode", False) and window:
+            render_start, render_end = window
+        else:
+            render_start = scroll_viewport(app, "research:document", app.research_scroll, total_rows, visible_height,
+                                            context=scroll_context, immediate=height is None)
+            paint_offset = render_start
+            render_end = render_start + visible_height
         for name in names:
             height_ = 10 if name in analysis["expanded"] else 5
             if name in analysis["pinned"]:
@@ -198,7 +205,10 @@ def render(views, snap, app, width, height):
         from .planning_views import render as planning_render
         rows.extend(planning_render(views, app, result, width))
     # Scroll the entire bounded document. Visible hits follow the exact same slice.
-    avail = max(0, height - 1) if height is not None else len(rows)
+    if getattr(app, "research_document_mode", False):
+        app.research_rows = len(rows)
+        return nav + rows, nav_hits + [(y + len(nav), kind, key) for y, kind, key in hits]
+    avail = max(0, height - len(nav)) if height is not None else len(rows)
     offset = max(0, min(app.research_scroll, max(0, len(rows) - avail)))
     if view == "arrays" and hits and height is not None and app.research_array_focus:
         selected = hits[app.cursor.get("research", 0)][0]
@@ -217,5 +227,9 @@ def render(views, snap, app, width, height):
                 offset = max(0, selected - avail + 2)
         analysis["evidence_focus"] = False
     app.research_scroll, app.research_rows = offset, len(rows)
-    visible_hits = [(y - offset + 1, kind, key) for y, kind, key in hits if offset <= y < offset + avail]
-    return [nav] + rows[offset:offset + avail], visible_hits
+    if paint_offset is None:
+        paint_offset = scroll_viewport(app, "research:document", offset, len(rows), avail,
+                                       context=scroll_context, immediate=height is None)
+    paint_offset = max(0, min(paint_offset, max(0, len(rows) - avail)))
+    visible_hits = [(y - paint_offset + len(nav), kind, key) for y, kind, key in hits if paint_offset <= y < paint_offset + avail]
+    return nav + rows[paint_offset:paint_offset + avail], nav_hits + visible_hits

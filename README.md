@@ -15,12 +15,13 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.2 |
+| Release | Tower 4.3 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
 [Fedora desktop setup](docs/DESKTOP.md) ·
 [Live workbench](docs/guides/live-workbench.md) ·
+[Mouse and button navigation](docs/guides/pointer-navigation.md) ·
 [Controls](docs/CONTROLS.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
@@ -161,7 +162,10 @@ Press `T` to change the theme.
 Use `:theme dark`, `:theme light`, or `:theme terminal` to select a background style.
 The `mono`, `high`, `cb`, and `reader` themes provide additional display options.
 The `reader` theme uses plain ASCII text and static notices.
-Set `animations` to `false` to disable completion animations.
+Set `animations` to `false` for immediate scrolling and static completion notices.
+This setting also suppresses the startup display.
+Use View → Disable startup animation or `:startup off` to disable only the welcome.
+Use `:startup preview` to inspect it without changing the preference.
 
 ## 4. Learn the controls
 
@@ -187,6 +191,7 @@ Uppercase and lowercase keys have different functions.
 | `Ctrl-P` | Open the Research workspace picker |
 | `Ctrl-A` | Open Activity and background task results |
 | F10 | Open or close the File, Edit, View, and Help menus |
+| F8 | Focus visible buttons and links for directional navigation |
 | `:` | Open the editable command palette |
 | `?` | Open searchable help |
 | `Esc` | Close the current overlay or clear the current selection |
@@ -194,7 +199,11 @@ Uppercase and lowercase keys have different functions.
 
 Click a page label to open that page.
 Click a row to select it.
+Move the pointer over a control to highlight it without activating it.
+Press F8 to traverse visible controls with arrow keys.
+Press Enter or Space to activate the focused control, or Esc to return to content.
 Use the mouse wheel to scroll.
+Use `:smoothscroll off` for immediate wheel movement.
 Click a column heading to cycle **ascending → descending → off**.
 The first active column has the highest sort priority.
 Later columns resolve ties.
@@ -208,7 +217,10 @@ Removing one sort rule preserves the other rules.
 The toolbar occupies the first display row.
 Click its `x` control to quit.
 The top-right update control remains visible above pages and overlays.
+Press and drag its track to adjust the multiplier.
+Menu choices remain available while the pointer stays inside the dropdown.
 See [Live workbench](docs/guides/live-workbench.md) for every menu choice and slider control.
+See [Mouse and button navigation](docs/guides/pointer-navigation.md) for input procedures and terminal support.
 
 ```text
 :sortby jobs name asc
@@ -263,10 +275,10 @@ The [planning guide](docs/WAVE_TWO.md) explains predictions, uncertainty, scalin
 
 1. Open Jobs.
 2. Select the job in the active table or Recents.
-3. Click Inspector, Logs, or Investigate in Details.
-4. Use arrow keys to change the active button.
-5. Press Enter to focus its content.
-6. Press Esc to return to the job rows.
+3. Click Inspector, Logs, Investigate, Research, or Analytics in Details.
+4. Use arrow keys and Enter to select and activate another visible button.
+5. Click its content to scroll, or use `:jobpanel focus` for native panel keyboard controls.
+6. Press Esc as needed to return to the job rows.
 
 **Expected result:** The inspector and logs remain attached to the selected job ID.
 A missing historical path remains unavailable.
@@ -274,7 +286,17 @@ Use a run's `logs.json` index to retain project-owned log locations.
 
 Select Off to hide inspection content.
 Use `:jobpanel focus` to reach the buttons without a mouse.
+Research provides all twelve workspaces inside Details.
+Analytics provides Job series, History, Timeline, Advisor, and Compare.
+Choose a subview and scroll its content vertically.
+Each inline view fits the available width without horizontal panning.
 See [Live workbench](docs/guides/live-workbench.md) for panel navigation and live updates.
+
+To mark several jobs, drag the mouse through their visible rows.
+Hold Shift to add the dragged range to existing marks.
+Press Esc during a drag to restore the earlier marks.
+Press `c` after the drag to review cancellation of the marked jobs.
+Check every job ID before you confirm the action.
 
 In History, select the completed or failed job.
 Press `I` for its inspector or `l` for its full Logs page.
@@ -443,6 +465,7 @@ See [Documentation style](docs/DOCUMENTATION_STYLE.md) for terminology and proce
 | Use an existing Slurm installation on Fedora | [Desktop setup](docs/DESKTOP.md) |
 | Find a key, command, CLI option, or mouse action | [Controls](docs/CONTROLS.md) |
 | Use the toolbar, inline job panels, and update-rate slider | [Live workbench](docs/guides/live-workbench.md) |
+| Use hover feedback, mouse dragging, button focus, and smooth scrolling | [Mouse and button navigation](docs/guides/pointer-navigation.md) |
 | Find any of the 50 quality-of-life changes | [Improvement index](docs/QUALITY_OF_LIFE.md) |
 | Sort, filter, mark, and inspect table records | [Table guide](docs/guides/tables.md) |
 | Read older log content or search complete files | [Log search guide](docs/guides/log-search.md) |

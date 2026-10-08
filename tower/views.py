@@ -790,6 +790,8 @@ class Views:
             transit = [[(" ", "")] + gradient_bar(self.g, item["progress"], min(12, max(1, width // 5)), "#67e8f9", "#a78bfa") +
                        [(f" {item['job']} {item.get('name', '')} {'->' if self.g.ascii else '↓'} Recents", "cyan+bold")]]
         vis = min(n, max(1, budget // 3 - 2)) if n else 0
+        if getattr(app, "job_panel_source_canvas", False):
+            budget = max(budget, len(det) + max(16, height // 3) + len(fin) + 16)
         fin_vis = len(fin)
         show_queue = True
         def used():
@@ -1074,15 +1076,14 @@ class Views:
 
     # ---- nodes tab --------------------------------------------------------------------------------
     def nodes_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
-        bar_: Row = [(" ", "")]
-        for key, title in NODES_VIEWS:
-            bar_.append((f" {title} ", "rev+bold" if key == app.nodes_view else "dim"))
-            bar_.append((" ", ""))
+        from .control_rows import buttons
+        nav, nav_hits = buttons(self.g, width, [(key, title, ("command", "view " + key)) for key, title in NODES_VIEWS],
+                               selected=app.nodes_view, group="nodes_nav", prefix="nodes-view:")
         if app.nodes_view == "map":
-            rows = self.node_map(snap, app, width, None if height is None else height - 1)
-            return [bar_] + rows, [(y + 1, kind, payload) for y, kind, payload in getattr(app, "node_map_hits", [])]
-        rows, hits = self.my_nodes(snap, app, width, height)
-        return [bar_] + rows, [(y + 1, k, v) for y, k, v in hits]
+            rows = self.node_map(snap, app, width, None if height is None else max(0, height - len(nav)))
+            return nav + rows, nav_hits + [(y + len(nav), kind, payload) for y, kind, payload in getattr(app, "node_map_hits", [])]
+        rows, hits = self.my_nodes(snap, app, width, None if height is None else max(0, height - len(nav)))
+        return nav + rows, nav_hits + [(y + len(nav), k, v) for y, k, v in hits]
 
     def node_map(self, snap: dict, app, width: int, height: Optional[int]) -> List[Row]:
         """Every node of the cluster as a cell per partition: state glyph, allocated cores, GPUs in use; mine marked."""
@@ -1546,8 +1547,13 @@ class Views:
             return out + [[(f"   {buf.error}", "red")]], []
         if getattr(buf, "loading", False):
             return out + [[("   Reading the selected log in the background.", "dim")]], []
-        lines, start = buf.window(app.logs.top, page)
         total = buf.total
+        from .scrolling import viewport as scroll_viewport, active as scrolling_active
+        target = max(0, total - page) if app.logs.top is None else app.logs.top
+        painted_top = scroll_viewport(app, "logs:document", target, total, page,
+                                     context=(path, buf.ident, buf.skipped_bytes, width, app.logs.wrap),
+                                     immediate=app.logs.following or app.logs.selection_active or height is None)
+        lines, start = buf.window(None if app.logs.following else painted_top, page)
         search = app.logs.search
         from .log_tools import retained_matches, count_retained
         marks = set(app.logs.bookmarks.get(path, []))
@@ -1636,7 +1642,9 @@ class Views:
                     body = body[-page:]
             return body[-page:] if app.logs.following else body[:page]
         body = render_lines(lines, start)
-        if app.logs.cursor is not None and not app.logs.following and not any(idx == app.logs.cursor for _, idx in body):
+        if (app.logs.cursor is not None and not app.logs.following
+                and (not scrolling_active(app) or app.logs.selection_active)
+                and not any(idx == app.logs.cursor for _, idx in body)):
             # Long wrapped predecessors must not conceal the keyboard-selected line.
             app.logs.top = app.logs.cursor
             lines, start = buf.window(app.logs.cursor, max(1, min(page, total - app.logs.cursor)))
@@ -1726,14 +1734,12 @@ class Views:
         g = self.g
         view = app.analytics_view
         days = app.analytics_days_value()
-        names = dict(ANALYTICS_VIEWS)
-        bar_: Row = [(" ", "")]
-        for key, title in ANALYTICS_VIEWS:
-            bar_.append((f" {title} ", "rev+bold" if key == view else "dim"))
-            bar_.append((" ", ""))
-        bar_.append((f"   window {days:g} day{'s' if days != 1 else ''}", "dim"))
-        out: List[Row] = [bar_]
-        avail = None if height is None else height - 1
+        from .control_rows import buttons
+        out, hits = buttons(g, width, [(key, title, ("command", "view " + key)) for key, title in ANALYTICS_VIEWS],
+                            selected=view, group="analytics_nav", prefix="analytics-view:")
+        app.analytics_nav_rows = len(out)
+        out.append([(f" window {days:g} day{'s' if days != 1 else ''}", "dim")])
+        avail = None if height is None else max(0, height - len(out))
         if view == "job":
             body = self.analytics_job(snap, app, width, avail)
         elif view == "history":
@@ -1744,7 +1750,7 @@ class Views:
             body = self.analytics_compare(snap, app, width, avail)
         else:
             body = self.analytics_timeline(snap, app, width, avail, days)
-        return out + body, []
+        return out + body, hits
 
     def analytics_advisor(self, snap: dict, app, width: int, avail: Optional[int], days: float) -> List[Row]:
         """What each job name should ask for, from its completed runs in the window; the running jobs so far."""
@@ -2021,6 +2027,9 @@ class Views:
 
     def compose(self, snap: dict, app, width: int, height: Optional[int], actions=None) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         width = max(0, width)
+        app.width = width
+        if height is not None:
+            app.height = height
         app.completion.update(snap)
         from .session_tools import observe, unread_count
         from .table_tools import snapshot, freeze_status
@@ -2030,6 +2039,8 @@ class Views:
         snap = snapshot(app, snap)
         if height is not None and height <= 0:
             app.tab_hits, app.last_rows, app.last_hits = [], [], []
+            from .interaction import publish
+            publish(app, [], [], width, height)
             return [], []
         head = self.header(snap, app, width)
         app.body_origin = len(head)
@@ -2085,7 +2096,11 @@ class Views:
                     rows[y] = row + [(" " * max(0, width - 1 - vlen(L.row_text(row))), ""), (glyph, style)]
         app.completion.remember(hits)
         app.tab_hits = [hit for hit in app.tab_hits if hit[0] < height - 1 and hit[1] < hit[2]]
-        return rows + [L.clip_row(self.footer(app, width), width)], hits
+        output = rows + [L.clip_row(self.footer(app, width), width)]
+        app.frame_rows = output
+        from .interaction import publish, decorate
+        publish(app, output, hits, width, height)
+        return decorate(app, output), hits
 
     def step_lines(self, steps: Sequence[Step], width: int) -> List[Row]:
         """A small table of a job's steps (sstat for a running job, sacct -j for a finished one)."""
@@ -2119,7 +2134,9 @@ class Views:
         from .workbench import overlay
         enhanced = overlay(self, snap, app, width, height)
         if enhanced is not None:
-            return enhanced
+            from .interaction import publish, decorate_overlays
+            publish(app, getattr(app, "last_rows", []), getattr(app, "last_hits", []), width, height, overlays=enhanced)
+            return decorate_overlays(app, enhanced)
         g = self.g
         if app.mode == "confirm" and app.confirm.get("action") == "submit":
             from .research import clean

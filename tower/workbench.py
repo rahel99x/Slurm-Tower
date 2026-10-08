@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 from functools import lru_cache
 
-FEATURES = ("refresh_rate", "toolbar", "job_panels", "workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
+FEATURES = ("startup", "refresh_rate", "toolbar", "job_selection", "interaction", "scrolling", "job_panels", "workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
             "table_ui", "table_tools", "activity_ui", "session_tools", "project_ui",
             "log_workbench", "log_tools", "analysis_ui", "execution_ui")
 
@@ -68,8 +68,17 @@ def run_command(app, args):
 
 
 def overlay(views, snap, app, width, height):
+    toolbar_rows = None
     for feature in modules():
+        if feature.__name__ == "tower.startup":
+            # Welcome animation is painted beneath ordinary modals by curses.
+            continue
         rows = feature.overlay(views, snap, app, width, height)
+        if feature.__name__ == "tower.toolbar":
+            toolbar_rows = rows
+            continue
         if rows is not None:
-            return rows
-    return None
+            # A persistent menu keeps an underlying prompt/review visible.
+            # The toolbar paints last and owns pointer input until dismissed.
+            return rows + (toolbar_rows or [])
+    return toolbar_rows

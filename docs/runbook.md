@@ -207,6 +207,12 @@ or a direct-color `$TERM`. Missing data remains visibly unknown rather than
 appearing as zero usage. Plain-text reports always use ASCII, independently of
 the live dashboard's visual preference.
 
+The interactive welcome can show a short Unicode animation.
+Use View → Disable startup animation or `:startup off` to suppress it.
+Use `:startup preview` to inspect it without changing the preference.
+The reader theme and `animations = false` skip the welcome and use immediate scrolling.
+Use [Mouse and button navigation](guides/pointer-navigation.md) for saved preferences and terminal support.
+
 ## 3. Adapt setup to your environment
 
 | Your environment | Setup | Launch |
@@ -342,17 +348,34 @@ Use the [live project procedure](guides/live-workbench.md#connect-a-project-to-i
 ### Inspect a job without leaving Jobs
 
 1. Select the actual job in the active table or Recents.
-2. Click Inspector, Logs, or Investigate in Details.
-3. Use arrow keys to select another button.
-4. Press Enter to focus inspection content.
-5. Press Esc to return to the job rows.
+2. Click Inspector, Logs, Investigate, Research, or Analytics in Details.
+3. Use arrow keys and Enter to select and activate another visible button.
+4. Click the content to scroll, or use `:jobpanel focus` for native panel keyboard controls.
+5. Press Esc as needed to return to the job rows.
 
 **Expected result:** Details follows the selected job and refreshes from background snapshots.
 Select Off to hide inspection content.
 Use `:jobpanel focus` for keyboard entry.
 Use the full Logs page when you need complete-file search or copying.
+Research provides all twelve project workspaces inside Details.
+Analytics provides all five subviews.
+Choose a subview and scroll its content vertically with the wheel or page keys.
+The inline views fit the panel width without horizontal panning.
+
+Press F8 to navigate visible controls with arrow keys.
+Press Enter or Space to activate the focused control.
+Press Esc to return to content navigation.
+Hover highlights controls when the terminal reports pointer movement.
+Direct menu choices remain available until the pointer leaves the dropdown.
+
+Drag through visible job rows to mark a range for a supported group action.
+Hold Shift to keep earlier marks.
+Press Esc during capture to cancel the range.
+Release the mouse button before opening cancellation review with `c`.
+Check every target job ID before you confirm.
 
 The top-right update control remains available on every page.
+Press and drag its track to adjust the requested multiplier.
 Use `:rate` to inspect the multiplier and effective Jobs interval.
 Use `:rate 5` to request five times the configured fetching frequency.
 Use `:rate reset` to restore 1x.
@@ -623,7 +646,9 @@ keys. The low-impact CARC profile remains the starting point for live monitoring
 | Log rotated during copying | Open the current file and retry; Tower does not publish an incomplete export. |
 | Selected range changed or expired | Reselect after rotation, truncation, or retained-tail eviction; `y` will not substitute the whole file. |
 | Log lines appear to lose their first characters | Use `:logpan 0` to restore the left edge; version 3.0.1 clears old saved offsets and resets position for each new source. |
-| Scrolling stalls and keys replay in a burst | Update to version 3.0.1 or newer, restart Tower, and let the first background log load complete; cached navigation avoids shared-filesystem reads and preference writes. |
+| Scrolling stalls and keys replay in a burst | Update Tower, inspect source failures, and try `:smoothscroll off`; current wheel handling combines target movement and cached navigation avoids foreground file reads. |
+| Mouse hover or slider dragging is missing | Check reports with `:terminaltest`; inspect the terminal emulator and tmux connection, or use F8 and `:rate N`. |
+| Arrows move buttons instead of document content | Press Esc or use `:focusbuttons off`; press F8 when you want directional control focus. |
 | Details seem clipped or arrows move the wrong panel | Use Ctrl-W/F6 to focus Main or Details, then scroll or maximize that panel; `:density compact` restores the compact layout. |
 | Project picker reports no compatible run | Use the actual project root; create direct `runs/<run_id>/run.json` inventories with matching IDs, and inspect `!` notices. Discovery is local and bounded. |
 | Project sources cannot bind | Check selected-run notices and declared paths; missing reports remain missing, identity mismatches and symlink traversal are refused. |

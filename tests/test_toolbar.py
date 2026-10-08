@@ -66,7 +66,7 @@ def test_toolbar_fits_every_width_with_nonoverlapping_exact_hits(width, rate, as
 def test_slider_click_endpoints_and_drag_clamp_without_job_navigation():
     app = instance()
     T.render_bar(views(), app, 120)
-    assert click(app, target(app, "track", -1))
+    assert click(app, target(app, "track", -1), "press")
     assert R.multiplier(app) == 50 and app.toolbar_state["dragging"]
     assert T.handle_mouse(app, 9, -100, button="motion")
     assert R.multiplier(app) == 1
@@ -75,6 +75,52 @@ def test_slider_click_endpoints_and_drag_clamp_without_job_navigation():
     assert T.handle_mouse(app, 4, 900, button="release")
     assert not app.toolbar_state["dragging"]
     assert not T.handle_mouse(app, 0, 0, button="motion")
+    assert not app.commands_seen and not app.actions_seen
+
+
+def test_completed_slider_click_does_not_capture_unrelated_later_pointer_motion():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    assert click(app, target(app, "track", -1))
+    assert R.multiplier(app) == 50 and not app.toolbar_state["dragging"]
+    assert not T.handle_mouse(app, 12, -100, button="motion")
+    assert R.multiplier(app) == 50
+    assert not T.handle_mouse(app, 12, -100, button="release")
+
+
+@pytest.mark.parametrize("new_width", [0, 8, 40, 80, 180])
+def test_slider_resize_cancels_capture_and_old_track_coordinates(new_width):
+    app = instance()
+    T.render_bar(views(), app, 120)
+    assert click(app, target(app, "track", -1), "press")
+    assert app.toolbar_state["dragging"] and R.multiplier(app) == 50
+    T.render_bar(views(), app, new_width)
+    assert not app.toolbar_state["dragging"]
+    assert not T.handle_mouse(app, 10, -100, button="motion")
+    assert R.multiplier(app) == 50
+    # The release is consumed even though the track has moved or disappeared.
+    assert T.handle_mouse(app, 10, -100, button="release")
+    assert not app.toolbar_state["pressed"]
+
+
+def test_slider_release_outside_the_bar_ends_capture_without_a_second_action():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    click(app, target(app, "track"), "press")
+    T.handle_mouse(app, 25, 900, button="drag")
+    assert R.multiplier(app) == 50
+    assert T.handle_mouse(app, 25, 900, button="release")
+    assert not T.handle_mouse(app, 25, -100, button="motion")
+    assert R.multiplier(app) == 50 and not app.commands_seen
+
+
+def test_slider_release_position_finishes_drag_when_terminal_omits_motion_reports():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    click(app, target(app, "track"), "press")
+    assert R.multiplier(app) == 1
+    assert click(app, target(app, "track", -1), "release")
+    assert R.multiplier(app) == 50 and not app.toolbar_state["dragging"]
     assert not app.commands_seen and not app.actions_seen
 
 
@@ -153,7 +199,7 @@ def test_mouse_menu_uses_actual_item_and_clears_old_targets_after_change():
     assert T.handle_key(app, "right")
     assert not app.toolbar_state["menu_hits"]
     assert T.handle_mouse(app, first[0], first[1])
-    assert app.toolbar_state["menu"] is None
+    assert app.toolbar_state["menu"] == 1
     assert not app.commands_seen and not app.actions_seen
 
 
@@ -166,18 +212,105 @@ def test_mouse_context_change_does_not_execute_stale_dropdown_target():
     app.tab = "history"
     assert T.handle_mouse(app, hit[0], hit[1])
     assert not app.commands_seen
-    assert app.toolbar_state["menu"] is None
+    assert app.toolbar_state["menu"] == 0
 
 
-def test_click_outside_menu_only_dismisses_and_never_selects_hidden_job():
+def test_click_outside_menu_does_not_dismiss_or_select_hidden_job():
     app = instance()
     T.render_bar(views(), app, 120)
-    T._open(app, 0)
+    T._open(app, 0, source="mouse")
     T.overlay(views(), {}, app, 120, 30)
     assert T.handle_mouse(app, 28, 119)
-    assert app.toolbar_state["menu"] is None
+    assert app.toolbar_state["menu"] == 0
     assert not app.commands_seen and app.selected_id == "41"
+    assert T.handle_mouse(app, 28, 119, button="release") is False
+    assert app.toolbar_state["menu"] == 0
+    assert T.handle_mouse(app, 28, 119, button="motion")
+    assert app.toolbar_state["menu"] is None
     assert not T.handle_mouse(app, 28, 119)
+
+
+def test_menu_pointer_motion_keeps_borders_padding_and_toolbar_corridor_open():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    click(app, target(app, "menu"))
+    T.overlay(views(), {}, app, 120, 30)
+    top, left, bottom, right = app.toolbar_state["menu_rect"]
+    for y, x in ((top, left), (top, right - 1), (bottom - 1, left),
+                 (bottom - 1, right - 1), (top + 2, right - 2)):
+        assert T.handle_mouse(app, y, x, button="motion")
+        assert app.toolbar_state["menu"] == 0
+    assert not app.commands_seen and not app.actions_seen
+    # All labels form one corridor, so moving to Edit switches menus without
+    # requiring another click or an intermediate hidden-page interaction.
+    edit = target(app, "menu", 1)
+    assert T.handle_mouse(app, edit[0], edit[1], button="motion")
+    assert app.toolbar_state["menu"] == 1 and not app.toolbar_state["menu_hits"]
+    T.overlay(views(), {}, app, 120, 30)
+    assert T.handle_mouse(app, 29, 119, button="motion")
+    assert app.toolbar_state["menu"] is None and app.selected_id == "41"
+
+
+def test_hovering_a_disabled_menu_option_highlights_without_invoking_it():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    click(app, target(app, "menu"))
+    T.overlay(views(), {}, app, 120, 30)
+    hit = next(hit for hit in app.toolbar_state["menu_hits"] if hit[-1] == "runs")
+    assert T.handle_mouse(app, hit[0], hit[1], button="motion")
+    assert T.menu_items(app, 0)[app.toolbar_state["cursor"]].key == "runs"
+    descriptor = next(item for item in T.control_descriptors(app) if item["action"] == ("item", "runs"))
+    assert descriptor["disabled"] and "project" in descriptor["reason"].lower()
+    assert not app.commands_seen and not app.messages
+    assert T.handle_mouse(app, hit[0], hit[1])
+    assert app.toolbar_state["menu"] == 0 and not app.commands_seen
+    assert "project" in app.messages[-1].lower()
+
+
+def test_menu_controls_have_unique_stable_identity_and_one_slider_focus_stop():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    click(app, target(app, "menu"))
+    T.overlay(views(), {}, app, 120, 30)
+    controls = T.control_descriptors(app)
+    ids = [item["id"] for item in controls]
+    assert len(ids) == len(set(ids))
+    assert sum(item["action"][0] == "track" for item in controls) == 1
+    assert all(0 <= left < right <= 120 and 0 <= top < bottom <= 30
+               for item in controls for top, left, bottom, right in [item["rect"]])
+    assert len([item for item in controls if item["action"][0] == "item"]) == len(app.toolbar_state["menu_hits"])
+
+
+def test_view_accessibility_labels_follow_restored_preferences_not_config_defaults():
+    from tower import scrolling, startup
+    app = instance()
+    startup.restore(app, {"enabled": False})
+    scrolling.restore(app, {"enabled": False})
+    items = {item.key: item for item in T.menu_items(app, "View")}
+    assert items["startup-toggle"].label == "Enable startup animation"
+    assert items["smooth-scroll"].label == "Enable smooth scrolling"
+    assert items["startup-toggle"].command == "startup toggle"
+    assert items["startup-preview"].command == "startup preview"
+    assert items["focus-buttons"].command == "focusbuttons"
+    startup.restore(app, {"enabled": True})
+    scrolling.restore(app, {"enabled": True})
+    items = {item.key: item for item in T.menu_items(app, "View")}
+    assert items["startup-toggle"].label == "Disable startup animation"
+    assert items["smooth-scroll"].label == "Disable smooth scrolling"
+
+
+def test_keyboard_opened_menu_does_not_close_for_an_unrelated_stationary_pointer():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    T.handle_key(app, "f10")
+    T.overlay(views(), {}, app, 120, 30)
+    assert T.handle_mouse(app, 29, 119, button="motion")
+    assert app.toolbar_state["menu"] == 0
+    inside = app.toolbar_state["menu_hits"][0]
+    T.handle_mouse(app, inside[0], inside[1], button="motion")
+    assert app.toolbar_state["menu_source"] == "mouse"
+    T.handle_mouse(app, 29, 119, button="motion")
+    assert app.toolbar_state["menu"] is None
 
 
 def test_pending_scheduler_and_workflow_reviews_cannot_be_discarded_by_menu_commands():
@@ -352,6 +485,84 @@ def test_dispatcher_drags_and_releases_slider_without_job_selection(terminal_das
     assert app.mode == "main" and not app.logs.selection_active
 
 
+def test_dispatcher_completed_click_never_latches_the_slider(terminal_dashboard):
+    app, _, _ = terminal_dashboard
+    first, last = target(app, "track"), target(app, "track", -1)
+    selected = app.selected_id
+    dispatch_mouse(app, last[1], 0, curses.BUTTON1_CLICKED)
+    assert R.multiplier(app) == 50 and not app.toolbar_state["dragging"]
+    dispatch_mouse(app, first[1], 0, curses.REPORT_MOUSE_POSITION)
+    assert R.multiplier(app) == 50 and app.selected_id == selected
+
+
+def test_dispatcher_pressed_motion_and_release_outside_slider_are_one_gesture(terminal_dashboard):
+    app, _, _ = terminal_dashboard
+    first, last = target(app, "track"), target(app, "track", -1)
+    selected, cursor = app.selected_id, app.cursor["jobs"]
+    dispatch_mouse(app, first[1], 0, curses.BUTTON1_PRESSED)
+    dispatch_mouse(app, 900, 20, curses.REPORT_MOUSE_POSITION | curses.BUTTON1_PRESSED)
+    assert app.toolbar_state["dragging"] and R.multiplier(app) == 50
+    dispatch_mouse(app, 900, 20, curses.BUTTON1_RELEASED)
+    assert not app.toolbar_state["dragging"]
+    dispatch_mouse(app, first[1], 0, curses.REPORT_MOUSE_POSITION)
+    assert R.multiplier(app) == 50 and app.selected_id == selected
+    assert app.cursor["jobs"] == cursor and not app.logs.selection_active
+
+
+def test_dispatcher_hover_selects_switches_and_dismisses_mouse_menu_without_actions(terminal_dashboard):
+    app, painter, store = terminal_dashboard
+    selected, cursor = app.selected_id, app.cursor["jobs"]
+    file_button = target(app, "menu")
+    dispatch_mouse(app, file_button[1], 0, curses.BUTTON1_PRESSED)
+    dispatch_mouse(app, file_button[1], 0, curses.BUTTON1_RELEASED)
+    painter.overlay(store.snapshot(), app, 120, 30)
+    export = next(hit for hit in app.toolbar_state["menu_hits"] if hit[-1] == "export-text")
+    dispatch_mouse(app, export[1], export[0], curses.REPORT_MOUSE_POSITION)
+    assert T.menu_items(app, 0)[app.toolbar_state["cursor"]].key == "export-text"
+    assert app.mode == "main" and app.selected_id == selected
+    edit_button = target(app, "menu", 1)
+    dispatch_mouse(app, edit_button[1], 0, curses.REPORT_MOUSE_POSITION)
+    assert app.toolbar_state["menu"] == 1
+    painter.overlay(store.snapshot(), app, 120, 30)
+    dispatch_mouse(app, 119, 29, curses.REPORT_MOUSE_POSITION)
+    assert app.toolbar_state["menu"] is None
+    assert app.selected_id == selected and app.cursor["jobs"] == cursor
+    assert not app.project_state["root"]
+
+
+def test_dispatcher_menu_supports_repeated_toggles_without_closing(terminal_dashboard):
+    app, painter, store = terminal_dashboard
+    button = target(app, "menu", 2)
+    dispatch_mouse(app, button[1], 0, curses.BUTTON1_CLICKED)
+    for expected, label in ((True, "Resume inspection"), (False, "Pause inspection")):
+        painter.overlay(store.snapshot(), app, 120, 100)
+        hit = next(hit for hit in app.toolbar_state["menu_hits"] if hit[-1] == "freeze")
+        dispatch_mouse(app, hit[1], hit[0], curses.BUTTON1_PRESSED)
+        dispatch_mouse(app, hit[1], hit[0], curses.BUTTON1_RELEASED)
+        assert app.toolbar_state["menu"] == 2
+        assert bool(app.table_tools_state.get("freeze")) is expected
+        assert label in next(item.label for item in T.menu_items(app, "View") if item.key == "freeze")
+        assert not app.toolbar_state["menu_hits"]
+    screen._apply_input(app, ("esc", None), app.last_hits, curses)
+    assert app.toolbar_state["menu"] is None and app.mode == "main"
+
+
+def test_prompt_keeps_dropdown_until_pointer_exit_and_preserves_editable_command(terminal_dashboard):
+    app, painter, store = terminal_dashboard
+    button = target(app, "menu")
+    dispatch_mouse(app, button[1], 0, curses.BUTTON1_CLICKED)
+    painter.overlay(store.snapshot(), app, 120, 30)
+    hit = next(hit for hit in app.toolbar_state["menu_hits"] if hit[-1] == "project")
+    dispatch_mouse(app, hit[1], hit[0], curses.BUTTON1_CLICKED)
+    assert app.mode == "palette" and app.palette_edit == "project "
+    assert app.toolbar_state["menu"] == 0 and not app.toolbar_state["menu_hits"]
+    painter.overlay(store.snapshot(), app, 120, 30)
+    dispatch_mouse(app, 119, 29, curses.REPORT_MOUSE_POSITION)
+    assert app.toolbar_state["menu"] is None
+    assert app.mode == "palette" and app.palette_edit == "project "
+    assert app.command_state["origin_mode"] == "main" and not app.project_state["root"]
+
+
 @pytest.mark.parametrize("mode", ["confirm", "terminal_probe"])
 def test_dispatcher_quit_button_remains_available_over_reviews_and_input_probe(terminal_dashboard, mode):
     app, _, _ = terminal_dashboard
@@ -372,7 +583,7 @@ def test_dispatcher_rejects_stale_menu_target_after_underlying_tab_changes(termi
     project = next(hit for hit in app.toolbar_state["menu_hits"] if hit[-1] == "project")
     app.enter_tab("history")
     dispatch_mouse(app, project[1], project[0], curses.BUTTON1_PRESSED)
-    assert app.toolbar_state["menu"] is None and app.tab == "history"
+    assert app.toolbar_state["menu"] == 0 and app.tab == "history"
     assert app.mode == "main" and not app.palette_edit
     assert not app.project_state["root"] and not app.research
 
@@ -411,7 +622,7 @@ def test_queued_menu_navigation_repaints_before_next_move_and_activation(termina
     event = screen._read_input(window, curses)
     assert event == ("enter", None)
     screen._consume_input_batch(app, window, curses, app.last_hits, event)
-    assert app.tab == "history" and app.toolbar_state["menu"] is None
+    assert app.tab == "history" and app.toolbar_state["menu"] == 2
     assert not window.values and not app.marks
 
 
@@ -425,6 +636,36 @@ def test_every_width_retains_rate_value_across_responsive_layout_thresholds():
             assert L.vlen(text) == width
             if width >= len(str(rate)) + 2:
                 assert str(rate) + "x" in text, (width, rate, text)
+
+
+def test_rate_digit_changes_keep_slider_and_menu_geometry_fixed_at_every_width():
+    app = instance()
+    for width in range(8, 201):
+        baseline = None
+        for rate in (1, 9, 10, 25, 50):
+            R.set_multiplier(app, rate)
+            T.render_bar(views(), app, width)
+            geometry = [(left, right, kind, key) for _, left, right, kind, key
+                        in app.toolbar_state["hits"] if kind in ("menu", "minus", "track", "plus")]
+            if baseline is None:
+                baseline = geometry
+            assert geometry == baseline, (width, rate, baseline, geometry)
+
+
+def test_rate_crossing_ten_keeps_capture_and_drag_bounds_in_place():
+    app = instance()
+    R.set_multiplier(app, 9)
+    T.render_bar(views(), app, 80)
+    first, last = target(app, "track"), target(app, "track", -1)
+    click(app, first, "press")
+    T.handle_mouse(app, 0, last[1], button="drag")
+    assert R.multiplier(app) == 50 and app.toolbar_state["dragging"]
+    T.render_bar(views(), app, 80)
+    assert target(app, "track")[1:3] == first[1:3]
+    assert target(app, "track", -1)[1:3] == last[1:3]
+    assert app.toolbar_state["dragging"]
+    T.handle_mouse(app, 0, first[1], button="release")
+    assert R.multiplier(app) == 1 and not app.toolbar_state["dragging"]
 
 
 def test_actual_curses_paint_keeps_global_bar_visible_above_tiny_confirmation(terminal_dashboard, monkeypatch):

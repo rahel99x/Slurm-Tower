@@ -17,7 +17,7 @@ REQUIRED = {"id", "name", "st", "state"}
 
 
 def initialize(app):
-    app.table_state = {"hidden": {}, "order": {}, "widths": {}, "filters": {}, "facets": {}, "views": {}, "sorts": {}, "cursor": 0, "tab": "jobs", "groups": False, "collapsed": []}
+    app.table_state = {"hidden": {}, "order": {}, "widths": {}, "filters": {}, "facets": {}, "views": {}, "sorts": {}, "cursor": 0, "tab": "jobs", "groups": False, "collapsed": [], "control_hits": []}
 
 
 def restore(app, data):
@@ -436,6 +436,7 @@ def handle_key(app, key):
     cols = ordered_definitions(app, state["tab"])
     if key in ("esc", "q", "enter"):
         app.mode = "main"
+        state["control_hits"] = []
     elif key in ("up", "down", "home", "end"):
         step = {"up": -1, "down": 1, "home": -len(cols), "end": len(cols)}[key]
         state["cursor"] = max(0, min(len(cols) - 1, state["cursor"] + step))
@@ -477,15 +478,42 @@ def ordered_definitions(app, tab):
     return sorted(cols, key=lambda column: positions.get(column.key, len(positions)))
 
 
+def handle_mouse(app, y, x, button="left", shift=False):
+    """Toggle the exact checkbox painted here using the keyboard's rules."""
+    if getattr(app, "mode", "main") != "columns" or button != "left":
+        return False
+    state = app.table_state
+    for row, kind, value in state.get("control_hits", []):
+        if row != y or not value["left"] <= x < value["right"]:
+            continue
+        table, column = value["column"]
+        if table != state["tab"]:
+            return False
+        cols = ordered_definitions(app, table)
+        index = next((index for index, item in enumerate(cols) if item.key == column), None)
+        if index is None:
+            return False
+        state["cursor"] = index
+        if column in REQUIRED:
+            app.say("Required identity/state column; use width or reorder to adjust it")
+        else:
+            handle_key(app, "space")
+        return True
+    return False
+
+
 def overlay(views, snap, app, width, height):
+    state = app.table_state
+    state["control_hits"] = []
     if app.mode != "columns":
         return None
-    state = app.table_state
     cols = ordered_definitions(app, state["tab"])
     hidden = state["hidden"].get(state["tab"], [])
     cursor = state["cursor"]
-    available = max(1, height - 5)
-    start = max(0, cursor - available // 2)
+    # Two hints, two borders and the box's outer margins reserve six rows.
+    # Fit selection to the actual visible checkbox capacity on tiny terminals.
+    available = max(0, height - 6)
+    start = max(0, min(max(0, len(cols) - available), cursor - available // 2))
     rows = [[(" Space show/hide | Up/Down select | Left/Right reorder", "dim")],
             [(" +/- width | a automatic width | r reset | Enter done", "dim")]]
     for index, column in enumerate(cols[start:start + available], start):
@@ -493,4 +521,23 @@ def overlay(views, snap, app, width, height):
         width_text = str(state["widths"].get(state["tab"], {}).get(column.key, "auto"))
         text = f" [{' ' if column.key in hidden else 'x'}] {column.title:16} {column.key} width {width_text}{required}"
         rows.append([(text, "sel" if index == cursor else "")])
-    return L.box(views.g, rows, width, height, state["tab"].title() + " columns")
+    rendered = L.box(views.g, rows, width, height, state["tab"].title() + " columns")
+    # The box may clip rows or terminal cells. Derive controls only from its
+    # actual interior placements, never guessed modal offsets or labels.
+    for index, column in enumerate(cols[start:start + available]):
+        line_index = index + 2
+        if line_index >= max(0, len(rendered) - 2):
+            break
+        y, x, segments = rendered[line_index + 1]
+        inner_width = max(0, L.vlen(L.row_text(segments)) - 2)
+        visible_width = min(inner_width, L.vlen(L.row_text(rows[line_index])))
+        if y < 1 or visible_width < 1:
+            continue
+        left, right = x + 1, x + 1 + visible_width
+        required = column.key in REQUIRED
+        state["control_hits"].append((y, "control", {
+            "id": f"column:{state['tab']}:{column.key}", "label": column.title + " checkbox",
+            "left": left, "right": right, "action": ("click", y, left), "group": "columns",
+            "column": (state["tab"], column.key), "enabled": not required,
+            "reason": "Required identity/state column" if required else ""}))
+    return rendered

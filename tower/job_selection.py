@@ -1,0 +1,123 @@
+"""Mouse range selection of exact job IDs for existing marked-job actions."""
+from __future__ import annotations
+
+MAX_SELECTION = 50000
+ROW_KINDS = {"jobs": {"job", "recent"}, "history": {"fin"},
+             "group": {"group"}, "deps": {"dep"}}
+
+
+def initialize(app):
+    if not isinstance(getattr(app, "job_selection_state", None), dict):
+        app.job_selection_state = {"capture": None}
+    return app.job_selection_state
+
+
+def command_names():
+    return []
+
+
+def run_command(app, args):
+    return False
+
+
+def overlay(views, snap, app, width, height):
+    return None
+
+
+def _order(app):
+    tab = getattr(app, "tab", "")
+    if tab == "jobs":
+        return tuple((list(getattr(app, "visible_ids", [])) + list(getattr(app, "recent_ids", [])))[:MAX_SELECTION])
+    if tab == "history":
+        return tuple(record.id for record in app.history_jobs())[:MAX_SELECTION]
+    return tuple(getattr(app, "group_ids" if tab == "group" else "dep_ids", []))[:MAX_SELECTION]
+
+
+def _hit(app, y, x):
+    if x < 0 or x >= getattr(app, "width", 120):
+        return None
+    if getattr(app, "tab", "") == "jobs":
+        from .job_panels import contains
+        if contains(app, y, x):
+            return None
+    kinds = ROW_KINDS.get(getattr(app, "tab", ""), set())
+    return next((identifier for row, kind, identifier in getattr(app, "last_hits", [])
+                 if row == y and kind in kinds and isinstance(identifier, str)), None)
+
+
+def active(app):
+    return bool(initialize(app)["capture"])
+
+
+def _valid(app, capture):
+    return (getattr(app, "mode", "main") == "main" and app.tab == capture["tab"]
+            and getattr(app, "toolbar_state", {}).get("menu") is None
+            and not getattr(app, "toolbar_state", {}).get("panel")
+            and _order(app) == capture["ids"])
+
+
+def tick(app):
+    state = initialize(app)
+    if state["capture"] and not _valid(app, state["capture"]):
+        state["capture"] = None
+
+
+def handle_key(app, key):
+    state = initialize(app)
+    capture = state["capture"]
+    if capture:
+        state["capture"] = None
+        if key == "esc":
+            app.marks = set(capture["base"])
+            app.say("Drag selection cancelled")
+            return True
+    return False
+
+
+def _range(app, capture, identifier):
+    ids = capture["ids"]
+    if identifier not in ids:
+        return
+    first, last = sorted((ids.index(capture["anchor"]), ids.index(identifier)))
+    app.marks = (set(capture["base"]) if capture["extend"] else set()) | set(ids[first:last + 1])
+    capture["moved"] = True
+    app.cursor[app.tab] = ids.index(identifier)
+    app.sync_selection()
+    app.say(f"{len(app.marks)} jobs marked; drag to adjust, release to finish")
+
+
+def handle_mouse(app, y, x, button="left", shift=False):
+    state = initialize(app)
+    capture = state["capture"]
+    if capture:
+        if not _valid(app, capture):
+            state["capture"] = None
+            return button in ("release", "motion", "drag")
+        if button in ("motion", "drag", "release"):
+            identifier = _hit(app, y, x)
+            if identifier and (identifier != capture["anchor"] or capture["moved"]):
+                _range(app, capture, identifier)
+            if button == "release":
+                state["capture"] = None
+                if capture["moved"]:
+                    app.say(f"{len(app.marks)} jobs marked; use the existing job action and review the group")
+            return True
+        if button in ("left", "press"):
+            state["capture"] = None
+        else:
+            return False
+    if (button != "press" or getattr(app, "mode", "main") != "main"
+            or getattr(app, "toolbar_state", {}).get("menu") is not None
+            or getattr(app, "toolbar_state", {}).get("panel")
+            or getattr(app, "tab", "") not in ROW_KINDS):
+        return False
+    identifier = _hit(app, y, x)
+    ids = _order(app)
+    if identifier not in ids:
+        return False
+    state["capture"] = {"tab": app.tab, "anchor": identifier, "ids": ids,
+                        "base": set(app.marks), "extend": bool(shift), "moved": False}
+    # A press retains ordinary row selection. Marks change only on a range drag.
+    app.cursor[app.tab] = ids.index(identifier)
+    app.sync_selection()
+    return True

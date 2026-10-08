@@ -215,7 +215,11 @@ class App:
                 self.selected_id if self.tab == "jobs" and self.mode == "main"
                 and getattr(self, "job_panel_state", {}).get("mode") != "off" else None)
             self.sampler.select_fin(fin_target if fin_target and not self.store.job(fin_target) else None)
-            self.sampler.select_trace(self.analytics_job if (self.tab == "analytics" and self.analytics_view == "job") else None)
+            panel = getattr(self, "job_panel_state", {})
+            inline_trace = (self.tab == "jobs" and self.mode == "main" and panel.get("mode") == "analytics"
+                            and panel.get("analytics_view", "job") == "job")
+            self.sampler.select_trace(self.selected_id if inline_trace else
+                                      self.analytics_job if (self.tab == "analytics" and self.analytics_view == "job") else None)
         workbench.tick(self)
 
     @property
@@ -539,6 +543,8 @@ class App:
         if key == "ctrl-c" and self.mode != "terminal_probe" and not binding_test and key not in self.keymap:
             self.quit = True
             return
+        from .startup import handle_key as startup_key
+        startup_key(self, key)
         self.sync_selection()
         toolbar_state = getattr(self, "toolbar_state", {})
         if key == "f10" or toolbar_state.get("menu") is not None or toolbar_state.get("panel") or toolbar_state.get("focus") == "rate":
@@ -1393,6 +1399,10 @@ class App:
             else:
                 self.fail("tab <" + "|".join(t for t, _ in TABS) + ">")
         elif cmd == "view":
+            if len(args) == 1 and args[0] in dict(NODES_VIEWS):
+                self.nodes_view = args[0]
+                self.enter_tab("nodes")
+                return
             if args and args[0] in dict(RESEARCH_VIEWS):
                 self.research_view = args[0]
                 self.research_scroll = 0
@@ -1659,6 +1669,20 @@ class App:
         """A mouse click: on the tab bar switches tabs, on a row selects it; a right or shift click extends the
         line selection from the last click to this row."""
         self.last_hits = list(hits)
+        from .startup import handle_mouse as startup_mouse
+        startup_mouse(self, y, x, button=button, shift=shift)
+        from .interaction import handle_mouse as pointer_mouse
+        pointer_mouse(self, y, x, button="motion", shift=shift)
+        from .toolbar import handle_mouse as toolbar_mouse
+        if toolbar_mouse(self, y, x, button=button, shift=shift):
+            return
+        from .job_selection import handle_mouse as select_mouse
+        if select_mouse(self, y, x, button=button, shift=shift):
+            return
+        if button == "press":
+            button = "left"
+        elif button in ("motion", "drag", "release") and self.mode != "terminal_probe":
+            return
         if workbench.handle_mouse(self, y, x, button, shift):
             return
         from .table_tools import handle_click_hit

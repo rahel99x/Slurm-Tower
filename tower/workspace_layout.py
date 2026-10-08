@@ -293,9 +293,18 @@ def partition(body, hits, tab: str = "jobs") -> dict:
     groups = {name: {"rows": [], "hits": []} for name in PANELS}
     panel = "main"
     source_map = {}
-    for y, row in enumerate(body[:MAX_SOURCE_ROWS]):
+    recent_separators = {y - 1 for y, kind, value in hits if kind == "sort_header"
+                         and isinstance(value, tuple) and value[0] == "recent"}
+    recent_rows = [y for y, kind, value in hits if kind == "recent"]
+    if recent_rows:
+        recent_separators.add(min(recent_rows) - 2)
+    limit = MAX_SOURCE_ROWS + MAX_REFLOW_ROWS if tab == "jobs" else MAX_SOURCE_ROWS
+    for y, row in enumerate(body[:limit]):
         title = _section_title(row)
-        if title:
+        # Inline Research/Analytics headings belong to Details even when they
+        # say "history" or "dependencies". Only the queue's outer separator
+        # changes which workspace owns a row.
+        if title and not (tab == "jobs" and panel == "details" and y not in recent_separators):
             if title.startswith(("selected", "details", "resources", "evidence", "advice", "events", "recent events")):
                 panel = "details"
             elif title.startswith(("jobs", "recent", "history", "nodes", "dependencies", "sources")):
@@ -370,19 +379,27 @@ def _wrap_row(row: L.Row, width: int) -> list[L.Row]:
     return lines
 
 
-def _reflow(rows, hits, width: int):
-    interactive = {y for y, _, _ in hits}
-    mapped, result = {}, []
+def _reflow(rows, hits, width: int, mapping=None):
+    interactive = {y for y, kind, _ in hits if kind != "job_panel_action"}
+    mapped, ends, result = {}, {}, []
     for y, row in enumerate(rows):
         mapped[y] = len(result)
         if y in interactive or _section_title(row) is not None or any("┌" in text or "└" in text or "│" in text for text, _ in row):
             result.append(L.clip_row(row, width))
         else:
             result.extend(_wrap_row(row, width))
+        ends[y] = len(result)
         if len(result) >= MAX_REFLOW_ROWS:
             result = result[:MAX_REFLOW_ROWS]
             break
-    return result, [(mapped[y], kind, value) for y, kind, value in hits if y in mapped and mapped[y] < len(result)]
+    if mapping is not None:
+        mapping.update(mapped)
+    remapped = []
+    for y, kind, value in hits:
+        if y in mapped and mapped[y] < len(result):
+            indices = range(mapped[y], min(ends[y], len(result))) if kind == "job_panel_action" else (mapped[y],)
+            remapped.extend((index, kind, value) for index in indices)
+    return result, remapped
 
 
 def _preserve_titles(fitted, original) -> None:
@@ -444,10 +461,11 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         key = _key(app, panel)
         padding = 1 if (state.density == "comfortable" and rect.width >= 8 and rect.height >= 5
                         and not (native_jobs and panel == "main" and rect.height < 7)) else 0
-        source, source_hits = _reflow(source, source_hits, max(0, rect.width - padding * 2))
+        raw_mapping = {}
+        source, source_hits = _reflow(source, source_hits, max(0, rect.width - padding * 2), raw_mapping)
         # Column headers are buttons, not selectable data rows. Header-only
         # tables must keep their normal panel-scrolling controls.
-        drill_buttons = {"sort_header", "node_row", "node_cell", "partition_row", "user_drill", "job_panel_tab", "job_panel_file"}
+        drill_buttons = {"sort_header", "node_row", "node_cell", "partition_row", "user_drill", "control", "job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"}
         data_hits = [(y, kind, value) for y, kind, value in source_hits if kind not in drill_buttons]
         state.interactive_panels[key] = bool(data_hits)
         page = max(0, rect.height - 1 - padding * 2)
@@ -456,13 +474,14 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         if panel == "details" and page >= 1:
             # Details mode buttons remain reachable while long inspections or
             # evidence scroll. Their horizontal hit bounds survive resizing.
-            indices = sorted({y for y, kind, _ in source_hits if kind == "job_panel_tab"})
-            indices = indices[:max(1, min(4, page))]
+            indices = sorted({y for y, kind, _ in source_hits if kind in ("job_panel_tab", "job_panel_view")})
+            # Leave at least one content row whenever the pane can show two.
+            indices = indices[:max(1, page - 1)]
             if indices:
                 sticky = [source[index] for index in indices]
                 sticky_map = {index: position for position, index in enumerate(indices)}
                 sticky_hits = [(sticky_map[y], kind, value) for y, kind, value in source_hits
-                               if kind == "job_panel_tab" and y in sticky_map]
+                               if kind in ("job_panel_tab", "job_panel_view") and y in sticky_map]
                 removed = set(indices)
                 remap, remaining = {}, []
                 for index, row in enumerate(source):
@@ -482,7 +501,7 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
             sticky = [source[index] for index in indices]
             sticky_map = {index: position for position, index in enumerate(indices)}
             sticky_hits = [(sticky_map[y], kind, value) for y, kind, value in source_hits
-                           if kind == "sort_header" and y in sticky_map]
+                           if kind in ("sort_header", "control") and y in sticky_map]
             removed = set(indices)
             remap, remaining = {}, []
             for index, row in enumerate(source):
@@ -513,8 +532,36 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                 elif row >= top + max(1, page):
                     top = row - max(1, page) + 1
             state.selected[key] = selected_key
-        visible, mapped_hits, top = L.scroll_window(source, source_hits, max(0, rect.width - padding * 2), page, top)
-        state.scroll[key] = top
+        logical_top = max(0, min(max(0, len(source) - page), top))
+        from .scrolling import viewport
+        inline = getattr(app, "job_panel_state", {})
+        context = (getattr(app, "selected_id", None), rect.width, page,
+                   inline.get("mode"), inline.get("research_view"), inline.get("analytics_view"))
+        painted_top = viewport(app, "workspace:" + key, logical_top, len(source), page, context=context)
+        visible, mapped_hits, top = L.scroll_window(source, source_hits, max(0, rect.width - padding * 2), page, painted_top)
+        state.scroll[key] = logical_top
+        if native_jobs and panel == "details":
+            from .job_panels import _view_key
+            view_key = _view_key(inline)
+            inline["scrolls"][view_key] = logical_top
+            if inline.get("mode") == "research":
+                usable_width = max(0, rect.width - padding * 2)
+                header = inline["document_headers"].get((view_key, usable_width), 0)
+                document_key = (view_key, usable_width)
+                inline["document_maps"][document_key] = {
+                    "mapping": raw_mapping, "header": header, "sticky": len(sticky)}
+                for cache_name in ("document_maps", "document_windows", "document_headers"):
+                    while len(inline[cache_name]) > 24:
+                        inline[cache_name].pop(next(iter(inline[cache_name])))
+                # Map the next visible reflowed window back to raw document
+                # rows. Metric charts outside it reserve blank rows only.
+                lower, upper = top + len(sticky), top + len(sticky) + page
+                candidates = [raw for raw, fitted in raw_mapping.items()
+                              if lower - 16 <= fitted <= upper + 16]
+                if candidates:
+                    inline["document_windows"][(view_key, usable_width)] = (
+                        max(0, min(candidates) - header - 16),
+                        max(0, max(candidates) - header + 16))
         title = panel.title() + ("  [z restore]" if state.maximized else "")
         rows = [L.panel_title(g, title, rect.width, state.focus == panel, (top, min(len(source), top + page), len(source)))]
         if padding:
@@ -532,7 +579,14 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                 if left >= right:
                     return
                 value = (tab, column, rect.x + padding + left, rect.x + padding + right)
-            elif kind in ("node_cell", "job_panel_tab", "job_panel_file"):
+            elif kind == "control" and isinstance(value, dict):
+                left = value.get("left", 0)
+                right = min(value.get("right", 0), max(0, rect.width - padding * 2))
+                if left >= right:
+                    return
+                value = {**value, "left": rect.x + padding + left,
+                         "right": rect.x + padding + right}
+            elif kind in ("node_cell", "job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"):
                 name, left, right = value
                 right = min(right, max(0, rect.width - padding * 2))
                 if left >= right:
@@ -589,7 +643,13 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
     # Native tab renderers already limit their work to their requested height.
     # A larger bounded source keeps lower sections reachable rather than clipped.
     source_height = max(height, MAX_SOURCE_ROWS)
-    body, hits = default_renderer(width, source_height)
+    previous_canvas = getattr(app, "job_panel_source_canvas", False)
+    if native_jobs:
+        app.job_panel_source_canvas = True
+    try:
+        body, hits = default_renderer(width, source_height)
+    finally:
+        app.job_panel_source_canvas = previous_canvas
     groups = partition(body, hits, getattr(app, "tab", "jobs"))
     originals = {panel: {"rows": list(group["rows"]), "hits": list(group["hits"])} for panel, group in groups.items()}
     rects = geometry(app, width, height, has_details=bool(groups["details"]["rows"]))
@@ -601,7 +661,12 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
                         and not (native_jobs and panel == "main" and rect.height < 7)) else 0
         usable_width = max(0, rect.width - padding * 2)
         if usable_width not in by_width:
-            fitted_body, fitted_hits = default_renderer(usable_width, source_height)
+            if native_jobs:
+                app.job_panel_source_canvas = True
+            try:
+                fitted_body, fitted_hits = default_renderer(usable_width, source_height)
+            finally:
+                app.job_panel_source_canvas = previous_canvas
             by_width[usable_width] = partition(fitted_body, fitted_hits, getattr(app, "tab", "jobs"))
         groups[panel] = by_width[usable_width][panel]
         _preserve_titles(groups[panel], originals[panel])

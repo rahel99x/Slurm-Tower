@@ -9,6 +9,7 @@ Press Esc to leave either test.
 This guide lists launch methods, default keys, mouse actions, and command families.
 Use `?` inside Tower for contextual help.
 Use the feature guides for complete procedures and operating limits.
+Use [Mouse and button navigation](guides/pointer-navigation.md) for hover feedback, directional focus, dragging, and motion preferences.
 
 ## Control notation
 
@@ -74,6 +75,7 @@ Use the [runbook](runbook.md#3-adapt-setup-to-your-environment) for other setup 
 | `Ctrl-P` | Open the Research workspace picker |
 | `Ctrl-A` | Open Activity |
 | F10 | Open or close the terminal toolbar menu |
+| F8 | Toggle directional focus for visible buttons and links |
 | `:` | Open the command palette |
 | `/` | Filter the current list or search the current log |
 | `?` | Open contextual searchable help |
@@ -115,7 +117,7 @@ Menu actions use the same commands and reviews as their keyboard equivalents.
 | `f`, `e`, `v`, `h` in a menu | Select File, Edit, View, or Help |
 | Up / Down, page keys, Home / End in a menu | Select a menu choice |
 | Enter / Space, or click a menu choice | Activate the choice |
-| Esc, `q`, F10, or click outside the menu | Dismiss the menu |
+| Esc, `q`, F10, or move the pointer outside the dropdown | Dismiss the menu |
 | Click `x` | Exit Tower |
 | Click or drag the update track | Choose a requested multiplier from 1x to 50x |
 | Click `[-]` / `[+]`, or use the wheel over the update control | Decrease or increase the multiplier by one |
@@ -128,9 +130,33 @@ Menu actions use the same commands and reviews as their keyboard equivalents.
 
 A menu choice ending in `...` opens an editable command prompt.
 Unavailable choices report their required context.
-Clicking outside a menu dismisses it without activating the underlying page.
+Direct choices keep the dropdown available while the pointer stays inside it.
+An input prompt or action review remains beneath the dropdown.
+Dismiss the menu before editing that prompt or completing the review.
+Hover highlights a control without activating it.
 See [Live workbench](guides/live-workbench.md#use-the-terminal-toolbar) for every menu choice.
 See [Update rate](guides/live-workbench.md#set-the-update-rate) for source limits and saved preferences.
+
+### Mouse and directional button focus
+
+| Control | Function |
+| --- | --- |
+| Move the pointer over a button, menu choice, or link | Highlight that visible control |
+| F8, `:focusbuttons`, or `:focusbuttons on` | Enter directional button focus |
+| Arrow keys with button focus | Select the nearest visible control in that direction |
+| Tab / Shift-Tab with button focus | Select the next or previous visible control |
+| Home / End with button focus | Select the first or last visible control |
+| Enter / Space with button focus | Activate the focused control |
+| Esc or `:focusbuttons off` | Restore normal content controls |
+| Click content or scroll | Restore content navigation |
+| `:smoothscroll [on\|off\|toggle]` | Change mouse-wheel viewport smoothing; no argument toggles it |
+| `:startup [on\|off\|toggle\|preview]` | Change or preview the welcome display; no argument reports the setting |
+
+Mouse hover and drag require movement reports from the terminal.
+Use `:terminaltest` to inspect reported keys and mouse events.
+Keyboard navigation remains available when those reports are missing.
+The reader theme and `animations = false` use immediate scrolling and skip the welcome.
+See [Mouse and button navigation](guides/pointer-navigation.md) for procedures, saved preferences, and troubleshooting.
 
 ## Navigation, settings, and input
 
@@ -212,10 +238,16 @@ See [Navigation](guides/navigation.md#feature-35) for multiline input and quotin
 
 Marked jobs are the target of supported group actions.
 When no jobs are marked, the selected job is the target.
+Drag through visible job rows to mark a range in the current table order.
+Hold Shift to add that range to existing marks.
+Press Esc during capture to cancel the drag and restore earlier marks.
+Release the mouse button to complete the range before opening a job action.
 Inspect the complete target list in the action review.
 Use Tab to choose Cancel or Confirm.
 Press Enter to activate the selected review control.
 For ordinary action reviews, `y` confirms and `n` or `Esc` cancels.
+Use `:inspect section Overview\|Resources\|Steps\|Files\|Evidence` to select a section in an open structured inspector.
+The inspector's section buttons also accept mouse clicks.
 
 Click column headings for cascading sorts.
 Use `:sortby [TABLE] COLUMN [asc|desc|off]` for the equivalent command.
@@ -224,24 +256,32 @@ See [Tables](guides/tables.md) for sort editing, column controls, filters, marks
 
 ### Jobs Details buttons
 
-Jobs provides Inspector, Logs, Investigate, and Off buttons in Details.
+Jobs provides Inspector, Logs, Investigate, Research, Analytics, and Off buttons in Details.
 The buttons inspect the selected active or recent job without leaving Jobs.
 
 | Control | Function |
 | --- | --- |
-| Click a Details button | Select its mode and focus the button row |
-| Arrow keys with button focus | Select and activate the previous or next button |
-| Home / End with button focus | Select Inspector or Off |
-| Enter / Tab with button or content focus | Toggle focus between buttons and content |
+| Click a Details button | Select its mode and enter visible-control graph focus |
+| Arrows, then Enter / Space in graph focus | Focus a nearby control, then activate it |
+| Esc / F8 in graph focus | Restore native panel navigation |
+| Arrow keys after `:jobpanel focus` | Select and activate the previous or next Details mode |
+| Home / End after `:jobpanel focus` | Select Inspector or Off |
+| Enter / Tab in native panel focus | Change focus between buttons and content; Research and Analytics include their subview buttons |
 | Up / Down, page keys with content focus | Scroll inspection content or retained log lines |
 | Left / Right with Logs content focus | Select the previous or next exact log file |
 | Home / End with Logs content focus | Reach the oldest retained line or follow the tail |
-| Click a log source button | Read that file and focus log content |
+| Click a log source button | Read that file; click its content or leave graph focus to use native scroll keys |
+| Click Research or Analytics, then a subview | Show that workspace inside Details |
+| Wheel over Details with content visible | Scroll that view vertically |
 | Esc | Return input to the job rows |
-| `:jobpanel [inspector\|logs\|investigate\|off\|focus]` | Select a mode or focus the buttons without a mouse |
+| `:jobpanel [inspector\|logs\|investigate\|research\|analytics\|off\|focus]` | Select a mode or focus the buttons without a mouse |
+| `:jobpanel research VIEW` | Select one of the twelve inline Research workspaces |
+| `:jobpanel analytics VIEW` | Select Job series, History, Timeline, Advisor, or Compare |
 
 Use the full Logs page for complete-file search and copying.
 Off hides inspection content and starts no new log or evidence reads.
+Inline views fit the panel width and retain an independent vertical position for each subview.
+The full Research, Analytics, and Logs pages keep their own selection and position.
 See [Live workbench](guides/live-workbench.md#inspect-a-job-inside-jobs) for procedures and layout behavior.
 
 ## Table inspection
@@ -293,6 +333,10 @@ Use `+` and `-` to change width.
 Use `a` for automatic width.
 Use `r` to reset column order, widths, and visibility.
 Space changes optional visibility.
+Click a visible column checkbox to show or hide that optional column.
+Hover feedback and F8 navigation use the same checkbox control.
+Required identity and state columns remain visible.
+Adjust their widths or order when you need more space.
 Enter closes the overlay.
 
 In the filter builder, Enter edits a field.
@@ -472,6 +516,9 @@ See [Operations](guides/operations.md) for precise persistence, limits, and trou
 | `:chart events` | Open the observed-event list |
 | `:chart events on\|off` | Show or hide event markers |
 | `:chart event NUMBER` | Open the numbered event's citation or exact job |
+| `:timeline [events]` | Open the observed-event timeline |
+| `:timeline open EVENT_NUMBER` | Open the exact job or cited log for the numbered timeline event; numbers start at one |
+| `:timeline seek EVENT_NUMBER` | Seek a numbered event in a replay when supported |
 | `:chart shared on\|off` | Change the scale lock for comparisons |
 | `:metricdisplay METRIC label TEXT` | Set a display label |
 | `:metricdisplay METRIC unit DECLARED_UNIT` | Set a declared display unit |
@@ -488,9 +535,12 @@ Use `g` for a logarithmic axis.
 Use `r` to set the start and end of a sample interval.
 Use `e` to open observed events.
 Use `s` to change shared-scale mode.
+Click a visible time-preset or axis control for the corresponding chart operation.
 
 In Diff, `s` changes the comparison scale lock.
 In the event picker, Enter opens the selected citation or job.
+Click an event's visible text or source row to open that exact painted citation.
+Chart Events and Timeline links also support F8 navigation and Enter activation.
 Display labels and precision do not change recorded values.
 See [Charts](guides/charts.md) for coverage, axis restrictions, and declared units.
 
@@ -500,9 +550,11 @@ See [Charts](guides/charts.md) for coverage, axis restrictions, and declared uni
 | --- | --- |
 | `:outputs` | Browse declared artifacts for the selected project run |
 | `:artifact` | Open the selected artifact |
+| `:artifact open RELATIVE_PATH` | Expand or open the exact visible declared output in the artifact browser |
 | `:artifact next\|prev` | Load the next or previous artifact page |
 | `:artifact refresh` | Reload the preview |
 | `:artifact columns NAME_OR_NUMBER...` | Select CSV columns by name or number; indices start at one |
+| `:artifact column NAME_OR_NUMBER` | Focus one column in an open CSV preview |
 | `:artifact sort COLUMN asc\|desc\|off` | Change the global CSV record order before paging |
 | `:artifact json /POINTER` | Inspect a JSON Pointer |
 | `:artifact text` | Open raw text pages from the first page |
@@ -511,9 +563,12 @@ See [Charts](guides/charts.md) for coverage, axis restrictions, and declared uni
 Use `[` and `]` for background page loading.
 Use arrows and page keys to scroll the loaded content.
 In CSV, Left/Right focuses a column.
+Click a column button to focus that column.
 Enter cycles ascending, descending, and off.
 Use `c` to change the focused column's visibility.
 In JSON, Enter or Space expands the selected node.
+Click a run row to bind its exact attempt.
+Click a declared output row to expand its directory or open its bounded preview.
 See [Artifacts](guides/artifacts.md) for size limits, source identity, and declared path rules.
 
 ## Command families
@@ -536,6 +591,7 @@ Job-changing commands open a review; scripted changes require `--yes`.
 | Log files and presentation | `find`, `wrap`, `bookmark`, `logview`, `logpan`, `loggroup`, `logpreview`, `logalign`, `logdiff`, `logjson`, `logfold`, `logunread` | [Log display](guides/log-view.md) |
 | Complete-file log inspection | `logolder`, `logsearch`, `logsearchmode`, `logresults`, `loggoto`, `logmark`, `logmarks` | [Log search](guides/log-search.md) |
 | Sampling and profiles | `rate`, `refresh`, `source`, `gpu`, `bell`, `profile`, `theme` | [Live workbench](guides/live-workbench.md#set-the-update-rate) |
+| Pointer navigation and motion | `focusbuttons`, `smoothscroll`, `startup` | [Mouse and button navigation](guides/pointer-navigation.md) |
 | Activity and output | `activity`, `notifications`, `task`, `export`, `exports`, `copy` | [Operations](guides/operations.md) |
 | Completion and alert delivery | `inbox`, `alerts` | [Operations](guides/operations.md) |
 | Terminal diagnostics | `terminaldoctor`, `terminaltest` | [Operations](guides/operations.md) |

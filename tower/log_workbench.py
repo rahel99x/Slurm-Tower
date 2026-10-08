@@ -316,6 +316,11 @@ def handle_mouse(app, y, x, button="left", shift=False):
     state = _state(app)
     if app.tab != "log" or app.mode != "main" or app.logs.browser or state["view"] == "plain":
         return False
+    if button == "left" and not shift:
+        for row, _, value in state.get("control_hits", []):
+            if row == y and value["left"] <= x < value["right"]:
+                handle_key(app, value["action"][1])
+                return True
     # Alternate panels cover the original hit map. Never select a hidden raw
     # line through the visible JSON, folded, split, or diff presentation.
     if button in ("left", "double") and not shift and y in state["mouse_rows"]:
@@ -663,11 +668,13 @@ def _presentation_rows(state, sources):
 
 def overlay(views, snap, app, width, height):
     state = _state(app)
+    state["control_hits"] = []
     if app.tab != "log" or app.mode != "main" or app.logs.browser or state["view"] == "plain":
         return None
     data = _alternate(app)
     state["mouse_rows"] = {}
     body_start = None
+    button_hits = []
     rows = [[(" Esc original | arrows scroll/pan | Y copies the current complete source", "dim")],
             [(" Select/yank in the original view; panels preserve source bytes.", "dim")]]
     label = status_label(app)
@@ -682,6 +689,16 @@ def overlay(views, snap, app, width, height):
         if not sources:
             rows.append([(" Open a job log first; paired views need two registered files.", "yellow")])
         else:
+            if state["view"] in ("split", "diff"):
+                from .control_rows import buttons
+                choices = [("original", "Original", ("key", "esc"))]
+                if len(sources) == 2:
+                    choices += [("left", "Copy source: left", ("key", "[")),
+                                ("right", "Copy source: right", ("key", "]"))]
+                controls, hits = buttons(views.g, max(0, width - 8), choices,
+                                          group="log_sources", prefix="log-source:")
+                button_hits = [(y + len(rows), kind, value) for y, kind, value in hits]
+                rows.extend(controls)
             for item in sources:
                 rows.append([(" " + clean(item["label"] + " | " + item["path"], views.g.ascii), "cyan+bold")])
                 if item.get("error"):
@@ -717,6 +734,8 @@ def overlay(views, snap, app, width, height):
                 rows.append([(" " + (marker if index == state["cursor"] else " ") + " " + text,
                               "rev+bold" if index == state["cursor"] else item.get("style", ""))])
     rendered = L.box(views.g, rows, width, height, "Log workbench / " + state["view"], min_width=max(1, width - 4))
+    from .control_rows import place_hits
+    state["control_hits"] = place_hits(button_hits, rendered[1:-1])
     if body_start is not None and len(rendered) >= 3:
         for relative, (y, x, row) in enumerate(rendered[1:-1]):
             if relative >= body_start:

@@ -535,6 +535,13 @@ def run_command(app, args):
     if getattr(app, "mode", "main") == "main":
         state["modal_back"] = []
     cmd, args = args[0], args[1:]
+    if cmd == "inspect" and args[:1] == ["section"]:
+        names = {name.casefold(): index for index, name in enumerate(SECTIONS)}
+        if len(args) == 2 and args[1].casefold() in names and state.get("modal") == "inspect":
+            state.update(section=names[args[1].casefold()], scroll=0)
+        else:
+            app.fail("Open Inspector, then use inspect section Overview|Resources|Steps|Files|Evidence")
+        return True
     if cmd == "metricdisplay":
         try:
             if len(args) < 2 or not chart_tools.text(args[0]):
@@ -644,21 +651,21 @@ def run_command(app, args):
         app.mode = "analysis"
         return True
     if cmd == "timeline":
-        if args and args[0] not in ("events", "seek"):
-            app.fail("timeline [events|seek EVENT_NUMBER]")
+        if args and args[0] not in ("events", "seek", "open"):
+            app.fail("timeline [events|open EVENT_NUMBER|seek EVENT_NUMBER]")
             return True
         events = timeline_events(app, app.store.snapshot())
-        if args and args[0] == "seek":
+        if args and args[0] in ("seek", "open"):
             try:
                 index = int(args[1]) - 1 if len(args) == 2 else -1
                 if not 0 <= index < len(events):
                     raise ValueError
-                _open_timeline_event(app, events[index], seek=True)
+                _open_timeline_event(app, events[index], seek=args[0] == "seek")
             except ValueError:
-                app.fail("timeline seek EVENT_NUMBER (shown 1-based in Timeline)")
+                app.fail("timeline " + args[0] + " EVENT_NUMBER (shown 1-based in Timeline)")
             return True
         if len(args) > 1:
-            app.fail("timeline [events|seek EVENT_NUMBER]")
+            app.fail("timeline [events|open EVENT_NUMBER|seek EVENT_NUMBER]")
             return True
         state.update(modal="timeline", cursor=max(0, len(events) - 1), scroll=0)
         app.mode = "analysis"
@@ -843,7 +850,10 @@ def _inspector_rows(g, snap, app, width):
     state = initialize(app)
     jid = state.get("job")
     job = app.job_record(jid, snap)
-    rows = [[(" ", "")] + [(f" {name} ", "rev+bold" if i == state.get("section", 0) else "dim") for i, name in enumerate(SECTIONS)]]
+    from .control_rows import buttons
+    rows, controls = buttons(g, width, [(name, name, ("command", "inspect section " + name)) for name in SECTIONS],
+                              selected=SECTIONS[state.get("section", 0)], group="inspector_sections", prefix="inspect-section:")
+    state["inspector_controls"], state["inspector_nav_rows"] = controls, len(rows)
     if job is None:
         return rows + [[(" This job is outside the current inventory. Its exact ID remains selected.", "yellow")]]
     row = lambda text, style="": [(clean(text, g.ascii), style)]
@@ -994,6 +1004,7 @@ def _job_diff_rows(g, snap, app, width):
 
 def overlay(views, snap, app, width, height):
     state = initialize(app)
+    state["control_hits"] = []
     if getattr(app, "mode", "main") != "analysis":
         return None
     g = views.g
@@ -1002,8 +1013,10 @@ def overlay(views, snap, app, width, height):
     page = max(1, height - 6)
     state["chart_page"] = page
     row = lambda text, style="": [(clean(text, g.ascii), style)]
+    button_hits = []
     if modal == "inspect":
         rows = _inspector_rows(g, snap, app, inner)
+        button_hits = list(state.get("inspector_controls", []))
         title = "Job inspector / " + str(state.get("job", ""))
         footer = row(" Tab / arrows: section   Up / Down: scroll   l: logs   e: evidence   Esc: back", "dim")
     elif modal == "chart":
@@ -1017,12 +1030,18 @@ def overlay(views, snap, app, width, height):
         extra = 4 if state.get("chart_range", {}).get("metric") == name else 0
         rows = chart_rows(g, app, series.get(name, []), inner, max(1, min(20, page - 10 - extra)), name or "No metric samples", source, snapshot=snap)
         window = f" | window {state['window']:g}s" if state.get("window") else ""
-        rows.append(row(f" Zoom x{state.get('zoom', 1):g} | pan {state.get('pan', 0):.0%}{window}", "cyan"))
         active_preset = state.get("preset", "all" if state.get("zoom", 1) == 1 and not state.get("window") else "custom")
-        presets = "  ".join(("[" + label + "]") if active_preset == label else label for label, _ in chart_tools.PRESETS)
-        if active_preset == "custom":
-            presets += "  [custom]"
-        rows.append(row(" t: time " + presets + " | a: auto axis | g: log axis | r: select range | e: events", "cyan"))
+        rows.append(row(f" Zoom x{state.get('zoom', 1):g} | pan {state.get('pan', 0):.0%}{window}" +
+                        (" | [custom]" if active_preset == "custom" else ""), "cyan"))
+        from .control_rows import buttons
+        choices = [(label, "[" + label + "]" if label == active_preset else label,
+                    ("command", "chart preset " + label)) for label, _ in chart_tools.PRESETS]
+        choices += [("auto", "Auto axis", ("command", "chart axis auto")),
+                    ("log", "Log axis", ("command", "chart axis log")),
+                    ("range", "Select range", ("key", "r")), ("events", "Events", ("key", "e"))]
+        controls, hits = buttons(g, inner, choices, selected=active_preset, group="chart_controls", prefix="chart-control:")
+        button_hits = [(y + len(rows), kind, value) for y, kind, value in hits]
+        rows.extend(controls)
         title, footer = "Chart inspector", row(" Arrows: sample  +/-: zoom  [ ]: pan  Tab: metric  Home/End  Esc: back", "dim")
     elif modal == "chart_events":
         events = chart_events(app, snap)
@@ -1030,10 +1049,17 @@ def overlay(views, snap, app, width, height):
         rows = []
         for i, event in enumerate(events):
             selected = i == state["cursor"]
+            first_row = len(rows)
             rows.append(row(f" {'>' if selected else ' '} {event['number']:3} {_time(event['t'])} {event.get('kind', '')} | job {event.get('job') or 'global'}", "rev+bold" if selected else "cyan"))
             rows.append(row("      " + str(event.get("text", "")), "bold" if selected else "dim"))
             rows.append(row("      Source: " + (event.get("path") or event.get("source") or "Tower observed event") +
                             (" | original line " + str(event["line"]) if event.get("line") is not None else " | original line unavailable"), "dim"))
+            for line in range(first_row, len(rows)):
+                button_hits.append((line, "control", {"id": f"chart-event:{i}:{line - first_row}",
+                    "label": f"Open chart event {i + 1}", "left": 0,
+                    "right": min(inner, L.vlen(L.row_text(rows[line]))),
+                    "action": ("click", line, 0), "group": "chart_events",
+                    "event": dict(event), "event_context": (modal, state.get("chart_job"))}))
         if not rows:
             rows = [row(" No timestamped events observed for this chart job. Historical phases remain unknown.", "dim")]
         state["scroll"] = max(0, state["cursor"] * 3 - page // 2)
@@ -1044,8 +1070,15 @@ def overlay(views, snap, app, width, height):
         rows = []
         for i, event in enumerate(events):
             selected = i == state["cursor"]
+            first_row = len(rows)
             rows.append(row(f" {'>' if selected else ' '} {i + 1:3} {_time(event['t'])} {event.get('kind', '')} {event.get('job') or ''}", "rev+bold" if selected else "cyan"))
             rows.append(row("      " + str(event.get("text", "")), "bold" if selected else "dim"))
+            for line in range(first_row, len(rows)):
+                button_hits.append((line, "control", {"id": f"timeline-event:{i}:{line - first_row}",
+                    "label": f"Open timeline event {i + 1}", "left": 0,
+                    "right": min(inner, L.vlen(L.row_text(rows[line]))),
+                    "action": ("click", line, 0), "group": "timeline_events",
+                    "event": dict(event), "event_context": (modal, state.get("chart_job"))}))
         if not rows:
             rows = [row(" No timestamped events observed yet.", "dim")]
         state["scroll"] = max(0, state["cursor"] * 2 - page // 2)
@@ -1071,4 +1104,29 @@ def overlay(views, snap, app, width, height):
     offset = max(0, min(state.get("scroll", 0), max(0, len(rows) - page)))
     state["scroll"] = offset
     rows = [L.clip_row(line, inner) for line in rows[offset:offset + page]] + [L.clip_row(footer, inner)]
-    return L.box(g, rows, width, height, title, min_width=min(max(1, inner), 100))
+    rendered = L.box(g, rows, width, height, title, min_width=min(max(1, inner), 100))
+    from .control_rows import place_hits
+    state["control_hits"] = place_hits(button_hits, rendered[1:-1], offset=offset)
+    for y, _, value in state["control_hits"]:
+        if "event" in value:
+            value["action"] = ("click", y, value["left"])
+    return rendered
+
+
+def handle_mouse(app, y, x, button="left", shift=False):
+    if getattr(app, "mode", "main") != "analysis" or button != "left":
+        return False
+    state = initialize(app)
+    for row, kind, value in state.get("control_hits", []):
+        if row == y and value["left"] <= x < value["right"]:
+            if "event" in value:
+                if value["event_context"] == (state.get("modal"), state.get("chart_job")):
+                    _open_timeline_event(app, value["event"])
+                return True
+            action, argument = value["action"]
+            if action == "command":
+                app.run_command(argument)
+            elif action == "key":
+                handle_key(app, argument)
+            return True
+    return False

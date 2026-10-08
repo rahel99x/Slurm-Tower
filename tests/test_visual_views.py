@@ -40,13 +40,17 @@ def test_rich_pages_fit_and_preserve_mouse_selection(visual_dashboard, width, he
                 _, _, left, right = key
                 assert 0 <= left < right <= width
                 assert L.row_text(rows[y])[left:right].strip()
-            elif kind in ("job_panel_tab", "job_panel_file"):
+            elif kind in ("job_panel_tab", "job_panel_file", "job_panel_view", "job_panel_action"):
                 identifier, left, right = key
                 assert 0 <= left < right <= width
                 assert L.row_text(rows[y])[left:right].strip()
                 if kind == "job_panel_tab":
                     from tower.job_panels import TABS as panel_tabs
                     assert dict(panel_tabs)[identifier].casefold() in L.row_text(rows[y])[left:right].casefold()
+            elif kind == "control":
+                assert key["id"] and key["action"]
+                assert 0 <= key["left"] < key["right"] <= width
+                assert L.row_text(rows[y])[key["left"]:key["right"]].strip()
             else:
                 assert key in L.row_text(rows[y])
         assert any(hit[3] == tab for hit in app.tab_hits)

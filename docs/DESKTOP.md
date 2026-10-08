@@ -226,18 +226,32 @@ Use `:settings` to adjust display preferences and active sampling intervals.
 ### Use live inspection controls
 
 Select a job in Jobs or Recents.
-Click Inspector, Logs, or Investigate in Details to inspect that job in place.
+Click Inspector, Logs, Investigate, Research, or Analytics in Details to inspect that job in place.
 Select Off to hide the inspection content.
 Use `:jobpanel focus` for keyboard entry.
 The selected job and available files update during the session.
+Research includes all twelve workspaces; Analytics includes all five subviews.
+Choose a subview and scroll its content vertically.
+Inline views fit the panel width without horizontal panning.
+
+Press F8 to focus visible controls and use arrow keys to choose one.
+Press Enter or Space to activate it, or Esc to return to content.
+Hover highlights controls when the terminal reports pointer movement.
+Drag visible job rows to mark a range; Shift preserves existing marks.
+Review the complete target list before confirming a bulk action.
 
 The top-right update slider requests a fetching multiplier from 1x to 50x.
+Press and drag its track to adjust the multiplier.
 Use `:rate` to inspect the active multiplier and effective Jobs interval.
 Use `:rate N` to select a whole-number multiplier, or `:rate reset` to restore 1x.
 The desktop Jobs interval starts at two seconds at 1x.
 Source minimum intervals and retry backoff limit higher rates.
 Sources shows the effective cadence.
 See [Live workbench](guides/live-workbench.md) for the toolbar, controls, limits, and project reporting procedure.
+Use `:smoothscroll off` for immediate wheel movement.
+Use View → Disable startup animation or `:startup off` to suppress the welcome.
+The reader theme and `animations = false` suppress both motion effects.
+See [Mouse and button navigation](guides/pointer-navigation.md) for saved preferences and terminal input checks.
 
 ### Optional desktop clipboard
 

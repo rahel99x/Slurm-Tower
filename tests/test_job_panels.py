@@ -82,9 +82,13 @@ def test_clicked_tab_arrow_cycle_keeps_job_and_esc_returns_to_rows(dashboard):
     assert J.handle_key(app, "right")
     assert J.initialize(app)["mode"] == "investigate"
     assert J.handle_key(app, "down")
+    assert J.initialize(app)["mode"] == "research"
+    assert J.handle_key(app, "down")
+    assert J.initialize(app)["mode"] == "analytics"
+    assert J.handle_key(app, "down")
     assert J.initialize(app)["mode"] == "off"
     assert J.handle_key(app, "left")
-    assert J.initialize(app)["mode"] == "investigate"
+    assert J.initialize(app)["mode"] == "analytics"
     assert app.cursor == before and app.tab == "jobs" and app.mode == "main"
     assert J.handle_key(app, "esc")
     assert not J.handle_key(app, "down")
@@ -333,3 +337,263 @@ def test_tick_requests_finished_details_for_recent_selection_and_off_does_not(da
     J.initialize(dashboard.app)["mode"] = "off"
     dashboard.app.tick()
     assert selected == ["700", None]
+
+
+@pytest.fixture
+def published_workspaces(dashboard, monkeypatch):
+    app = dashboard.app
+    app.research = ResearchHub(app.cfg, dashboard.views.files)
+    reports = {
+        "experiment": {"status": "ok", "path": "/exact/job/900/metrics.jsonl", "records": 2,
+                       "series": {"loss": [{"t": 1, "value": .75}, {"t": 2, "value": .25}]}},
+        "arrays": {"status": "ok", "groups": []},
+        "evidence": {"status": "ok", "summary": "Exact job observation", "evidence": [
+            {"id": "E1", "source": "scheduler", "text": "Measured state from job 900"}]},
+        "artifacts": {"status": "ok", "valid": True, "summary": "Valid outputs", "outputs": [
+            {"path": "results/final-output.json", "status": "valid", "checks": [{"name": "shape", "status": "pass", "message": "MATCH"}]}]},
+        "passport": {"status": "ok", "passport": {"schema": "tower.passport/v1", "job_id": "900"}},
+        "submit": {"status": "ok", "plan": {"valid": True, "command": "sbatch not-executed.sh", "resources": {}, "issues": []}},
+        "predict": {"status": "ok", "job_id": "900", "metrics": {"runtime_seconds": {
+            "estimate": 42, "lower": 30, "upper": 60, "samples": 5, "unit": "s"}}},
+        "forecast": {"status": "ok", "predicted_start": 1700000000, "evidence": ["Confirmed scheduler observation"]},
+        "blockers": {"status": "ok", "summary": "No blockers", "blockers": []},
+        "tradeoffs": {"status": "ok", "candidates": []},
+        "scaling": {"status": "ok", "points": []},
+        "workflow": {"status": "ok", "nodes": []},
+    }
+    requests = []
+    def request(context, **kwargs):
+        requests.append(context)
+        return reports[context["view"]]
+    monkeypatch.setattr(app.research, "request", request)
+    dashboard.reports, dashboard.requests = reports, requests
+    dashboard.render()
+    return dashboard
+
+
+@pytest.mark.parametrize("group,view", [("research", key) for key, _ in J._choices("research")]
+                         + [("analytics", key) for key, _ in J._choices("analytics")])
+@pytest.mark.parametrize("width,height,ascii_", [(40, 80, True), (80, 50, False),
+                                               (120, 60, False), (200, 60, False)])
+def test_all_seventeen_inline_views_fit_and_leave_global_workspaces_unchanged(published_workspaces, group, view, width, height, ascii_):
+    dashboard, app = published_workspaces, published_workspaces.app
+    dashboard.views.set_ascii(ascii_)
+    if ascii_:
+        app.set_theme("reader")
+    app.research_view, app.analytics_view, app.analytics_job = "passport", "timeline", "700"
+    app.research_scroll, app.research_array_open, app.research_task_offset = 17, True, 48
+    app.log_job, app.logs.path, app.logs.top = "700", "/separate/log", 13
+    before = (app.tab, app.research_view, app.analytics_view, app.analytics_job,
+              app.research_scroll, app.research_array_open, app.research_task_offset,
+              app.log_job, app.logs.path, app.logs.top, copy.deepcopy(app.analysis_state), dict(app.cursor))
+    assert J.run_command(app, ["jobpanel", group, view])
+    text, rows, hits = dashboard.render(width, height)
+    assert all(L.vlen(L.row_text(row)) <= width for row in rows)
+    assert len(rows) <= height
+    assert text.isascii() if ascii_ else True
+    if dashboard.app.job_panel_rect.width >= 30:
+        assert "Job 900" in text
+    assert all(0 <= y < height for y, _, _ in hits)
+    for _, kind, value in hits:
+        if kind.startswith("job_panel_"):
+            assert 0 <= value[1] < value[2] <= width
+    after = (app.tab, app.research_view, app.analytics_view, app.analytics_job,
+             app.research_scroll, app.research_array_open, app.research_task_offset,
+             app.log_job, app.logs.path, app.logs.top, app.analysis_state, app.cursor)
+    assert after == before
+    assert any(kind == "job_panel_view" and value[0] == group + ":" + view for _, kind, value in hits)
+    for context in dashboard.requests:
+        assert context["jid"] == context["explicit_jid"] == "900"
+        assert context["job"].id == "900"
+
+
+def test_every_inline_view_button_is_clickable_and_subviews_arrow_cycle(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    for group in ("research", "analytics"):
+        J.run_command(app, ["jobpanel", group])
+        for name, _ in J._choices(group):
+            _, _, hits = dashboard.render(200, 80)
+            y, _, (target, left, right) = next(hit for hit in hits
+                if hit[1] == "job_panel_view" and hit[2][0] == group + ":" + name)
+            assert J.handle_mouse(app, y, (left + right - 1) // 2)
+            assert J.initialize(app)[group + "_view"] == name
+        assert J.handle_key(app, "home")
+        assert J.initialize(app)[group + "_view"] == J._choices(group)[0][0]
+        assert J.handle_key(app, "end")
+        assert J.initialize(app)[group + "_view"] == J._choices(group)[-1][0]
+
+
+def test_inline_recent_analytics_job_never_falls_back_to_running_job(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    app.cursor["jobs"] = 1
+    app.analytics_job = "900"
+    J.run_command(app, ["jobpanel", "analytics", "job"])
+    text, _, _ = dashboard.render(200, 60)
+    assert "Job 700 / failed-only" in text
+    assert "no samples recorded for this job yet" in text
+    assert app.analytics_job == "900"
+    assert J.initialize(app)["view_states"]["analytics:job"]["proxy"].analytics_job == "700"
+
+
+def test_inline_long_documents_scroll_per_view_and_reset_on_job_change(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    dashboard.reports["artifacts"]["outputs"] = [{"path": f"results/output-{index:04}.json",
+        "status": "valid", "checks": [{"name": "shape", "status": "pass", "message": f"CHECK_{index:04}"}]} for index in range(180)]
+    J.run_command(app, ["jobpanel", "research", "artifacts"])
+    text, _, _ = dashboard.render(180, 50)
+    assert "CHECK_0000" in text and "CHECK_0179" not in text
+    J.handle_key(app, "enter")
+    J.handle_key(app, "end")
+    text, _, hits = dashboard.render(180, 50)
+    assert "CHECK_0179" in text
+    assert any(kind == "job_panel_tab" for _, kind, _ in hits)
+    last = app.layout_state.scroll["jobs:details"]
+    J.run_command(app, ["jobpanel", "analytics", "history"])
+    dashboard.render(180, 50)
+    assert app.layout_state.scroll["jobs:details"] == 0
+    J.run_command(app, ["jobpanel", "research", "artifacts"])
+    dashboard.render(180, 50)
+    assert app.layout_state.scroll["jobs:details"] == last
+    app.cursor["jobs"] = 1
+    dashboard.render(180, 50)
+    assert app.selected_id == "700"
+    assert app.layout_state.scroll["jobs:details"] == 0
+
+
+def test_inline_metric_mouse_opens_exact_job_chart_without_changing_research_selection(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    app.research_view, app.research_job_id = "passport", "900"
+    J.run_command(app, ["jobpanel", "research", "experiment"])
+    _, _, hits = dashboard.render(180, 80)
+    y, _, (target, left, _) = next(hit for hit in hits
+        if hit[1] == "job_panel_action" and hit[2][0][0] == "research_metric")
+    assert J.handle_mouse(app, y, left)
+    assert app.mode == "analysis" and app.analysis_state["modal"] == "chart"
+    assert app.analysis_state["metric"] == "loss"
+    assert app.analysis_state["chart_job"] == "900"
+    assert app.research_view == "passport" and app.tab == "jobs"
+    assert app.logs.path == ""
+
+
+def test_inline_research_detaches_mismatched_run_files_and_never_exposes_manual_submit_plan(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    app.research_job_id = "700"
+    J.run_command(app, ["jobpanel", "research", "experiment"])
+    text, _, _ = dashboard.render(180, 60)
+    assert "another run's files remain detached" in text
+    assert not dashboard.requests
+    app.research_job_id = "900"
+    app.research.plan = {"valid": True, "command": "MUST_NOT_APPEAR"}
+    J.run_command(app, ["jobpanel", "research", "submit"])
+    text, _, _ = dashboard.render(180, 60)
+    assert "no linked submission report" in text and "MUST_NOT_APPEAR" not in text
+    assert not dashboard.requests
+
+
+def test_inline_metrics_virtualize_all_sixty_four_cards_and_jump_to_last(published_workspaces, monkeypatch):
+    from tower import analysis_ui
+    dashboard, app = published_workspaces, published_workspaces.app
+    dashboard.reports["experiment"]["series"] = {
+        f"metric_{index:02}": [{"t": 1, "value": index}, {"t": 2, "value": index + 1}]
+        for index in range(64)}
+    rendered = []
+    original = analysis_ui.chart_rows
+    def chart(*args, **kwargs):
+        rendered.append(args[5])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(analysis_ui, "chart_rows", chart)
+    J.run_command(app, ["jobpanel", "research", "experiment"])
+    dashboard.render(180, 40)
+    assert "metric_63" not in rendered
+    assert len(rendered) < 30
+    rendered.clear()
+    J.handle_key(app, "enter")
+    J.handle_key(app, "end")
+    text, _, _ = dashboard.render(180, 40)
+    assert "metric_63" in text and "metric_63" in rendered
+    assert len(rendered) < 30
+    assert app.layout_state.sizes["jobs:details"][0] > 500
+
+
+def test_inline_evidence_click_opens_cited_log_for_exact_job(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    dashboard.reports["evidence"]["evidence"] = [{"id": "E1", "source": "stderr", "text": "RuntimeError failed",
+        "path": str(dashboard.paths["900"][1]), "line": 1, "line_basis": "original"}]
+    J.run_command(app, ["jobpanel", "research", "evidence"])
+    _, _, hits = dashboard.render(180, 80)
+    y, _, (target, left, _) = next(hit for hit in hits
+        if hit[1] == "job_panel_action" and hit[2][0][0] == "research_evidence")
+    assert J.handle_mouse(app, y, left)
+    assert app.tab == "log" and app.log_job == "900"
+    assert app.logs.entry["path"] == str(dashboard.paths["900"][1])
+    text, _, _ = dashboard.render(180, 80)
+    assert app.logs.path == str(dashboard.paths["900"][1])
+    assert "CD_ERROR_900" in text
+
+
+def test_inline_reports_use_new_published_snapshots_without_restart(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    J.run_command(app, ["jobpanel", "research", "artifacts"])
+    text, _, _ = dashboard.render(180, 60)
+    assert "MATCH" in text
+    dashboard.reports["artifacts"]["outputs"][0]["checks"][0]["message"] = "NEW_PUBLISHED_VALUE"
+    text, _, _ = dashboard.render(180, 60)
+    assert "NEW_PUBLISHED_VALUE" in text and "MATCH" not in text
+    assert J.initialize(app)["research_view"] == "artifacts"
+    assert app.selected_id == "900"
+
+
+def test_inline_narrow_compare_preserves_exact_identity_and_measured_values(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    app.store.series["900"].append({"t": 1, "k": "live", "cpu": .73, "rss": 3 * 1024 ** 3})
+    app.store.series["900"].append({"t": 2, "k": "live", "cpu": .87, "rss": 3.5 * 1024 ** 3})
+    app.compare_ids = ["700"]
+    J.run_command(app, ["jobpanel", "analytics", "compare"])
+    text, _, _ = dashboard.render(40, 150)
+    assert "Job 900 / active-only" in text and "Job 700 / failed-only" in text
+    assert "mean 80% / max 87%" in text
+    assert "Peak memory 3.5 GB / 88% of request" in text
+    assert app.compare_ids == ["700"]
+
+
+def test_inspector_file_links_and_browser_open_exact_recent_job(dashboard):
+    dashboard.app.cursor["jobs"] = 1
+    J.run_command(dashboard.app, ["jobpanel", "inspector"])
+    _, _, hits = dashboard.render(200, 110)
+    y, _, (target, left, _) = next(hit for hit in hits if hit[1] == "job_panel_action"
+        and hit[2][0][0] == "inline_log" and hit[2][0][1]["id"] == "StdErr")
+    assert J.handle_mouse(dashboard.app, y, left)
+    assert dashboard.app.tab == "log" and dashboard.app.log_job == "700"
+    assert dashboard.app.logs.entry["path"] == str(dashboard.paths["700"][1])
+
+
+def test_inspector_evidence_link_stays_in_jobs_and_opens_exact_inline_workspace(dashboard):
+    J.run_command(dashboard.app, ["jobpanel", "inspector"])
+    _, _, hits = dashboard.render(200, 110)
+    y, _, (target, left, _) = next(hit for hit in hits if hit[1] == "job_panel_action"
+        and hit[2][0][0] == "inline_evidence")
+    assert J.handle_mouse(dashboard.app, y, left)
+    assert dashboard.app.tab == "jobs" and dashboard.app.selected_id == "900"
+    assert J.initialize(dashboard.app)["mode"] == "research"
+    assert J.initialize(dashboard.app)["research_view"] == "evidence"
+
+
+def test_investigation_cited_files_are_clickable_for_exact_selected_job(dashboard):
+    dashboard.app.cursor["jobs"] = 1
+    J.run_command(dashboard.app, ["jobpanel", "investigate"])
+    _, _, hits = dashboard.render(200, 110)
+    y, _, (target, left, _) = next(hit for hit in hits if hit[1] == "job_panel_action"
+        and hit[2][0][0] == "inline_log")
+    assert target[1]["job"] == "700"
+    assert J.handle_mouse(dashboard.app, y, left)
+    assert dashboard.app.tab == "log" and dashboard.app.log_job == "700"
+    assert dashboard.app.logs.entry["path"] == target[1]["path"]
+
+
+def test_wrapped_inline_link_keeps_every_character_and_all_rows_clickable():
+    source = " /project/with/a/very/long/path/that/remains/readable/worker-errors.log"
+    target = ("inline_log", {"job": "700", "id": "E1", "path": source.strip()})
+    rows, hits = W._reflow([[(source, "cyan")]], [(0, "job_panel_action", (target, 0, 20))], 20)
+    assert "".join(L.row_text(row) for row in rows).replace(" ", "") == source.replace(" ", "")
+    assert len(hits) == len(rows) > 1
+    assert all(kind == "job_panel_action" and value[0] == target for _, kind, value in hits)

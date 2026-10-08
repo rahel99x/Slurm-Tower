@@ -439,6 +439,7 @@ def overlay(views, snap, app, width, height):
         return None
     state = initialize(app)
     state["confirm_visible"] = False
+    state["control_hits"] = []
     state["confirm_screen"] = (width, height)
     while True:
         try:
@@ -578,4 +579,35 @@ def overlay(views, snap, app, width, height):
             lines = body[:available] + footer
             state["confirm_visible"] = can_confirm
     presentation = [[(clean(text, ascii_=views.g.ascii, limit=128 << 10), style) for text, style in row] for row in lines[:usable]]
-    return box(views.g, presentation, width, height, clean(title, ascii_=views.g.ascii), min_width=30)
+    rendered = box(views.g, presentation, width, height, clean(title, ascii_=views.g.ascii), min_width=30)
+    if state["pending_action"] and not state["detail"] and presentation:
+        index = len(presentation) - 1
+        if index < len(rendered) - 2:
+            y, x, painted = rendered[index + 1]
+            text = "".join(segment for segment, _ in painted)
+            for choice, label in (("cancel", "[Cancel]"), ("confirm", "[Confirm]")):
+                position = text.find(label)
+                if position < 0 or choice == "confirm" and not state["confirm_visible"]:
+                    continue
+                left = x + vlen(text[:position])
+                state["control_hits"].append((y, "control", {
+                    "id": "execution:" + choice, "label": choice, "left": left,
+                    "right": left + len(label), "group": "execution_confirmation",
+                    "action": ("click", y, left), "choice": choice}))
+    state["control_token"] = (id(state["review"]), id(state["pending_action"]), state["running"], state["detail"])
+    return rendered
+
+
+def handle_mouse(app, y, x, button="left", shift=False):
+    if getattr(app, "mode", None) != "execution" or button != "left":
+        return False
+    state = initialize(app)
+    if state.get("control_token") != (id(state["review"]), id(state["pending_action"]), state["running"], state["detail"]):
+        return True
+    for row, _, value in state.get("control_hits", []):
+        if row == y and value["left"] <= x < value["right"]:
+            state["focus"] = value["choice"]
+            # Reuse exact reviewed-plan, visibility, scope and mutation guards.
+            handle_key(app, "enter")
+            return True
+    return False

@@ -75,25 +75,63 @@ Roomier terminals reveal resource cards, node heatmaps, and additional charts;
 compact terminals retain the essential tables and labels. These visuals reuse
 the existing snapshot and sample history without increasing Slurm polling.
 
+Interactive launches can show a short Unicode welcome animation.
+ASCII mode uses a static welcome.
+Use `:startup [on|off|toggle|preview]` or the View menu to control it.
+The command without an argument reports the enabled preference.
+Preview leaves that preference unchanged.
+The reader theme and `animations = false` skip the welcome.
+One-frame, JSON, scripted, and ANSI watch output also skip it.
+
 ## Workbench navigation and layout
 
 The first terminal row contains File, Edit, View, Help, the quit `x`, and the update slider.
 F10 opens or closes a menu.
 Left/Right changes menus; Up/Down selects a choice; Enter activates it; Esc dismisses it.
 Parameterized choices open an editable command prompt.
+Dismiss the dropdown before editing the opened prompt or completing an action review.
 Menus retain the underlying screen and existing job-action reviews.
+Hover highlights controls without activating them.
+Direct menu actions retain the dropdown while the pointer stays inside it.
+Pointer movement outside the dropdown dismisses it.
+The toolbar label row remains a corridor for switching menus.
+Esc and F10 close menus explicitly.
 Use `:menu [File|Edit|View|Help]` or `:about` for command entry.
 See [Toolbar menus](guides/live-workbench.md#use-the-terminal-toolbar) for every choice and its operating context.
 
-Jobs Details provides Inspector, Logs, Investigate, and Off buttons.
+Jobs Details provides Inspector, Logs, Investigate, Research, Analytics, and Off buttons.
 Each button reads the exact selected active or recent job.
-Click a button, then use arrow keys to activate another button.
-Enter or Tab toggles focus between the buttons and content.
+Click a button, then use arrow keys and Enter to activate another visible control.
+Click content to restore its normal navigation.
+Use `:jobpanel focus` for native mode selection with arrows.
+Enter or Tab changes native focus between mode buttons, subview buttons, and content.
 Esc returns input to the job rows.
 Use `:jobpanel focus` for keyboard entry.
 Inspector, logs, and investigation evidence update from background snapshots during the session.
 The full Logs page retains complete-file operations.
+Research includes all twelve workspaces; Analytics includes all five subviews.
+Their content fits the Details width and scrolls vertically.
+Each inline subview retains an independent scroll position.
+Inline Job series uses the exact selected job, including a job with no samples.
+Aggregate Analytics views retain their stated accounting window.
+The full Research, Analytics, and Logs pages retain their own view settings.
 See [Inline inspection](guides/live-workbench.md#inspect-a-job-inside-jobs) for every panel control.
+
+F8 or `:focusbuttons` toggles directional focus for visible controls.
+Arrows select a nearby control; Enter or Space activates it.
+Tab and Shift-Tab traverse the current controls in order.
+Esc restores ordinary content navigation.
+The graph follows visible geometry and updates after layout and page changes.
+Hover does not change the selected job or file.
+Use [Mouse and button navigation](guides/pointer-navigation.md) for focus, dragging, menus, and terminal support.
+
+Mouse-wheel scrolling targets the latest requested viewport position.
+The bounded PID controller combines wheel movement without replaying stale steps at an edge.
+It clamps acceleration, avoids overshooting the target, and discards accumulated motion after a direction change.
+Keyboard movement, selection, and copy positions remain immediate.
+Use `:smoothscroll [on|off|toggle]` to change smoothing; no argument toggles it.
+The reader theme and `animations = false` keep immediate wheel movement.
+Scrolling changes display scheduling without changing scheduler polling or backoff.
 
 `Ctrl-W` or F6 focuses Main/Details panels; arrows/page keys scroll a focused
 Details panel and `z` maximizes it on non-Logs pages. `:maximize` supplies the
@@ -108,6 +146,11 @@ position. Breadcrumbs make the current job/workspace/file visible. `Ctrl-P` or
 `:workspaces` opens the searchable Research picker; `:workspace NAME` opens one
 directly. `I` or `:inspect [JOBID]` opens the shared active/recent/historical job
 inspector. Tab changes sections, `l` opens logs, and `e` opens Evidence.
+The column editor provides clickable optional-column checkboxes with hover and directional focus.
+Required identity and state columns remain visible.
+Chart Events and Timeline provide clickable exact job or log citations.
+Use `:timeline open EVENT_NUMBER` for the current event number, starting at one.
+Use `:timeline seek EVENT_NUMBER` for replay seeking.
 
 Help (`?` or `:help WORDS`) is contextual, searchable with `/`, and scrollable
 with arrows/page keys. The command palette supports cursor editing, quoted
@@ -222,6 +265,7 @@ without motion or pulses. One-frame reports are static as well.
 | `Ctrl-B` / Alt-Left | Back to the previous location, selected identity, filters, and retained scroll context |
 | `Ctrl-P`, `Ctrl-A` | searchable Research workspace picker; retained activity/task results |
 | F10 | File, Edit, View, and Help menus; Left/Right changes menus, Up/Down selects, Enter activates, Esc returns |
+| F8 | Toggle directional focus for visible buttons and links; arrows select, Enter/Space activates, Esc returns to content |
 | `E` `C` `J` | export the tab as text; its table as CSV; the marked or selected jobs with their recorded series as JSON |
 | `:` | the command palette (Tab completes): `cancel 123 456`, `hold marked`, `filter rb2`, `sort name`, `days 7`, `tab history`, `view timeline`, `export csv`, `copy 5 12`, `gpu off`, `source sinfo off`, `theme mono`, `log 123`, `profile carc`, `eval n_pending`, and every plugin command |
 | `T` | cycle the theme: default, dark, light, terminal, mono, high contrast, cb (colour-blind safe: blue / orange / magenta for green / red / yellow), reader (no colour, no glyphs: plain text for screen readers and dumb terminals) |
@@ -230,6 +274,11 @@ without motion or pulses. One-frame reports are static as well.
 The mouse works too: a click selects a row or switches tabs, a double-click opens the details (Jobs) or the series
 (History), or opens the selected file in the Logs browser. The wheel scrolls,
 and a right-click or shift-click extends a line selection from the last click.
+Drag through visible job rows to mark a range in the current table order.
+Shift adds the dragged range to existing marks.
+Esc during capture restores the earlier marks.
+Release completes the marked range; supported bulk actions use their existing confirmation.
+Drag the top-right slider to change the requested update multiplier between 1x and 50x.
 
 Click any visible **column heading**, including **JOBID**, to cycle ascending,
 descending, then off. Cascades follow the order in which you activate columns:
@@ -513,7 +562,7 @@ See [Update rate](guides/live-workbench.md#set-the-update-rate) for controls and
 
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
 commented defaults without replacing an existing config (JSON on Python 3.10, TOML on 3.11+).  Sections: top level (`user`, `account`, `ascii`, `color`, `history_days`, `log_lines`,
-`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`), `[research]`, `[logs]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
+`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`, `startup_animation`, `smooth_scrolling`), `[research]`, `[logs]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
 (`command` runs through the shell on the configured `events` with `TOWER_EVENT`, `TOWER_JOBID`, `TOWER_JOBNAME`
 and `TOWER_TEXT` in the environment: a Slack webhook, an e-mail, anything), `[keys]` (action = list of key names).
 
@@ -554,6 +603,13 @@ Use `:rate N` or the update slider to change the active preference.
 The saved multiplier uses the same scoped UI state as other preferences.
 A valid saved multiplier overrides the configured launch default.
 An explicit `--rate N` startup argument overrides the saved multiplier.
+
+Set `startup_animation = true` to enable the interactive welcome by default.
+Set `smooth_scrolling = true` to enable mouse-wheel viewport interpolation by default.
+Both defaults are enabled.
+Their active preferences persist with the current profile and connection's UI state.
+Use `:startup off` or `:smoothscroll off` to change them during operation.
+The global `animations` switch and reader theme suppress motion without erasing these preferences.
 
 ## The twenty features at a glance
 
@@ -613,6 +669,13 @@ tower/
   transitions.py short monotonic queue-departure motion, confirmed History pulses, and an unread count
   actions.py     cancel / hold / release / requeue / top with an audit event each; the notification hook
   views.py       the tabs and overlays as rows of (text, style) segments
+  interaction.py bounded visible-control graph, exact hit regions, hover feedback, and directional focus
+  control_rows.py wrapped semantic control rows and translation into visible modal coordinates
+  job_panels.py  selected-job inline Inspector, Logs, Investigate, Research, and Analytics workspaces
+  job_selection.py exact job-ID range capture for existing marked-job actions and confirmation
+  scrolling.py   bounded PID viewport motion, immediate selection, and saved smooth-scroll preferences
+  startup.py     short interruptible Unicode welcome and static ASCII fallback
+  toolbar.py     persistent mouse menus, editable command entry, and captured update-slider dragging
   controller.py  the application state and every key, mouse click and confirmation; no curses, so tests drive it;
                  the line selection, the command palette, exports and the clipboard
   charts.py      vertical bar charts with axes (eight sub-levels per row), horizontal bars, histograms, Gantt rows

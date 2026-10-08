@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import copy
 import time
+import shlex
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from . import layout as L, projects, artifact_pages
@@ -565,6 +566,8 @@ def _artifact_control(app, rest):
         raise ValueError("An artifact page is already being read")
     if rest in (["next"], ["prev"]):
         _preview_page(app, 1 if rest == ["next"] else -1)
+    elif len(rest) == 2 and rest[0] == "column" and preview.get("format") == "csv":
+        state["preview_column"] = _csv_column(preview, rest[1])
     elif rest == ["refresh"]:
         _preview_page(app, reset=True)
     elif rest in (["text"], ["structured"]):
@@ -645,6 +648,14 @@ def run_command(app, args):
             else:
                 raise ValueError("run select RUN_ID | run passport RELATIVE_PATH | run clear")
         elif command in ("outputs", "artifact"):
+            if command == "artifact" and len(rest) == 2 and rest[0] == "open":
+                if app.mode != "project_outputs":
+                    raise ValueError("Open :outputs before selecting a declared artifact")
+                node = next((node for node in _visible_outputs(state) if node["path"] == rest[1]), None)
+                if node is None:
+                    raise ValueError("Choose a currently visible declared artifact path")
+                _preview(app, node)
+                return True
             if command == "artifact" and rest not in ([], ["browse"]):
                 _artifact_control(app, rest)
                 return True
@@ -787,6 +798,8 @@ def overlay(views, snap, app, width, height):
     if app.mode not in MODES:
         return None
     state = initialize(app)
+    state["control_hits"] = []
+    button_hits = []
     g = views.g
     row = lambda text, style="": [(L.cut(clean(text, g.ascii), max(0, width - 8), g.ascii), style)]
     binding = selected_binding(app) or {}
@@ -812,6 +825,9 @@ def overlay(views, snap, app, width, height):
         for index, run in enumerate(items[top:top + page], top):
             marker = (">" if g.ascii else "›") if index == cursor else " "
             text = f" {marker} {run['run_id']}  [{run['state']}]  attempt {run['attempt']}  job {run.get('job_id') or 'unrecorded'}"
+            button_hits.append((len(lines), "control", {"id": "project-run:" + run["run_id"], "label": run["run_id"],
+                                "left": 0, "right": min(max(0, width - 8), L.vlen(clean(text, g.ascii))),
+                                "action": ("command", "run select " + shlex.quote(run["run_id"])), "group": "project_runs"}))
             lines.append(row(text, "rev+bold" if index == cursor else "green" if run["state"] == "COMPLETED" else "yellow" if run["state"] in ("RUNNING", "PENDING") else ""))
         if not items:
             lines.append(row(" " + state["summary"], "dim"))
@@ -833,6 +849,9 @@ def overlay(views, snap, app, width, height):
             branch = ("+" if node["path"] in state["collapsed"] else "-") if node["directory"] else ("o" if g.ascii else "◆")
             status = node["status"]
             size = "" if node.get("size") is None else f"  {node['size']} B"
+            button_hits.append((len(lines), "control", {"id": "project-output:" + node["path"], "label": node["name"],
+                                "left": 0, "right": max(0, width - 8),
+                                "action": ("command", "artifact open " + shlex.quote(node["path"])), "group": "project_outputs"}))
             lines.append(row(f" {marker} {'  ' * min(8, node['depth'])}{branch} {node['name']}  {status}{size}",
                              "rev+bold" if index == cursor else "green" if status == "valid" else "red" if status in ("missing", "invalid", "error") else "dim"))
         if not items:
@@ -855,8 +874,13 @@ def overlay(views, snap, app, width, height):
                 sorting = preview.get("sort")
                 if sorting and sorting[0] == index:
                     name += " ^" if sorting[1] == "asc" else " v"
-                shown.append(("[" + name + "]") if index == column else name)
-            lines.append(row(" " + " | ".join(shown), "bold+cyan"))
+                shown.append((str(index), "[" + name + "]" if index == column else name,
+                              ("command", "artifact column " + str(index + 1))))
+            from .control_rows import buttons
+            controls, hits = buttons(g, max(0, width - 8), shown, selected=str(column),
+                                      group="artifact_columns", prefix="artifact-column:", gap="|")
+            button_hits = [(y + len(lines), kind, value) for y, kind, value in hits]
+            lines.extend(controls)
         elif preview.get("format") == "json":
             lines.append(row(" Enter expands/folds selected JSON node; :artifact json /POINTER", "cyan"))
         page = max(1, height - 11)
@@ -869,4 +893,17 @@ def overlay(views, snap, app, width, height):
             number = preview.get("row", 0) + index + 1
             lines.append(row(f" {marker if selected else ' '} {number:>4}  {text}", "rev+bold" if selected else ""))
         title = "artifact preview"
-    return L.box(g, lines, width, height, title)
+    rendered = L.box(g, lines, width, height, title)
+    from .control_rows import place_hits
+    state["control_hits"] = place_hits(button_hits, rendered[1:-1])
+    return rendered
+
+
+def handle_mouse(app, y, x, button="left", shift=False):
+    if getattr(app, "mode", "main") not in MODES or button != "left":
+        return False
+    for row, _, value in initialize(app).get("control_hits", []):
+        if row == y and value["left"] <= x < value["right"]:
+            app.run_command(value["action"][1])
+            return True
+    return False

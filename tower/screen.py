@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -21,6 +22,8 @@ CB_MAP = {"green": "blue", "red": "yellow", "yellow": "magenta"}       # colour-
 PALETTE_256 = {"green": 114, "yellow": 221, "red": 203, "cyan": 81, "magenta": 183, "blue": 75, "white": 252}
 INPUT_BATCH_LIMIT = 32
 INPUT_BATCH_SECONDS = .008
+POINTER_BATCH_LIMIT = 256
+POINTER_BATCH_SECONDS = .012
 _NAVIGATION_ACTIONS = frozenset(("up", "down", "page_up", "page_down", "home", "end"))
 _INPUT_READERS = {}
 _ESCAPE_KEYS = {"\x1b[1;5D": "ctrl-left", "\x1b[1;5C": "ctrl-right",
@@ -29,6 +32,7 @@ _ESCAPE_KEYS = {"\x1b[1;5D": "ctrl-left", "\x1b[1;5C": "ctrl-right",
                 "\x1bu": "alt-u", "\x1br": "alt-r", "\x1b\x7f": "alt-backspace",
                 "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left"}
 _PASTE_START, _PASTE_END = "\x1b[200~", "\x1b[201~"
+_SGR_MOUSE = re.compile(r"\x1b\[<(\d{1,5});(\d{1,5});(\d{1,5})([Mm])\Z", re.ASCII)
 _ESCAPE_KEYS.update({"\x1b" + chr(code): "alt-" + chr(code) for code in range(ord("a"), ord("z") + 1)})
 for _modifier, _number in (("alt", 3), ("ctrl", 5)):
     for _suffix, _key in (("A", "up"), ("B", "down"), ("C", "right"), ("D", "left"), ("H", "home"), ("F", "end")):
@@ -49,21 +53,32 @@ class _InputReader:
         self.end = ""
         self.text = []
         self.queue = deque()
+        self.discard_mouse = False
 
     def read(self, curses):
         if self.queue:
             return self.queue.popleft()
-        deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting else None
+        deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting or self.discard_mouse else None
         for _ in range(256):
             try:
                 value = self.window.get_wch()
             except curses.error:
+                if self.discard_mouse and time.monotonic() - self.escape_time >= .03:
+                    self.discard_mouse = False
                 if self.escape and time.monotonic() - self.escape_time >= .03:
                     pending, self.escape = self.escape, ""
+                    if pending.startswith("\x1b[<"):
+                        return None, None  # Incomplete reports never become commands.
                     self.queue.extend((key_name(ch, curses), None) for ch in pending[1:])
                     return "esc", None
                 return None
-            if self.pasting:
+            if self.discard_mouse:
+                if value in ("M", "m"):
+                    self.discard_mouse = False
+                elif value == "\x1b":
+                    self.discard_mouse = False
+                    self.escape, self.escape_time = "\x1b", time.monotonic()
+            elif self.pasting:
                 # keypad is disabled so the end delimiter and pasted control
                 # characters reach this parser in their original order.
                 char = value if isinstance(value, str) else ""
@@ -80,7 +95,21 @@ class _InputReader:
             elif self.escape:
                 char = value if isinstance(value, str) else ""
                 candidate = self.escape + char
-                if candidate == _PASTE_START:
+                if candidate.startswith("\x1b[<"):
+                    # Some tmux/screen terminfo entries advertise legacy X10
+                    # input even though the terminal supports requested SGR.
+                    # Decode fragmented reports without executing their bytes.
+                    match = _SGR_MOUSE.fullmatch(candidate)
+                    if match:
+                        self.escape = ""
+                        return "mouse", _sgr_mouse(match, curses)
+                    if len(candidate) <= 23 and re.fullmatch(r"\x1b\[<[0-9;]*", candidate, re.ASCII):
+                        self.escape = candidate
+                    else:
+                        self.escape = ""
+                        self.discard_mouse = not candidate.endswith(("M", "m"))
+                        return None, None
+                elif candidate == _PASTE_START:
                     self.escape, self.pasting = "", True
                     self.text, self.end = [], ""
                     self.window.keypad(False)
@@ -109,6 +138,24 @@ class _InputReader:
             if deadline is not None and time.monotonic() >= deadline:
                 return None
         return None
+
+
+def _sgr_mouse(match, curses):
+    code, x, y = (int(match.group(index)) for index in (1, 2, 3))
+    if code > 255 or x < 1 or y < 1:
+        return None
+    button = code & 3
+    modifiers = sum(getattr(curses, flag, 0) for bit, flag in
+                    ((4, "BUTTON_SHIFT"), (8, "BUTTON_ALT"), (16, "BUTTON_CTRL")) if code & bit)
+    if code & 64:
+        state = getattr(curses, "BUTTON4_PRESSED" if button == 0 else "BUTTON5_PRESSED", 0) if button < 2 else 0
+    elif match.group(4) == "m" or button == 3 and not code & 32:
+        state = getattr(curses, f"BUTTON{button + 1 if button < 3 else 1}_RELEASED", 0)
+    else:
+        state = getattr(curses, f"BUTTON{button + 1}_PRESSED", 0) if button < 3 else 0
+        if code & 32:
+            state |= getattr(curses, "REPORT_MOUSE_POSITION", 0)
+    return 0, x - 1, y - 1, 0, state | modifiers
 
 
 def style_attr(style: str, theme: str, base: dict, colors: dict, bold: int) -> int:
@@ -334,8 +381,14 @@ def _batchable_input(app, event, curses):
     for button in ("BUTTON1_CLICKED", "BUTTON1_PRESSED", "BUTTON1_DOUBLE_CLICKED",
                    "BUTTON3_CLICKED", "BUTTON3_PRESSED"):
         click_mask |= getattr(curses, button, 0)
-    # Clicks use the hit map of the freshly painted frame. Wheel and ignored
-    # motion reports can share a redraw without changing their event order.
+    # Captured motion is never a click. Initial presses and releases must use
+    # the current frame; a release cannot disappear into a hover burst.
+    if buttons & getattr(curses, "BUTTON1_RELEASED", 0):
+        return False
+    if buttons & getattr(curses, "REPORT_MOUSE_POSITION", 0):
+        return True
+    # Clicks use the hit map of the freshly painted frame. Wheels and passive
+    # position reports can share a redraw without changing event order.
     if buttons & click_mask:
         return False
     if buttons & getattr(curses, "BUTTON4_PRESSED", 0):
@@ -350,6 +403,10 @@ def _apply_input(app, event, hits, curses):
     if name is None or name == "resize":
         return
     if name == "paste":
+        from .scrolling import note_input
+        note_input(app, "paste")
+        from .startup import dismiss
+        dismiss(app)
         if app.mode == "terminal_probe":
             app.handle(f"paste ({len(mouse)} characters)")
         else:
@@ -357,6 +414,8 @@ def _apply_input(app, event, hits, curses):
             paste(app, mouse)
         return
     if name != "mouse":
+        from .scrolling import note_input
+        note_input(app, "key")
         app.handle(name)
         return
     if mouse is None:
@@ -368,10 +427,35 @@ def _apply_input(app, event, hits, curses):
     from .toolbar import handle_mouse as toolbar_mouse
     button = ("wheel-up" if bstate & getattr(curses, "BUTTON4_PRESSED", 0) else
               "wheel-down" if bstate & getattr(curses, "BUTTON5_PRESSED", 0) else
+              "release" if bstate & getattr(curses, "BUTTON1_RELEASED", 0) else
+              "drag" if bstate & getattr(curses, "REPORT_MOUSE_POSITION", 0) and bstate & getattr(curses, "BUTTON1_PRESSED", 0) else
+              "motion" if bstate & getattr(curses, "REPORT_MOUSE_POSITION", 0) else
               "right" if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)) else
-              "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED) else
-              "release" if bstate & getattr(curses, "BUTTON1_RELEASED", 0) else "motion")
+              "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED) else
+              "press" if bstate & curses.BUTTON1_PRESSED else "motion")
+    from .scrolling import note_input, handle_wheel
+    note_input(app, "wheel" if button.startswith("wheel-") else button)
+    from .startup import handle_mouse as startup_mouse
+    startup_mouse(app, my, mx, button=button, shift=shift)
+    # Hover is independent of toolbar capture. Every final pointer position is
+    # published, even when a global control consumes the gesture.
+    if isinstance(getattr(app, "interaction_state", None), dict):
+        from .interaction import handle_mouse as interaction_mouse
+        interaction_mouse(app, my, mx, button="motion", shift=shift)
     if isinstance(getattr(app, "toolbar_state", None), dict) and toolbar_mouse(app, my, mx, button=button, shift=shift):
+        return
+    if button in ("wheel-up", "wheel-down"):
+        # A wheel gesture belongs to content, even after clicking a button.
+        # Keyboard focus must not turn its direction into button traversal.
+        focus = getattr(app, "interaction_state", None)
+        if isinstance(focus, dict):
+            focus["active"], focus["focused"] = False, None
+    if button in ("motion", "drag", "release"):
+        from .job_selection import active as selection_active
+        if selection_active(app):
+            app.click(my, mx, hits, button=button, shift=shift)
+        elif app.mode == "terminal_probe":
+            app.click(my, mx, hits, button=button, shift=shift)
         return
     if button in ("wheel-up", "wheel-down"):
         from .job_panels import contains as in_job_panel
@@ -379,11 +463,9 @@ def _apply_input(app, event, hits, curses):
             app.click(my, mx, hits, button=button, shift=shift)
             return
     if app.mode == "terminal_probe":
-        button = ("wheel-up" if bstate & getattr(curses, "BUTTON4_PRESSED", 0) else
-                  "wheel-down" if bstate & getattr(curses, "BUTTON5_PRESSED", 0) else
-                  "right" if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)) else
-                  "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED) else "motion")
         app.click(my, mx, hits, button=button, shift=shift)
+        return
+    if button.startswith("wheel-") and handle_wheel(app, my, mx, -1 if button == "wheel-up" else 1):
         return
     if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)):
         app.click(my, mx, hits, button="right")
@@ -395,7 +477,10 @@ def _apply_input(app, event, hits, curses):
                          or (origin == "history" and kind == "fin")
                          or (origin == "log" and app.logs.browser and kind == "log_file"))
             for y, kind, _ in hits))
-        app.click(my, mx, hits, button="left", shift=shift)
+        # Actual applications distinguish a held press from a completed click.
+        # Small compatibility controllers without drag state retain left-click.
+        pressed = button == "press" and hasattr(app, "job_selection_state")
+        app.click(my, mx, hits, button="press" if pressed else "left", shift=shift)
         if bstate & curses.BUTTON1_DOUBLE_CLICKED and double_target and app.tab == origin and app.mode == "main":
             app.handle("enter")
     elif bstate & getattr(curses, "BUTTON4_PRESSED", 0):
@@ -415,20 +500,62 @@ def _consume_input_batch(app, stdscr, curses, hits, first):
     """
     event = first
     context = _navigation_context(app)
-    deadline = time.monotonic() + INPUT_BATCH_SECONDS
+    pointer = first[0] == "mouse"
+    limit = POINTER_BATCH_LIMIT if pointer else INPUT_BATCH_LIMIT
+    deadline = time.monotonic() + (POINTER_BATCH_SECONDS if pointer else INPUT_BATCH_SECONDS)
     count = 0
+    motion = None
+
+    def is_motion(value):
+        if value[0] != "mouse" or value[1] is None:
+            return False
+        buttons = value[1][4]
+        release_wheel = (getattr(curses, "BUTTON1_RELEASED", 0) |
+                         getattr(curses, "BUTTON4_PRESSED", 0) |
+                         getattr(curses, "BUTTON5_PRESSED", 0))
+        return bool(buttons & getattr(curses, "REPORT_MOUSE_POSITION", 0) and not buttons & release_wheel)
+
     while event is not None:
         batchable = _batchable_input(app, event, curses)
-        _apply_input(app, event, hits, curses)
+        if batchable and is_motion(event):
+            # Keep the latest position only. Drag selection and slider position
+            # are functions of the endpoint, not of the number of reports.
+            motion = event
+        else:
+            if motion is not None:
+                _apply_input(app, motion, hits, curses)
+                motion = None
+                if app.quit or _navigation_context(app) != context:
+                    return event
+            _apply_input(app, event, hits, curses)
         count += 1
         if (not batchable or app.quit or _navigation_context(app) != context or
-                count >= INPUT_BATCH_LIMIT or time.monotonic() >= deadline):
+                count >= limit or time.monotonic() >= deadline):
+            if motion is not None:
+                _apply_input(app, motion, hits, curses)
             return None
         stdscr.timeout(0)
         event = _read_input(stdscr, curses)
         if event is not None and not _batchable_input(app, event, curses):
+            if motion is not None:
+                _apply_input(app, motion, hits, curses)
             return event
+    if motion is not None:
+        _apply_input(app, motion, hits, curses)
     return None
+
+
+def _mouse_reporting(enabled):
+    """Request SGR passive movement and drag reports; always restore terminal.
+
+    Older terminals that do not support any-event mode retain button-event
+    mode. Both are disabled explicitly on exit, including exceptional exits.
+    """
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write("\033[?1002h\033[?1003h\033[?1006h" if enabled else
+                     "\033[?1003l\033[?1002l\033[?1000l\033[?1006l")
+    sys.stdout.flush()
 
 
 def run_curses(app, views, sampler, store, actions, cfg):
@@ -455,6 +582,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
             curses.mouseinterval(0)
         except curses.error:
             pass
+        _mouse_reporting(mouse_enabled)
         palette = CursesPalette(curses, cfg["color"])
         settings_generation = getattr(app, "terminal_settings_generation", 0)
 
@@ -474,6 +602,8 @@ def run_curses(app, views, sampler, store, actions, cfg):
         rung = 0
         pending_input = None
         app.views_ref = views
+        from . import startup
+        startup.begin(app)
         while not app.quit:
             current_settings = getattr(app, "terminal_settings_generation", 0)
             if settings_generation != current_settings:
@@ -486,20 +616,37 @@ def run_curses(app, views, sampler, store, actions, cfg):
                 except curses.error:
                     pass
                 mouse_enabled = current_mouse
+                _mouse_reporting(mouse_enabled)
             app.tick()
             snap = store.snapshot()
             height, width = stdscr.getmaxyx()
             app.width = width
+            from .scrolling import begin_frame, finish_frame, timeout_ms
+            begin_frame(app)
             rows, hits = views.compose(snap, app, width, height, actions)
-            stdscr.timeout(100 if app.animations_enabled and app.completion.active else 200)
+            finish_frame(app)
+            idle_timeout = 100 if app.animations_enabled and app.completion.active else 200
+            if startup.active(app):
+                idle_timeout = min(idle_timeout, int(startup.FRAME_INTERVAL * 1000))
+            stdscr.timeout(timeout_ms(app, idle_timeout))
             reader = _INPUT_READERS.get(id(stdscr))
             if reader and (reader.escape or reader.pasting):
                 stdscr.timeout(5)
             app.last_hits = hits
+            welcome = startup.overlay(views, snap, app, width, height) or []
+            ov = views.overlay(snap, app, width, height) or []
+            # Build feedback from the complete visible frame, including masks.
+            # Pristine rows remain available for exact text copying.
+            from .interaction import publish, decorate, decorate_overlays
+            frame = getattr(app, "frame_rows", rows)
+            publish(app, frame, hits, width, height, overlays=welcome + ov)
+            rows = decorate(app, frame)
+            ov = decorate_overlays(app, ov)
             stdscr.erase()
             for y, segs in enumerate(rows[:height]):
                 paint(y, 0, segs, width, height)
-            ov = views.overlay(snap, app, width, height)
+            for y, x0, segs in welcome:
+                paint(y, x0, segs, width, height)
             if ov:
                 for y, x0, segs in ov:
                     paint(y, x0, segs, width, height)
@@ -507,7 +654,8 @@ def run_curses(app, views, sampler, store, actions, cfg):
                 # A small terminal can put an ordinary modal on row zero.
                 # Global controls retain their visible and clickable geometry.
                 from .toolbar import render_bar
-                paint(0, 0, render_bar(views, app, width), width, height)
+                bar = decorate(app, [render_bar(views, app, width)])
+                paint(0, 0, bar[0], width, height)
             started = sum(1 for e in snap["events"] if e.get("kind") == "started" and not e.get("old"))
             if app.bell and started > rung:
                 curses.beep()
@@ -525,9 +673,11 @@ def run_curses(app, views, sampler, store, actions, cfg):
                 path = views.pager_path(store.snapshot(), app)
                 if path and files.exists(path):
                     curses.endwin()
+                    _mouse_reporting(False)
                     try:
                         subprocess.call(files.less_argv(path))
                     finally:
+                        _mouse_reporting(mouse_enabled)
                         stdscr.touchwin()
                         stdscr.refresh()
                 else:
@@ -541,6 +691,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
         curses.wrapper(main)
     finally:
         _INPUT_READERS.clear()
+        _mouse_reporting(False)
         if bracketed:
             sys.stdout.write("\033[?2004l")
             sys.stdout.flush()

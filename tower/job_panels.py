@@ -15,9 +15,10 @@ from .logs import LogSession
 from .research import ResearchHub, clean
 
 TABS = (("inspector", "Inspector"), ("logs", "Logs"),
-        ("investigate", "Investigate"), ("off", "Off"))
+        ("investigate", "Investigate"), ("research", "Research"),
+        ("analytics", "Analytics"), ("off", "Off"))
 MODES = tuple(name for name, _ in TABS)
-MAX_ROWS = 256
+MAX_ROWS = 2048
 MAX_LOG_BYTES = 256 * 1024
 
 
@@ -27,6 +28,13 @@ def initialize(app):
         state = dict(mode="inspector", focus="", job=None, file_id=None,
                      entries=[], files=None, session=None, catalog=None)
         app.job_panel_state = state
+    state.setdefault("research_view", "experiment")
+    state.setdefault("analytics_view", "job")
+    state.setdefault("scrolls", {})
+    state.setdefault("view_states", {})
+    state.setdefault("document_windows", {})
+    state.setdefault("document_maps", {})
+    state.setdefault("document_headers", {})
     return state
 
 
@@ -34,10 +42,37 @@ def restore(app, data):
     state = initialize(app)
     if isinstance(data, dict) and data.get("mode") in MODES:
         state["mode"] = data["mode"]
+    if isinstance(data, dict):
+        from .views import ANALYTICS_VIEWS
+        from .research import RESEARCH_VIEWS
+        for group, choices in (("research", RESEARCH_VIEWS), ("analytics", ANALYTICS_VIEWS)):
+            if data.get(group + "_view") in dict(choices):
+                state[group + "_view"] = data[group + "_view"]
 
 
 def save(app):
-    return {"mode": initialize(app)["mode"]}
+    state = initialize(app)
+    result = {"mode": state["mode"]}
+    # Keep legacy preference files compact unless a workspace choice was made.
+    for group, default in (("research", "experiment"), ("analytics", "job")):
+        if state[group + "_view"] != default:
+            result[group + "_view"] = state[group + "_view"]
+    return result
+
+
+def _view_key(state):
+    mode = state["mode"]
+    return mode + ":" + state[mode + "_view"] if mode in ("research", "analytics") else mode
+
+
+def _choices(group):
+    if group == "research":
+        from .research import RESEARCH_VIEWS
+        return RESEARCH_VIEWS
+    if group == "analytics":
+        from .views import ANALYTICS_VIEWS
+        return [(key, label.title()) for key, label in ANALYTICS_VIEWS]
+    return ()
 
 
 def command_names():
@@ -50,14 +85,19 @@ def _say(app, message):
         callback(message)
 
 
-def _activate(app, mode, *, focus=True):
+def _activate(app, mode, *, focus=True, view=None):
     state = initialize(app)
     if mode not in MODES:
         return False
-    state["mode"], state["focus"] = mode, "tabs" if focus else ""
     from .workspace_layout import initialize as layout_state
     layout = layout_state(app)
-    layout.scroll["jobs:details"] = 0
+    state["scrolls"][_view_key(state)] = layout.scroll.get("jobs:details", 0)
+    if view is not None:
+        if view not in dict(_choices(mode)):
+            return False
+        state[mode + "_view"] = view
+    state["mode"], state["focus"] = mode, ("views" if view is not None else "tabs") if focus else ""
+    layout.scroll["jobs:details"] = state["scrolls"].get(_view_key(state), 0)
     if focus:
         layout.focus = "details"
     callback = getattr(app, "save", None)
@@ -71,13 +111,17 @@ def run_command(app, args):
         return False
     if args[1:] == ["focus"] or len(args) == 1:
         initialize(app)["focus"] = "tabs"
+        from .workspace_layout import initialize as layout_state
+        layout_state(app).focus = "details"
         _say(app, "Details tabs: arrows choose; Enter focuses content; Esc returns to jobs")
     elif len(args) == 2 and args[1] in MODES:
         _activate(app, args[1])
+    elif len(args) == 3 and args[1] in ("research", "analytics") and args[2] in dict(_choices(args[1])):
+        _activate(app, args[1], view=args[2])
     else:
         callback = getattr(app, "fail", None)
         if callable(callback):
-            callback("jobpanel [inspector|logs|investigate|off|focus]")
+            callback("jobpanel [inspector|logs|investigate|research [VIEW]|analytics [VIEW]|off|focus]")
     return True
 
 
@@ -97,12 +141,21 @@ def handle_key(app, key):
         layout_state(app).focus = "main"
         return True
     if key in ("enter", "tab", "btab"):
-        state["focus"] = "content" if state["focus"] == "tabs" else "tabs"
+        if state["focus"] == "tabs" and state["mode"] in ("research", "analytics"):
+            state["focus"] = "views"
+        else:
+            state["focus"] = "content" if state["focus"] in ("tabs", "views") else "tabs"
         return True
     if state["focus"] == "tabs" and key in ("left", "right", "up", "down", "home", "end"):
         index = MODES.index(state["mode"])
         index = 0 if key == "home" else len(MODES) - 1 if key == "end" else (index + (-1 if key in ("left", "up") else 1)) % len(MODES)
         _activate(app, MODES[index])
+        return True
+    if state["focus"] == "views" and key in ("left", "right", "up", "down", "home", "end"):
+        choices = [name for name, _ in _choices(state["mode"])]
+        index = choices.index(state[state["mode"] + "_view"])
+        index = 0 if key == "home" else len(choices) - 1 if key == "end" else (index + (-1 if key in ("left", "up") else 1)) % len(choices)
+        _activate(app, state["mode"], view=choices[index])
         return True
     if state["focus"] == "content":
         if state["mode"] == "logs" and key in ("left", "right"):
@@ -142,13 +195,18 @@ def handle_mouse(app, y, x, button="left", shift=False):
         return False
     state = initialize(app)
     for row, kind, value in getattr(app, "last_hits", []):
-        if row != y or kind not in ("job_panel_tab", "job_panel_file"):
+        if row != y or kind not in ("job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"):
             continue
         target, left, right = value
         if left <= x < right:
             if button == "left":
                 if kind == "job_panel_tab":
                     _activate(app, target)
+                elif kind == "job_panel_view":
+                    group, view = target.split(":", 1)
+                    _activate(app, group, view=view)
+                elif kind == "job_panel_action":
+                    _content_action(app, target)
                 else:
                     state["file_id"], state["focus"] = target, "content"
                     from .workspace_layout import initialize as layout_state
@@ -215,6 +273,27 @@ def _buttons(g, state, width):
             position += size
     if current:
         rows.append(current)
+    group = state["mode"]
+    if group in ("research", "analytics"):
+        current, position = [], 0
+        for name, title in _choices(group):
+            label = " " + title + " "
+            if position and position + L.vlen(label) > width:
+                rows.append(current)
+                current, position = [], 0
+            shown = L.cut(label, max(0, width - position), g.ascii)
+            size = L.vlen(shown)
+            if not size:
+                continue
+            active = name == state[group + "_view"]
+            style = "sel+bold" if active else "cyan+bg:surface"
+            if active and state["focus"] == "views":
+                style += "+under"
+            current.append((shown, style))
+            hits.append((len(rows), "job_panel_view", (group + ":" + name, position, position + size)))
+            position += size
+        if current:
+            rows.append(current)
     return rows, hits
 
 
@@ -231,6 +310,7 @@ def _inspector(views, snap, app, job, width, state):
     active = any(record.id == job.id for record in snap.get("jobs", []))
     rows = [[(" Live summary" if active else "Recent summary", "heading+bold")],
             [(clean(f" Job {job.id}  {job.name}", views.g.ascii), "cyan+bold")]]
+    hits = []
     if active:
         for item in views.selected_panel(snap, job, width, 0, app):
             text = L.row_text(item).lstrip()
@@ -253,10 +333,26 @@ def _inspector(views, snap, app, job, width, state):
     for section, title in enumerate(SECTIONS):
         proxy.analysis_state["section"] = section
         rows.append([(" " + title, "heading+bold")])
-        content = _inspector_rows(views.g, snap, proxy, width)[1:]
+        rendered = _inspector_rows(views.g, snap, proxy, width)
+        content = rendered[proxy.analysis_state.get("inspector_nav_rows", 1):]
         content = content[2:]
+        if title == "Files":
+            details = snap.get("details", {}).get(job.id, {})
+            for index, item in enumerate(content):
+                text = L.row_text(item).lstrip()
+                field = next((name for name in ("StdOut", "StdErr") if text.startswith(name + " ")), None)
+                path = details.get(field) if field else None
+                if path and isinstance(path, str) and path not in ("(null)", "N/A", "none"):
+                    from .views import stdout_path
+                    path = stdout_path(job, details, views.files, field, probe=False)
+                    target = ("inline_log", {"job": job.id, "id": field, "path": path, "source": "Inspector " + field})
+                    hits.append((len(rows) + index, "job_panel_action", (target, 0, width)))
+                elif text.startswith("l / Enter"):
+                    hits.append((len(rows) + index, "job_panel_action", (("inline_logs", job.id), 0, width)))
+        elif title == "Evidence" and content:
+            hits.append((len(rows) + len(content) - 1, "job_panel_action", (("inline_evidence", job.id), 0, width)))
         rows.extend(content)
-    return rows[:MAX_ROWS]
+    return rows[:MAX_ROWS], [hit for hit in hits if hit[0] < MAX_ROWS]
 
 
 def _logs(views, snap, app, job, width, height, state):
@@ -310,7 +406,12 @@ def _logs(views, snap, app, job, width, height, state):
         # Only a visible, bounded tail is formatted, even for multi-gigabyte logs.
         page = max(1, min(160, (height or 24) - len(rows) - 2))
         session.page = page
-        lines, first = buf.window(session.top, page)
+        from .scrolling import viewport
+        target = max(0, buf.total - page) if session.top is None else session.top
+        painted = viewport(app, "inline-log", target, buf.total, page,
+                           context=(job.id, selected["path"], buf.ident, buf.reloads, page),
+                           immediate=session.top is None)
+        lines, first = buf.window(None if session.top is None else painted, page)
         rows.append(row(f" {'Following' if session.top is None else 'Paused'} / retained lines {first + 1 if lines else 0}-{first + len(lines)} of {buf.total}"
                         + (" / earlier bytes omitted" if buf.truncated else ""), "dim"))
         rows.extend(L.clip_row(row(line), width) for line in lines)
@@ -319,7 +420,7 @@ def _logs(views, snap, app, job, width, height, state):
     return rows, hits
 
 
-def _evidence(views, snap, app, job, state):
+def _evidence(views, snap, app, job, state, width):
     hub = _worker(app, views.files)
     context = hub.context(snap, app)
     context.update(view="evidence", jid=job.id, explicit_jid=job.id, job=job)
@@ -332,6 +433,7 @@ def _evidence(views, snap, app, job, state):
     state["evidence"] = evidence = {item["id"]: item for item in result.get("evidence", [])}
     row = lambda text, style="": [(clean(text, views.g.ascii), style)]
     rows = [row(f" Job {job.id} / {job.name}", "cyan+bold"), row(" " + result.get("summary", "Waiting for the background investigation."), "bold")]
+    hits = []
     coverage = result.get("coverage", {})
     if coverage:
         rows.append(row(f" Log coverage {coverage.get('inspected_files', 0)}/{coverage.get('catalog_files', 0)} files; {coverage.get('omitted_files', 0)} omitted", "dim"))
@@ -343,11 +445,254 @@ def _evidence(views, snap, app, job, state):
         for check in hypothesis.get("next_checks", [])[:3]:
             rows.append(row(" Check: " + str(check), "cyan"))
     for item in list(evidence.values())[:64]:
+        if item.get("path"):
+            citation = dict(item, job=job.id)
+            hits.append((len(rows), "job_panel_action", (("inline_log", citation), 0, width)))
         rows.append(row(f" [{item['id']}] {item.get('source', '')} / {item.get('path') or item.get('location', '')}", "cyan"))
         rows.append(row(" " + item.get("text", ""), "dim"))
     for limitation in result.get("limitations", [])[:12]:
         rows.append(row(" Unverified: " + str(limitation), "dim"))
-    return rows[:MAX_ROWS]
+    return rows[:MAX_ROWS], [hit for hit in hits if hit[0] < MAX_ROWS]
+
+
+class _ScopedHub:
+    """Expose the existing worker while rejecting another selected run's files."""
+    def __init__(self, hub, jid, mismatch=False):
+        self.hub, self.jid, self.mismatch = hub, jid, mismatch
+
+    def __getattr__(self, name):
+        return getattr(self.hub, name)
+
+    def context(self, snap, app):
+        context = self.hub.context(snap, app)
+        jobs = snap.get("jobs", []) + snap.get("finished", []) + list(snap.get("departed_jobs", {}).values())
+        context.update(jid=self.jid, explicit_jid=self.jid,
+                       job=next((item for item in jobs if item.id == self.jid), None))
+        if self.mismatch:
+            context.update(binding=None, run_id=None, run_root=None, project_logs=None,
+                           project_warnings=[], settings={"interval": self.hub.interval},
+                           log_settings={})
+        return context
+
+    def request(self, context, **kwargs):
+        if self.mismatch and context["view"] not in ("arrays", "evidence"):
+            return {"status": "empty", "summary": "Waiting for report files linked to this exact job; another run's files remain detached."}
+        if context["view"] == "submit" and not context.get("binding"):
+            return {"status": "empty", "summary": "This job has no linked submission report. Prepare and review new submissions in the Research workspace."}
+        return self.hub.request(context, **kwargs)
+
+    def current(self, context):
+        if self.mismatch and context["view"] not in ("arrays", "evidence"):
+            return self.request(context)
+        return self.hub.current(context)
+
+
+def _analysis_settings(app):
+    """Copy bounded preferences; rendered point caches remain per workspace."""
+    source = getattr(app, "analysis_state", {})
+    return {key: copy.deepcopy(value) for key, value in source.items()
+            if key in ("pinned", "hidden", "order", "expanded", "colors", "metric_display",
+                       "axis", "chart_events", "shared_scale", "metric_filter")}
+
+
+def _scoped_app(app, job, state):
+    key = _view_key(state)
+    retained = state["view_states"].setdefault(key, {})
+    if "analysis" not in retained:
+        retained["analysis"] = _analysis_settings(app)
+    proxy = copy.copy(app)
+    proxy.tab, proxy.mode = state["mode"], "main"
+    proxy.selected_id = proxy.research_job_id = proxy.analytics_job = job.id
+    proxy.research_view, proxy.analytics_view = state["research_view"], state["analytics_view"]
+    proxy.cursor, proxy.top = dict(getattr(app, "cursor", {})), dict(getattr(app, "top", {}))
+    proxy.cursor["research"] = retained.get("cursor", 0)
+    proxy.analysis_state = retained["analysis"]
+    proxy.research_scroll, proxy.research_rows = 0, 0
+    proxy.research_array_open = retained.get("array_open", False)
+    proxy.research_task_offset = retained.get("task_offset", 0)
+    proxy.research_array_focus = False
+    proxy.research_groups, proxy.research_evidence = [], {}
+    project = getattr(app, "project_state", {}) or {}
+    binding = project.get("binding")
+    mismatch = bool(binding and binding.get("job_id") != job.id or
+                    not binding and getattr(app, "research_job_id", None) not in (None, job.id))
+    proxy.project_state = {"binding": None if mismatch else copy.deepcopy(binding),
+                           "logs": [] if mismatch else [dict(item) for item in project.get("logs", [])],
+                           "run_warnings": [] if mismatch else list(project.get("run_warnings", []))}
+    if state["mode"] == "research":
+        hub = _worker(app, getattr(getattr(app, "views_ref", None), "files", None))
+        proxy.research = _ScopedHub(hub, job.id, mismatch)
+    proxy.compare_ids = list(dict.fromkeys([job.id] + list(getattr(app, "compare_ids", []))
+                                         + sorted(getattr(app, "marks", []))))[:6]
+    # Explicit inline actions may create a modal, but merely rendering must not
+    # persist a copied App or change another workspace's table geometry.
+    proxy.save = lambda: None
+    retained["proxy"] = proxy
+    return proxy, retained
+
+
+def _research(views, snap, app, job, width, height, state, header_rows):
+    from .research_views import render as research_render
+    proxy, retained = _scoped_app(app, job, state)
+    proxy.research_document_mode = True
+    document_key = (_view_key(state), width)
+    window = state["document_windows"].get(document_key)
+    previous = state["document_maps"].get(document_key)
+    if previous:
+        from .workspace_layout import initialize as layout_state
+        from .scrolling import published_position
+        logical_top = layout_state(app).scroll.get("jobs:details", 0)
+        top = published_position(app, "workspace:jobs:details", logical_top) + previous["sticky"]
+        raw = [index for index, position in previous["mapping"].items()
+               if top - 16 <= position <= top + (height or 24) + 16]
+        if raw:
+            window = (max(0, min(raw) - previous["header"] - 16),
+                      max(0, max(raw) - previous["header"] + 16))
+    proxy.research_document_window = window or (0, max(32, (height or 24) + 32))
+    rows, hits = research_render(views, snap, proxy, width, MAX_ROWS)
+    nav_rows = getattr(proxy, "research_nav_rows", 1)
+    retained.update(cursor=proxy.cursor.get("research", 0), array_open=proxy.research_array_open,
+                    task_offset=proxy.research_task_offset)
+    state["document_headers"][( _view_key(state), width)] = header_rows + 1
+    content = [[(clean(f" Job {job.id} / {job.name}", views.g.ascii), "cyan+bold")]] + rows[nav_rows:MAX_ROWS + nav_rows]
+    actions = [(y - nav_rows + 1, "job_panel_action", ((kind, value),
+                value.get("left", 0) if kind == "control" and isinstance(value, dict) else 0,
+                value.get("right", width) if kind == "control" and isinstance(value, dict) else width))
+               for y, kind, value in hits if nav_rows <= y < nav_rows + MAX_ROWS]
+    return content[:MAX_ROWS], actions
+
+
+def _analytics(views, snap, app, job, width, height, state):
+    proxy, retained = _scoped_app(app, job, state)
+    scoped_views = copy.copy(views)
+    # A finished job without session samples must never fall back to a running
+    # job's chart. The ordinary Analytics workspace keeps its own cycling list.
+    scoped_views.analytics_jobs = lambda current, target: [job.id]
+    rows, hits = scoped_views.analytics_tab(snap, proxy, width, MAX_ROWS)
+    nav_rows = getattr(proxy, "analytics_nav_rows", 1)
+    if width < 120 and state["analytics_view"] in ("advisor", "compare"):
+        rows = rows[:nav_rows + 1] + _analytics_cards(views, snap, proxy, rows[nav_rows + 1:])
+    scope = "selected job" if state["analytics_view"] == "job" else "selected job + comparison set" if state["analytics_view"] == "compare" else "accounting window"
+    content = [[(clean(f" Job {job.id} / {job.name} / {scope}", views.g.ascii), "cyan+bold")]] + rows[nav_rows:]
+    actions = [(y - nav_rows + 1, "job_panel_action", ((kind, value),
+                value.get("left", 0) if kind == "control" and isinstance(value, dict) else 0,
+                value.get("right", width) if kind == "control" and isinstance(value, dict) else width))
+               for y, kind, value in hits if y >= nav_rows]
+    return content[:MAX_ROWS], actions
+
+
+def _analytics_cards(views, snap, proxy, body):
+    """Keep every requested/measured value when a wide table cannot fit."""
+    from . import advisor, clock
+    from .model import human, hms, secs, stamp
+    row = lambda value, style="": [(clean(value, views.g.ascii), style)]
+    if proxy.analytics_view == "advisor":
+        now = clock.now()
+        finished = [item for item in snap.get("finished", [])
+                    if (stamp(item.end) or now) >= now - proxy.analytics_days_value() * 86400]
+        advice = advisor.advise_names(finished)
+        if not advice:
+            return body
+        rows = body[:2]
+        for item in advice[:128]:
+            rows.append(row(f" {item.name} / {item.id} runs", "bold"))
+            rows.append(row(f" Memory peak {human(item.mem_peak) if item.mem_peak else '?'} / requested {human(item.mem_req) if item.mem_req else '?'} / suggested {item.mem_suggest or 'unchanged'}"))
+            rows.append(row(f" CPU {item.cpus} / suggested {item.cpus_suggest or 'unchanged'} / efficiency {100 * item.cpu_eff:.0f}%" if item.cpu_eff is not None else f" CPU {item.cpus} / suggested {item.cpus_suggest or 'unchanged'} / efficiency unavailable"))
+            rows.append(row(f" Time longest {hms(item.elapsed) if item.elapsed else '?'} / limit {hms(item.limit) if item.limit else '?'} / suggested {item.time_suggest or 'unchanged'}"))
+            rows.append(row(f" Idle core-hours {item.wasted_core_hours:.1f} / notes {', '.join(item.notes) or 'none'}", "dim"))
+            rows.append(row(" Flags " + (item.flags() or "nothing to change"), "cyan"))
+        # Native running-job summaries clip their sentences to a table-sized
+        # cell. Recompute the same published evidence as wrapped facts.
+        running = [item for item in snap.get("jobs", []) if not item.pending]
+        if running:
+            rows.append(row(" Running jobs so far", "heading+bold"))
+            for item in running[:8]:
+                observed = advisor.advise_running(item, snap.get("live", {}).get(item.id), proxy.store.series_of(item.id), snap.get("finished", []))
+                rows.append(row(f" {item.id} / {item.name}: {observed.summary(views.g.dot) or 'nothing to change yet'}", "cyan"))
+        return rows
+    ids = proxy.compare_ids[:6]
+    jobs = {item.id: item for item in snap.get("jobs", [])}
+    finished = {item.id: item for item in snap.get("finished", [])}
+    rows = body[:1]
+    for jid in ids:
+        job, fin = jobs.get(jid), finished.get(jid)
+        record = job or fin
+        series = proxy.store.series_of(jid)
+        live = [point for point in series if point.get("k") == "live"]
+        cpu = [point.get("cpu") if point.get("cpu") is not None else point.get("eff") for point in live]
+        cpu = [value for value in cpu if value is not None]
+        rss = [point["rss"] for point in live if point.get("rss") is not None]
+        gpu = [sum(value[0] for value in point["gpu"].values()) / len(point["gpu"])
+               for point in series if point.get("k") == "gpu" and point.get("gpu")]
+        elapsed = job.elapsed_s if job else secs(fin.elapsed) if fin else None
+        cpus = getattr(record, "cpus", 0)
+        requested = job.mem_bytes if job else fin.req_mem if fin else 0
+        memory = max(rss) if rss else fin.rss if fin else None
+        fraction = 100 * memory / requested if memory is not None and requested else None
+        rows.append(row(f" Job {jid} / {getattr(record, 'name', '?')} / {getattr(record, 'state', '?')}", "cyan+bold"))
+        rows.append(row(f" CPU {cpus} / mean {100 * sum(cpu) / len(cpu):.0f}% / max {100 * max(cpu):.0f}%" if cpu else f" CPU {cpus} / mean and max unavailable"))
+        rows.append(row(" Peak memory " + (human(memory) if memory else "unavailable") + (f" / {fraction:.0f}% of request" if fraction is not None else " / fraction unavailable")))
+        rows.append(row(f" GPU mean {sum(gpu) / len(gpu):.0f}%" if gpu else " GPU mean unavailable"))
+        rows.append(row(f" Elapsed {hms(elapsed) if elapsed is not None else '?'} / core-hours {(elapsed or 0) * cpus / 3600:.1f} / samples {len(series)}", "dim"))
+    # The remainder contains charts already scaled to the actual pane width.
+    return rows + body[2 + len(ids):]
+
+
+def _content_action(app, target):
+    """Dispatch explicit content actions in their exact-job rendering context."""
+    state = initialize(app)
+    kind, value = target
+    if kind in ("inline_log", "inline_logs", "inline_evidence"):
+        jid = value.get("job") if isinstance(value, dict) else value
+        if jid != state.get("job") or jid != getattr(app, "selected_id", None):
+            return False
+        if kind == "inline_logs":
+            app.open_log(jid)
+        elif kind == "inline_evidence":
+            _activate(app, "research", view="evidence")
+        else:
+            from .log_workbench import open_citation
+            open_citation(app, value)
+        return True
+    retained = state["view_states"].get(_view_key(state), {})
+    proxy = retained.get("proxy")
+    if proxy is None or state.get("job") != getattr(proxy, "selected_id", None):
+        return False
+    if kind == "research_array":
+        ids = [item["id"] for item in proxy.research_groups]
+        if value in ids:
+            retained.update(cursor=ids.index(value), task_offset=0,
+                            array_open=not retained.get("array_open", False))
+            state["focus"] = "content"
+        return True
+    if kind == "research_evidence":
+        citation = proxy.research_evidence.get(value)
+        if citation and citation.get("path"):
+            from .log_workbench import open_citation
+            # Opening a cited file is an explicit navigation action; the job
+            # and path travel together through the normal full Logs interface.
+            open_citation(app, citation)
+        else:
+            _say(app, "This citation is a scheduler observation with no log file attached.")
+        return True
+    if kind == "research_metric":
+        from .analysis_ui import run_command
+        run_command(proxy, ["chart", value])
+    elif kind == "control" and isinstance(value, dict):
+        action = value.get("action", ())
+        if len(action) != 2 or action[0] != "command":
+            return False
+        proxy.run_command(action[1])
+    else:
+        return False
+    if proxy.mode != "main":
+        app.mode = proxy.mode
+        app.analysis_state = proxy.analysis_state
+        for name in ("analysis_result", "analysis_result_job", "analysis_result_generation", "research_evidence"):
+            if hasattr(proxy, name):
+                setattr(app, name, getattr(proxy, name))
+        state["focus"] = ""
+    return True
 
 
 def render(views, snap, app, job, width, height=None):
@@ -355,6 +700,12 @@ def render(views, snap, app, job, width, height=None):
     rows, hits = _buttons(views.g, state, max(0, width))
     if state["job"] != getattr(job, "id", None):
         state.update(job=getattr(job, "id", None), file_id=None, entries=[])
+        state["scrolls"].clear()
+        state["view_states"].clear()
+        state["document_windows"].clear()
+        state["document_maps"].clear()
+        from .workspace_layout import initialize as layout_state
+        layout_state(app).scroll["jobs:details"] = 0
         if state["session"]:
             state["session"].top = None
     if state["mode"] == "off":
@@ -365,7 +716,15 @@ def render(views, snap, app, job, width, height=None):
         content, content_hits = _logs(views, snap, app, job, width, height, state)
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     elif state["mode"] == "investigate":
-        content = _evidence(views, snap, app, job, state)
+        content, content_hits = _evidence(views, snap, app, job, state, width)
+        hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
+    elif state["mode"] == "research":
+        content, content_hits = _research(views, snap, app, job, width, height, state, len(rows))
+        hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
+    elif state["mode"] == "analytics":
+        content, content_hits = _analytics(views, snap, app, job, width, height, state)
+        hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     else:
-        content = _inspector(views, snap, app, job, width, state)
+        content, content_hits = _inspector(views, snap, app, job, width, state)
+        hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     return rows + content, hits

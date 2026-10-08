@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Project standard](../PROJECT_STANDARD.md)
 
-Use this guide for Tower 4.2's toolbar, inline job inspection, and update-rate control.
+Use this guide for Tower 4.3's toolbar, inline job inspection, and update-rate control.
 All controls run inside the terminal.
 Use the current job ID and source path to check the identity of displayed evidence.
 
@@ -85,6 +85,7 @@ Invalid inventories or capped discovery coverage prevent a guessed attachment.
 4. Check the job ID and source paths before reading its reports.
 
 **Expected result:** Your selected attempt remains attached until you select a different job.
+Clicking a run row also binds that exact attempt.
 Use `:run clear` to restore the earlier report settings.
 The `:metrics` and `:artifacts` commands also leave the run binding.
 These actions suppress automatic attachment for the current job until the job selection changes.
@@ -97,13 +98,15 @@ Use the existing submission procedure and review when you want to run a script.
 ## Inspect a job inside Jobs
 
 Select an active job or a job in Recents.
-The Details panel provides four buttons:
+The Details panel provides six buttons:
 
 | Button | Purpose |
 | --- | --- |
 | Inspector | Inspect job identity, requests, resources, steps, paths, and source status |
 | Logs | Read the exact job's available log sources |
 | Investigate | Inspect bounded failure evidence and its source coverage |
+| Research | Inspect all twelve project and planning workspaces inside Jobs |
+| Analytics | Inspect Job series, History, Timeline, Advisor, and Compare inside Jobs |
 | Off | Hide inspection content |
 
 The selected job ID remains the evidence target.
@@ -113,27 +116,34 @@ Off retains the button row so that you can restore an inspection mode.
 ### Use the buttons
 
 1. Click a Details button.
-2. Use any arrow key to select and activate another button.
-3. Press Enter to focus the content.
-4. Use Up, Down, or page keys to scroll the content.
-5. Press Tab to return to the button row.
+2. Use arrow keys to focus a nearby visible control.
+3. Press Enter or Space to activate that control.
+4. Click the content area to restore content navigation.
+5. Use Up, Down, or page keys to scroll the content.
 6. Press Esc to return keyboard input to the job rows.
 
 **Expected result:** The selected inspection stays inside Jobs.
 The active or recent job remains the target.
-Home selects Inspector when the buttons have focus.
-End selects Off.
-Enter and Tab toggle focus between the buttons and content.
+Mouse clicks use the same visible-control graph as F8 navigation.
+Its arrows change focus without activating the destination.
+Press Esc or F8 to leave graph focus before using native panel keys.
 
 Use `:jobpanel focus` to reach the buttons without a mouse.
+In native panel focus, arrows select and activate the previous or next Details mode.
+Home selects Inspector; End selects Off.
+Enter or Tab moves from the mode buttons to content.
+Research and Analytics include a subview-button stop before content.
+In that stop, arrows select a subview; Home and End select its first or last choice.
+Enter or Tab returns from content to the mode buttons.
 Use `:jobpanel inspector`, `:jobpanel logs`, `:jobpanel investigate`, or `:jobpanel off` to select a mode directly.
+Use `:jobpanel research VIEW` or `:jobpanel analytics VIEW` to select an inline workspace directly.
 The inspection mode persists when normal state is enabled.
 Button focus and the panel's selected log file last for the current session.
 
 ### Read multiple log sources
 
 1. Select Logs in Details.
-2. Press Enter to focus log content.
+2. Click log content, or use native panel focus and press Enter.
 3. Use Left or Right to select a source.
 4. Use Up, Down, or page keys to scroll the retained content.
 5. Press End to follow newly appended lines.
@@ -142,7 +152,8 @@ Button focus and the panel's selected log file last for the current session.
 The source buttons show the selected file and nearby choices.
 Left and Right can traverse every available file.
 Home reaches the oldest retained line; it does not load the complete file.
-Clicking a source button also selects that file and focuses its content.
+Clicking a source button selects that file.
+Click the log content or leave graph focus before using its native scroll keys.
 Inline Logs retains a bounded tail of up to 256 KiB per loaded file.
 
 Use `l` after returning focus to the job rows to open the full Logs page.
@@ -152,7 +163,13 @@ See [Log search](log-search.md) and [Log display](log-view.md) for those operati
 ### Interpret inspection evidence
 
 Inspector shows Overview, Resources, Steps, Files, and Evidence from the current snapshots.
+The structured inspector opened with `I` provides clickable section buttons.
+Use `:inspect section SECTION` in an open structured inspector for the equivalent command.
+In inline Inspector, click StdOut or StdErr to open that exact log source.
+Its log-browser link opens the complete source catalog.
+Its Evidence link opens Research Evidence inside Details.
 Investigate shows bounded multi-file findings, hypotheses, and inspected-source coverage.
+Click a cited log path to open its exact source on the full Logs page.
 A hypothesis is an explanation supported by cited evidence, not proof of the application's cause.
 Readers update in the background as job records and files change.
 
@@ -160,6 +177,66 @@ The wide Jobs layout places Details beside the tables.
 Narrow terminals stack the panels.
 Use `Ctrl-W` or F6 for panel focus and `z` to maximize the focused panel.
 Off suppresses selected-job content and starts no new log or evidence reads.
+
+### Inspect Research and Analytics without changing pages
+
+1. Select an active or recent job in Jobs.
+2. Click Research or Analytics in Details.
+3. Click the required subview button.
+4. Move the pointer into the content and use the wheel to scroll.
+5. Use arrow or page keys when the content has keyboard focus.
+6. Select another subview to inspect its reports.
+7. Select Off to hide inline content.
+
+**Expected result:** The selected job remains visible beside its reports.
+The view fits the Details width without horizontal panning.
+Long content scrolls vertically beneath the button rows.
+Each subview retains its own vertical position.
+Each rendered inline document remains bounded to 2,048 source rows and 2,048 fitted display rows.
+Metric dashboards rasterize visible cards as you scroll.
+
+| Group | Inline subviews |
+| --- | --- |
+| Research | Experiment, Arrays, Evidence, Artifacts, Passport, Submit, Resources, Forecast, Blockers, Tradeoffs, Scaling, Workflow |
+| Analytics | Job series, History, Timeline, Advisor, Compare |
+
+Use `predict` as the Resources command identifier.
+Use `job` as the Job series command identifier.
+For example, `:jobpanel research workflow` opens Workflow inside Details.
+Use `:jobpanel analytics job` for the selected job's recorded series.
+
+Research uses the exact selected job and its bound project reports.
+Job series keeps that exact job ID even when no recorded samples are available.
+Compare includes the selected job and the available explicit comparison or marked jobs.
+History, Timeline, and Advisor keep their accounting-window context.
+Check the selected-job header and the reported window when reading aggregate Analytics results.
+
+The full Research and Analytics pages keep their own selections and view preferences.
+Opening an inline view does not replace those pages' positions.
+Click an explicit chart or cited-source control when you need its detailed inspection.
+Click a Chart Events or Timeline row to open the exact displayed job or log citation.
+Use `:timeline open EVENT_NUMBER` for a numbered current timeline event.
+Use the opened dialog's Back or Esc control to return.
+Research reports remain evidence; a captured Submit report does not submit a job.
+Click a declared output row to expand its directory or open its bounded preview.
+In a CSV preview, click a column button to focus it, then press Enter to cycle its sort direction.
+Use `:artifact column NAME_OR_NUMBER` for column focus by command.
+
+### Mark a job range with the mouse
+
+1. Press the left mouse button on a visible job row.
+2. Keep the button pressed and drag through the required rows.
+3. Release the button to complete the marked range.
+4. Press `c` to open cancellation review when cancellation is the required action.
+5. Inspect every target ID and confirm only the intended jobs.
+
+**Expected result:** The marked range follows the table's current visible order.
+Hold Shift during the drag to retain existing marks and add the new range.
+Press Esc before release to cancel capture and restore the earlier marks.
+A simple click retains ordinary row selection.
+Marking jobs does not change their scheduler state.
+Supported actions retain their existing review and confirmation.
+See [Mouse and button navigation](pointer-navigation.md) for mouse support and directional focus.
 
 ## Set the update rate
 
@@ -169,7 +246,7 @@ Higher values request more frequent updates.
 The multiplier applies to fetching; it does not change recorded timestamps or metric values.
 
 1. Click the slider track to choose a rate.
-2. Drag the track to adjust the rate when the terminal reports drag events.
+2. Keep the left mouse button pressed and drag horizontally to adjust the rate.
 3. Click `[-]` or `[+]` to change the multiplier by one.
 4. Use the mouse wheel over the control for one-step changes.
 5. Click the multiplier label to focus keyboard controls.
@@ -180,6 +257,9 @@ The multiplier applies to fetching; it does not change recorded timestamps or me
 **Expected result:** The multiplier label and effective source cadences update during the session.
 View → Focus update-rate slider provides keyboard entry.
 Enter or Tab also releases slider focus.
+Release the mouse button to finish dragging.
+The pointer position stays bounded to the 1x–50x track.
+Use a track click or `:rate N` if the terminal cannot report drag events.
 
 | Command | Function |
 | --- | --- |
@@ -233,7 +313,7 @@ Job-changing actions retain their existing review and confirmation.
 **Expected result:** Opening a menu preserves the underlying screen.
 Browsing menu choices does not execute an action.
 A choice ending in `...` opens an editable command prompt.
-Complete the command's arguments before running it.
+Dismiss the dropdown, then complete the command's arguments before running it.
 
 Tab and Shift-Tab change menus while a menu is open.
 Home and End select the first or last choice.
@@ -248,7 +328,14 @@ Close an unfinished job-action review before starting another reviewed action.
 The toolbar remains above overlays.
 On narrow terminals, it abbreviates menu labels and compresses the slider to its multiplier.
 F10 keeps all four menus accessible.
-Clicking outside an open menu closes it without activating the underlying page.
+Move the pointer over a menu choice to highlight it without activating it.
+Direct choices leave the dropdown open while the pointer remains inside it.
+This permits several setting changes without reopening the menu.
+Move the pointer outside the dropdown to dismiss it.
+Prompts and reviews remain beneath the dropdown while it keeps keyboard focus.
+Dismiss the menu before using those dialogs' editing or review controls.
+About replaces the dropdown with its own panel.
+Focus update-rate slider leaves the menu and focuses the slider.
 
 Click the top-left `x`, or choose File → Quit Tower, to exit.
 Esc closes a menu; it does not exit Tower.
@@ -329,13 +416,19 @@ See [Tables](tables.md), [Log display](log-view.md), and [Navigation](navigation
 | Refresh all sources now | Request an immediate source refresh |
 | Focus update-rate slider | Focus the multiplier's keyboard controls |
 | Reset update rate to 1x | Restore the configured base fetching intervals |
+| Navigate buttons with arrow keys (F8) | Focus visible buttons and links for directional navigation |
+| Enable / Disable smooth scrolling | Toggle mouse-wheel viewport smoothing |
+| Enable / Disable startup animation | Toggle the interactive welcome display |
+| Preview startup animation | Preview the welcome without changing its saved preference |
 | Plain ASCII reader mode | Select the reader theme |
 | Theme: each available theme | Select that theme |
 
 The page and workspace names match the [page table](../../README.md#5-select-a-page).
 The theme choices are default, dark, light, terminal, mono, high, and cb.
 Reader provides plain ASCII text and static notices.
+Reader also uses immediate scrolling and skips the welcome.
 Refreshing or speeding up fetching does not enable disabled sources.
+See [Mouse and button navigation](pointer-navigation.md) for focus, startup, and scrolling preferences.
 
 ### Help menu
 
