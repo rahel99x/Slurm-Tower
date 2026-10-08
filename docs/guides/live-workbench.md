@@ -98,7 +98,7 @@ Use the existing submission procedure and review when you want to run a script.
 ## Inspect a job inside Jobs
 
 Select an active job or a job in Recents.
-The Details panel provides six buttons:
+The Details panel provides seven buttons:
 
 | Button | Purpose |
 | --- | --- |
@@ -107,6 +107,7 @@ The Details panel provides six buttons:
 | Investigate | Inspect bounded failure evidence and its source coverage |
 | Research | Inspect all twelve project and planning workspaces inside Jobs |
 | Analytics | Inspect Job series, History, Timeline, Advisor, and Compare inside Jobs |
+| Quick Advisor | Request a summary of allocation and measured resource behaviour for the exact job |
 | Off | Hide inspection content |
 
 The selected job ID remains the evidence target.
@@ -137,6 +138,8 @@ In that stop, arrows select a subview; Home and End select its first or last cho
 Enter or Tab returns from content to the mode buttons.
 Use `:jobpanel inspector`, `:jobpanel logs`, `:jobpanel investigate`, or `:jobpanel off` to select a mode directly.
 Use `:jobpanel research VIEW` or `:jobpanel analytics VIEW` to select an inline workspace directly.
+Use `:jobpanel quick` to request Quick Advisor.
+Restoring that saved mode leaves it idle until you select Analyze this job.
 The inspection mode persists when normal state is enabled.
 Button focus and the panel's selected log file last for the current session.
 
@@ -177,6 +180,10 @@ The wide Jobs layout places Details beside the tables.
 Narrow terminals stack the panels.
 Use `Ctrl-W` or F6 for panel focus and `z` to maximize the focused panel.
 Off suppresses selected-job content and starts no new log or evidence reads.
+Drag the divider to change the panel sizes.
+Use its keyboard focus when mouse drag reports are unavailable.
+The horizontal divider above Recents controls how much matching history is visible.
+See [Adjustable workspaces and job advice](adaptive-workspaces.md) for divider, Recents, grouping, docking, and Quick Advisor procedures.
 
 ### Inspect Research and Analytics without changing pages
 

@@ -99,7 +99,7 @@ Esc and F10 close menus explicitly.
 Use `:menu [File|Edit|View|Help]` or `:about` for command entry.
 See [Toolbar menus](guides/live-workbench.md#use-the-terminal-toolbar) for every choice and its operating context.
 
-Jobs Details provides Inspector, Logs, Investigate, Research, Analytics, and Off buttons.
+Jobs Details provides Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off buttons.
 Each button reads the exact selected active or recent job.
 Click a button, then use arrow keys and Enter to activate another visible control.
 Click content to restore its normal navigation.
@@ -116,6 +116,16 @@ Inline Job series uses the exact selected job, including a job with no samples.
 Aggregate Analytics views retain their stated accounting window.
 The full Research, Analytics, and Logs pages retain their own view settings.
 See [Inline inspection](guides/live-workbench.md#inspect-a-job-inside-jobs) for every panel control.
+
+Quick Advisor runs only after explicit activation with its button or `:jobpanel quick`.
+Restoring the mode leaves it idle until Analyze this job is selected.
+It uses published job, inspection, accounting, compatible history, and resource-series evidence in a bounded background task.
+A loading box leaves normal display input available.
+Refresh analysis captures newer evidence explicitly.
+Changing the job or leaving the mode discards a stale result.
+Task-scoped MaxRSS does not establish aggregate memory usage or headroom.
+The report identifies unavailable measurements, sampled coverage, and truncation.
+See [Quick Advisor](guides/adaptive-workspaces.md#request-quick-advisor) for sources and operating limits.
 
 F8 or `:focusbuttons` toggles directional focus for visible controls.
 Arrows select a nearby control; Enter or Space activates it.
@@ -145,6 +155,29 @@ layout action on any page. `:density comfortable|compact|focused` changes
 information density; `:layout split 20..80` controls Main's percentage on wide
 screens. `:layout save NAME`, `load NAME`, `delete NAME`, and `list` manage up to
 16 layouts. UI preferences persist when ordinary state is enabled.
+
+Grey dividers support mouse capture from their line and one cell beside it.
+Drag and release to change the split; Esc restores the starting size.
+Page, dialog, and terminal-size changes also cancel capture.
+Only full vertical dividers carry a centred blue diamond.
+ASCII mode uses `|`, `-`, and `*`.
+Click a divider to focus it, then use axis arrows or page keys to adjust its size.
+Use `:pane-focus KEY` or `:pane-resize KEY smaller|larger` for command access.
+Jobs Main and Details use `workspace:jobs`.
+The horizontal divider above Recents changes its data-row budget.
+See [Adjustable workspaces](guides/adaptive-workspaces.md) for minimum sizes and keyboard steps.
+
+Analytics, Dependencies, Logs, and Research include a virtualized job-history panel.
+Its explicit selections preserve exact active, departed, and historical IDs.
+Analytics opens the selected resource series; Logs uses that job's own sources; Research selects its project evidence; Dependencies selects its dependency context.
+Missing historical data remains unavailable.
+Drag the `⠿` handle (`::` in ASCII) to an edge to use a column or horizontal strip.
+Use `:history-dock auto|left|right|top|bottom|next|off` and `:history-browser [on|off]` for command control.
+`:history-focus` gives keys to the browser; Esc returns them to the data.
+`:history-job JOBID` activates an exact available record.
+`:history-scroll up|down|page-up|page-down|home|end` changes its viewport without changing the data target.
+Each page retains its dock and history share when normal UI state is enabled.
+See [Dockable history](guides/adaptive-workspaces.md#keep-job-history-beside-the-data) for fallback dimensions and runtime updates.
 
 `Ctrl-B`, Alt-Left, or `:back` returns to the prior location and restores its
 selected identity, filters, table options, panel context, and retained log
@@ -296,14 +329,38 @@ sequence, and sorting applies to all rows before paging.
 
 The seven independent table scopes are `jobs`, `recent`, `history`, `group`,
 `nodes` (My Nodes), `sources`, and `cluster` (partitions). Recents sorts its
-retained candidate records independently from History. The default size is five.
+retained candidate records independently from History. The default initial preview is five.
 Use `:recents` to change the size or time window; see the [table guide](guides/tables.md#feature-09).
+Larger panels and scrolling can reach older matching records beyond that initial preview.
+The wheel inside Recents stays in its own viewport.
+Its arrows, page keys, Home, and End use exact job identities.
+The available records remain limited by the accounting window and filters.
 Numeric JOBIDs and array task
 IDs use natural order (`2` before `10`, `123_2` before `123_10`). Measurements use
 their original numeric values rather than rounded labels; unknown values stay
 last in either direction. Jobs pins remain first, and optional array grouping
 arranges the sorted rows into their observed task groups.
 If sorting would hide the selected task behind a different folded group representative, Tower expands that array to keep the same job selected.
+
+Automatic launch grouping is enabled by default; new groups start open.
+It recognizes arrays, heterogeneous components, scoped explicit launch tags or scheduler markers, and conservative ordinary submission bursts.
+A likely burst requires consecutive numeric IDs, at most ten anchored seconds, matching nonempty owner, account, WorkDir and exact Command, plus the same name or at least three numbered-name variants.
+Missing provenance and names alone do not establish a group.
+Click a fold symbol or use Left/Right on a selected group with page focus.
+`:jobgroups [on|off]` toggles grouping; `:jobgroup toggle|open|close GROUP_ID` controls one known group.
+Fold preferences span the job views and their history browsers.
+A closed group keeps a real representative record and exact action ID.
+Hidden members are not automatically marked or added to cancellation.
+See [Launch deduction](guides/adaptive-workspaces.md#fold-related-launches) for evidence, lifecycle updates, and tag examples.
+
+Jobs has a six-cell progress field and the sort identifier `progress`.
+The solid fractional block and percentage use the exact job's published application progress.
+ASCII uses a `p` prefix.
+Without application progress, `t` distinguishes elapsed/time-limit usage from completed work.
+Pending jobs show `wait`; unavailable progress and limits show `--`.
+Sources include the standard metric-stream `progress.completed`/`progress.total`, or valid `progress_fraction`, `progress_pct`, and `completed_steps`/`total_steps` numeric metrics.
+These values update from job-bound, current published results without renderer I/O.
+See [Progress column](guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for interpretation and project publication.
 
 `:sortby [TABLE] COLUMN [asc|desc|off]` provides the same controls. Omitting the
 direction cycles that column; omitting TABLE uses the current tab. Use the column

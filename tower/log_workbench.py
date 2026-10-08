@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime
 import json
+import math
 import time
 
 from . import layout as L
@@ -30,7 +31,7 @@ def initialize(app):
                                    pan_cache=OrderedDict(), pan_context=None, pan_source=None,
                                    align=True, diff_sources=None, ignore_time=False, json_filter=("", ""),
                                    json_collapsed=[], fold_expanded=[], rows=[], cursor=0,
-                                   unread=0, unread_byte=None, observation=None, mouse_rows={})
+                                   unread=0, unread_byte=None, observation=None, mouse_rows={}, split_ratio=50)
 
 
 def _state(app):
@@ -52,11 +53,17 @@ def restore(app, state):
     if isinstance(collapsed, list):
         target["collapsed"] = [v for v in collapsed[:256] if isinstance(v, str) and len(v) <= 160 and v.isprintable()]
     target["preview"] = state.get("preview") is True
+    ratio = state.get("split_ratio")
+    if isinstance(ratio, int) and not isinstance(ratio, bool):
+        target["split_ratio"] = max(20, min(80, ratio))
 
 
 def save(app):
     state = _state(app)
-    return {key: state[key] for key in ("view", "collapsed", "preview")}
+    result = {key: state[key] for key in ("view", "collapsed", "preview")}
+    if state.get("split_ratio", 50) != 50:
+        result["split_ratio"] = state["split_ratio"]
+    return result
 
 
 def sync_source(app, path):
@@ -92,6 +99,11 @@ def _entries(app):
     entries = list(getattr(app.logs, "entries", []))
     store = getattr(app, "store", None)
     binding = (getattr(app, "project_state", {}) or {}).get("binding")
+    if binding and not entries:
+        # Bound declarations are already validated and published. Paired views
+        # can use them before the user opens the native catalog, without a read.
+        from .project_ui import log_entries
+        entries = log_entries(app)
     if store is not None and hasattr(app, "log_target") and not binding:
         from .views import stdout_path
         snap = store.snapshot()
@@ -666,15 +678,46 @@ def _presentation_rows(state, sources):
     return result, note
 
 
+def _content_viewport(app, width, height):
+    """Use a current dock's data rectangle without covering its job browser."""
+    browser = getattr(app, "history_browser_state", {})
+    frame = browser.get("frame") if isinstance(browser, dict) else None
+    rect = getattr(app, "history_browser_content_rect", None)
+    if (isinstance(frame, dict) and rect is not None and frame.get("tab") == app.tab == "log" and
+            frame.get("mode") == getattr(app, "mode", "main") == "main" and
+            frame.get("geometry") == (getattr(app, "width", None), getattr(app, "height", None)) and
+            all(isinstance(getattr(rect, name, None), int) for name in ("x", "y", "width", "height"))):
+        return max(0, rect.x), max(0, rect.y), max(0, rect.width), max(0, rect.height)
+    return 0, 0, width, height
+
+
+def _fit_header(rows, hits, budget, source_labels):
+    """Keep source controls and evidence visible inside short docked panes."""
+    if len(rows) <= budget:
+        return rows, hits
+    priorities = sorted({y for y, _, _ in hits})
+    priorities.extend(index for index, row in enumerate(rows)
+                      if any(style.startswith(("red", "yellow")) for _, style in row))
+    priorities.extend(source_labels)
+    priorities.extend(range(len(rows)))
+    chosen = list(dict.fromkeys(priorities))[:max(0, budget)]
+    chosen.sort()
+    mapping = {old: new for new, old in enumerate(chosen)}
+    return [rows[index] for index in chosen], [(mapping[y], kind, value) for y, kind, value in hits if y in mapping]
+
+
 def overlay(views, snap, app, width, height):
     state = _state(app)
     state["control_hits"] = []
     if app.tab != "log" or app.mode != "main" or app.logs.browser or state["view"] == "plain":
         return None
+    origin_x, origin_y, width, height = _content_viewport(app, width, height)
     data = _alternate(app)
     state["mouse_rows"] = {}
     body_start = None
+    split_left, split_extent = None, None
     button_hits = []
+    source_label_rows = []
     rows = [[(" Esc original | arrows scroll/pan | Y copies the current complete source", "dim")],
             [(" Select/yank in the original view; panels preserve source bytes.", "dim")]]
     label = status_label(app)
@@ -700,6 +743,7 @@ def overlay(views, snap, app, width, height):
                 button_hits = [(y + len(rows), kind, value) for y, kind, value in hits]
                 rows.extend(controls)
             for item in sources:
+                source_label_rows.append(len(rows))
                 rows.append([(" " + clean(item["label"] + " | " + item["path"], views.g.ascii), "cyan+bold")])
                 if item.get("error"):
                     rows.append([(" " + clean(item["error"], views.g.ascii), "red")])
@@ -716,24 +760,29 @@ def overlay(views, snap, app, width, height):
             body, note = _presentation_rows(state, sources)
             if note:
                 rows.append([(" " + clean(note, views.g.ascii), "yellow" if state["view"] == "split" else "dim")])
+            rows, button_hits = _fit_header(rows, button_hits, max(0, height - 5), source_label_rows)
             page = max(1, height - len(rows) - 5)
             state["viewport_page"] = page
             state["cursor"] = min(state["cursor"], max(0, len(body) - 1))
             state["scroll"] = min(state["scroll"], max(0, len(body) - page))
-            half = max(1, (width - 11) // 2)
+            split_extent = max(2, width - 10)
+            split_left = max(1, min(split_extent - 1, split_extent * state.get("split_ratio", 50) // 100))
+            split_right = split_extent - split_left
             sep = " | " if views.g.ascii else " │ "
             body_start = len(rows)
             for index, item in enumerate(body[state["scroll"]:state["scroll"] + page], state["scroll"]):
                 if "pair" in item:
                     values = [source["lines"][line] if line is not None else "" for source, line in zip(sources, item["pair"])]
                     columns = [display_line(app, clean(value, views.g.ascii, VIEW_BYTES)) for value in values]
-                    text = L.pad(L.cut(columns[0], half, views.g.ascii), half) + sep + L.cut(columns[1], half, views.g.ascii)
+                    text = (L.pad(L.cut(columns[0], split_left, views.g.ascii), split_left) + sep +
+                            L.pad(L.cut(columns[1], split_right, views.g.ascii), split_right))
                 else:
                     text = display_line(app, clean(item["text"], views.g.ascii, VIEW_BYTES))
                 marker = ">" if views.g.ascii else "›"
                 rows.append([(" " + (marker if index == state["cursor"] else " ") + " " + text,
                               "rev+bold" if index == state["cursor"] else item.get("style", ""))])
     rendered = L.box(views.g, rows, width, height, "Log workbench / " + state["view"], min_width=max(1, width - 4))
+    rendered = [(y + origin_y, x + origin_x, row) for y, x, row in rendered]
     from .control_rows import place_hits
     state["control_hits"] = place_hits(button_hits, rendered[1:-1])
     if body_start is not None and len(rendered) >= 3:
@@ -741,6 +790,28 @@ def overlay(views, snap, app, width, height):
             if relative >= body_start:
                 state["mouse_rows"][y] = (x + 1, x + L.vlen(L.row_text(row)) - 1,
                                            state["scroll"] + relative - body_start)
+        visible = rendered[1:-1][body_start:]
+        if state["view"] == "split" and len(sources) == 2 and visible and split_left is not None:
+            from . import pane_drag
+            top, left, first_row = visible[0]
+            column = left + 5 + split_left
+            if column < left + L.vlen(L.row_text(first_row)) - 1:
+                smallest = 8 if split_extent >= 16 else 1
+                minimum = max(20, math.ceil(smallest * 100 / split_extent))
+                maximum = min(80, (split_extent - smallest) * 100 // split_extent)
+                if minimum <= maximum:
+                    key = "log:sources"
+                    pane_drag.register(app, key, "vertical", column, top, 1, len(visible),
+                        left + 5, split_extent, state.get("split_ratio", 50),
+                        lambda value: state.__setitem__("split_ratio", value),
+                        minimum=minimum, maximum=maximum, label="Resize log sources")
+                    canvas = [row for _, _, row in rendered]
+                    pane_drag.paint(canvas, app, key, origin_x=rendered[0][1],
+                                    origin_y=rendered[0][0], ascii_=views.g.ascii)
+                    rendered = [(y, x, canvas[index]) for index, (y, x, _) in enumerate(rendered)]
+                    hit = pane_drag.control_hit(app, key)
+                    if hit and isinstance(getattr(app, "interaction_state", None), dict):
+                        state["control_hits"].append(hit)
     return rendered
 
 

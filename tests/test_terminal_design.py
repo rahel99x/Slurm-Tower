@@ -98,7 +98,10 @@ def test_dependency_cursor_remains_visible_when_chain_is_taller_than_screen(dash
     assert app.selected_id == "19"
     selected = next(y for y, kind, jid in hits if kind == "dep" and jid == "19")
     assert "stage19" in L.row_text(rows[selected])
-    assert all("sel" in style.split("+") for _, style in rows[selected])
+    rect = app.history_browser_content_rect
+    assert rect.x == 0  # The default history dock is on the right.
+    selected_content = L.clip_row(rows[selected], rect.width)
+    assert all("sel" in style.split("+") for text, style in selected_content if text.strip())
 
 
 def test_replay_tab_mouse_coordinates_follow_inserted_scrub_bar(dashboard):

@@ -454,6 +454,8 @@ def _apply_input(app, event, hits, curses):
     if isinstance(getattr(app, "toolbar_state", None), dict) and toolbar_mouse(app, my, mx, button=button, shift=shift):
         return
     if button in ("wheel-up", "wheel-down"):
+        from .pane_drag import blur
+        blur(app)
         # A wheel gesture belongs to content, even after clicking a button.
         # Keyboard focus must not turn its direction into button traversal.
         focus = getattr(app, "interaction_state", None)
@@ -461,12 +463,20 @@ def _apply_input(app, event, hits, curses):
             focus["active"], focus["focused"] = False, None
     if button in ("motion", "drag", "release"):
         from .job_selection import active as selection_active
-        if selection_active(app):
+        if (selection_active(app) or getattr(app, "pane_drag_state", {}).get("capture") or
+                getattr(app, "history_browser_state", {}).get("drag")):
             app.click(my, mx, hits, button=button, shift=shift)
         elif app.mode == "terminal_probe":
             app.click(my, mx, hits, button=button, shift=shift)
         return
     if button in ("wheel-up", "wheel-down"):
+        from .history_browser import handle_mouse as history_mouse
+        from .recent_history import handle_mouse as recent_mouse
+        if history_mouse(app, my, mx, button=button, shift=shift) or recent_mouse(app, my, mx, button=button, shift=shift):
+            return
+        if app.tab == "deps" and getattr(app, "history_browser_state", {}).get("views", {}).get("deps", {}).get("explicit"):
+            app.move("up" if button == "wheel-up" else "down")
+            return
         from .job_panels import contains as in_job_panel
         if in_job_panel(app, my, mx):
             app.click(my, mx, hits, button=button, shift=shift)
@@ -583,7 +593,9 @@ class _InputEffects:
         selection = getattr(app, "job_selection_state", {}) or {}
         # Some terminal drivers omit the held-button bit on position reports.
         # A captured gesture must still rebuild its slider or selected rows.
-        capture = toolbar.get("dragging") or selection.get("capture")
+        capture = (toolbar.get("dragging") or selection.get("capture") or
+                   getattr(app, "pane_drag_state", {}).get("capture") or
+                   getattr(app, "history_browser_state", {}).get("drag"))
         if not hover or capture or app.mode == "terminal_probe":
             self.document = True
 

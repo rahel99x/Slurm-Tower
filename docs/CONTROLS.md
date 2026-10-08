@@ -10,6 +10,7 @@ This guide lists launch methods, default keys, mouse actions, and command famili
 Use `?` inside Tower for contextual help.
 Use the feature guides for complete procedures and operating limits.
 Use [Mouse and button navigation](guides/pointer-navigation.md) for hover feedback, directional focus, dragging, and motion preferences.
+Use [Adjustable workspaces and job advice](guides/adaptive-workspaces.md) for dividers, Recents, launch groups, history panels, and Quick Advisor.
 
 ## Control notation
 
@@ -158,6 +159,28 @@ Keyboard navigation remains available when those reports are missing.
 The reader theme and `animations = false` use immediate scrolling and skip the welcome.
 See [Mouse and button navigation](guides/pointer-navigation.md) for procedures, saved preferences, and troubleshooting.
 
+### Adjustable panel dividers
+
+| Control | Function |
+| --- | --- |
+| Press a divider or one cell beside it, drag, and release | Change the two panel sizes and retain the completed size |
+| Esc during a divider drag | Restore the previous size |
+| Click a divider, or activate it through F8 focus | Focus its keyboard size controls |
+| Arrows along the movement axis with divider focus | Change the split by two percentage points |
+| Page Up / Page Down with divider focus | Change the split by ten percentage points |
+| Enter / Esc with divider focus | Return input to the page |
+| `:pane-focus KEY` | Focus the named divider |
+| `:pane-resize KEY smaller\|larger` | Adjust the named divider |
+| `:layout split N` | Set Main's split percentage from 20 to 80 |
+
+Jobs Main and Details use the divider key `workspace:jobs`.
+Queue and Recents use `recent:jobs`; paired-source Logs uses `log:sources`.
+Dockable history uses `history:analytics`, `history:deps`, `history:log`, or `history:research`.
+A full vertical divider has a blue diamond at its centre.
+Horizontal and shorter vertical dividers use a plain line.
+Page, dialog, and terminal-size changes stop a divider drag and restore its starting size.
+See [Panel size](guides/adaptive-workspaces.md#change-panel-size) for layout bounds and ASCII characters.
+
 ## Navigation, settings, and input
 
 | Command | Function |
@@ -253,10 +276,13 @@ Click column headings for cascading sorts.
 Use `:sortby [TABLE] COLUMN [asc|desc|off]` for the equivalent command.
 Use `:sortby [TABLE] clear` to remove every rule in that table.
 See [Tables](guides/tables.md) for sort editing, column controls, filters, marks, and drill-down.
+The six-cell Progress column also supports `:sortby jobs progress asc\|desc\|off`.
+An application bar reports a published completion fraction; its `t` fallback reports time-limit usage.
+See [Job progress](guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for exact source fields and unknown states.
 
 ### Jobs Details buttons
 
-Jobs provides Inspector, Logs, Investigate, Research, Analytics, and Off buttons in Details.
+Jobs provides Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off buttons in Details.
 The buttons inspect the selected active or recent job without leaving Jobs.
 
 | Control | Function |
@@ -274,17 +300,46 @@ The buttons inspect the selected active or recent job without leaving Jobs.
 | Click Research or Analytics, then a subview | Show that workspace inside Details |
 | Wheel over Details with content visible | Scroll that view vertically |
 | Esc | Return input to the job rows |
-| `:jobpanel [inspector\|logs\|investigate\|research\|analytics\|off\|focus]` | Select a mode or focus the buttons without a mouse |
+| `:jobpanel [inspector\|logs\|investigate\|research\|analytics\|quick\|off\|focus]` | Select a mode or focus the buttons without a mouse |
 | `:jobpanel research VIEW` | Select one of the twelve inline Research workspaces |
 | `:jobpanel analytics VIEW` | Select Job series, History, Timeline, Advisor, or Compare |
 
 Use the full Logs page for complete-file search and copying.
 Off hides inspection content and starts no new log or evidence reads.
+Quick Advisor starts a background calculation only after explicit activation.
+Use Analyze this job in an idle restored panel, Refresh analysis for newer evidence, or Cancel for an unfinished request.
+Changing the selected job or leaving the mode discards its later result.
 Inline views fit the panel width and retain an independent vertical position for each subview.
 The full Research, Analytics, and Logs pages keep their own selection and position.
 See [Live workbench](guides/live-workbench.md#inspect-a-job-inside-jobs) for procedures and layout behavior.
 
 ## Table inspection
+
+### Dockable job history
+
+Analytics, Dependencies, Logs, and Research include a job-history panel.
+Its choices target the exact available active, recent, or completed job.
+
+| Control | Function |
+| --- | --- |
+| Click a Job history choice | Open that exact job's data in the page |
+| Drag `⠿` (`::` in ASCII) to a page edge, then release | Dock history as a column or horizontal strip |
+| Esc during a history-handle drag | Retain its previous dock |
+| Click Dock | Cycle the available dock positions |
+| Click the history `x` or its remaining show control | Hide or restore the history panel |
+| `:history-dock auto\|left\|right\|top\|bottom\|next\|off` | Choose, cycle, or hide its dock |
+| `:history-browser [on\|off]` | Toggle, show, or hide the browser |
+| `:history-focus` | Give the browser keyboard focus |
+| Arrows, page keys, Home / End with browser focus | Select and activate a history job |
+| Esc with browser focus | Return input to the page data |
+| `:history-job JOBID` | Activate an exact available job |
+| `:history-scroll up\|down\|page-up\|page-down\|home\|end` | Scroll history without activating another job |
+
+Use the panel's divider to change its share of the page.
+Each page retains its own dock preference when normal UI state is enabled.
+See [Job history panels](guides/adaptive-workspaces.md#keep-job-history-beside-the-data) for compact layouts and source identity.
+
+### Table commands
 
 Use a table identifier when you need a table other than the current one.
 Identifiers include `jobs`, `recent`, `history`, `group`, `nodes`, `sources`, and `cluster`.
@@ -304,8 +359,10 @@ Identifiers include `jobs`, `recent`, `history`, `group`, `nodes`, `sources`, an
 | `:viewpicker [TABLE]` | Preview and select a saved table view |
 | `:historyrange today\|yesterday\|week\|all` | Select a named History date interval |
 | `:historyrange START END` | Select inclusive local calendar dates |
-| `:recents 5\|10\|25\|auto` | Select the Recents size |
+| `:recents 5\|10\|25\|auto` | Select the initial Recents preview size |
 | `:recents expand\|collapse` | Change the Recents presentation |
+| `:jobgroups [on\|off]` | Toggle or select automatic launch grouping |
+| `:jobgroup toggle\|open\|close GROUP_ID` | Fold or expand one known launch group |
 | `:recents window DURATION\|all` | Select the completion time window |
 | `:marked [all\|hidden\|visible\|active\|finished]` | Inspect a subset of marked jobs |
 | `:freeze [on\|off]` | Hold or resume the inspection view |
@@ -317,6 +374,17 @@ Identifiers include `jobs`, `recent`, `history`, `group`, `nodes`, `sources`, an
 Numeric conditions combine with AND.
 For example, `:where jobs cpus>=8 memory>16GiB cpu_eff<30%` requires every condition to match.
 Use the [table guide](guides/tables.md) for supported fields, units, and unknown values.
+
+Drag the divider above Recents to change its visible size.
+The wheel inside Recents scrolls that list.
+Click a recent job, then use arrows, page keys, Home, or End to reach older matching history.
+The initial preview size does not cap that navigation.
+
+Click a launch-group fold symbol to close or open its matching jobs.
+With a grouped job selected and ordinary page focus, Left closes its group and Right opens it.
+Closed groups retain one real representative ID.
+Grouping does not add hidden members to a marked range or a job-action target list.
+See [Launch groups](guides/adaptive-workspaces.md#fold-related-launches) for deduction evidence and exact-action rules.
 
 In the sort editor, Up/Down selects a rule.
 Left/Right changes its priority.

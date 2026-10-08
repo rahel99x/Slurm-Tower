@@ -86,7 +86,11 @@ def test_clicked_tab_arrow_cycle_keeps_job_and_esc_returns_to_rows(dashboard):
     assert J.handle_key(app, "down")
     assert J.initialize(app)["mode"] == "analytics"
     assert J.handle_key(app, "down")
+    assert J.initialize(app)["mode"] == "quick"
+    assert J.handle_key(app, "down")
     assert J.initialize(app)["mode"] == "off"
+    assert J.handle_key(app, "left")
+    assert J.initialize(app)["mode"] == "quick"
     assert J.handle_key(app, "left")
     assert J.initialize(app)["mode"] == "analytics"
     assert app.cursor == before and app.tab == "jobs" and app.mode == "main"

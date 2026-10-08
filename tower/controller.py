@@ -128,12 +128,14 @@ class App:
         workbench.restore(self, ui.get("workbench", {}))
 
     def save(self):
+        from .pane_drag import committed
         forecast_state = None
         if self.store.persist and self.forecast_scope is not None and self.research and self.research.forecasts:
             forecast_state = dict(version=1, scope=dict(self.forecast_scope), observations=self.research.forecasts.observations())
-        self.store.save_ui(dict(tab=self.tab, log_lines=self.log_lines, gpu=self.gpu, bell=self.bell, sort=self.sort, theme=self.theme, analytics_view=self.analytics_view,
-                                nodes_view=self.nodes_view, research_view=self.research_view, bookmarks=self.logs.bookmarks, log_wrap=self.logs.wrap,
-                                forecast_state=forecast_state, workbench=workbench.save(self), reverse=self.reverse))
+        with committed(self):
+            self.store.save_ui(dict(tab=self.tab, log_lines=self.log_lines, gpu=self.gpu, bell=self.bell, sort=self.sort, theme=self.theme, analytics_view=self.analytics_view,
+                                    nodes_view=self.nodes_view, research_view=self.research_view, bookmarks=self.logs.bookmarks, log_wrap=self.logs.wrap,
+                                    forecast_state=forecast_state, workbench=workbench.save(self), reverse=self.reverse))
 
     def analytics_days_value(self) -> float:
         return float(self.days_options[self.days_index])
@@ -299,7 +301,11 @@ class App:
             fin = [f for f in fin if flt[1:] in [t.lower() for t in snap.get("tags", {}).get(f.id, {}).get("tags", [])]]
         elif flt:
             fin = [f for f in fin if any(flt in value.lower() for value in (f.name, f.id, f.state, f.partition))]
-        return fin[:recent_limit(self)] if recent else fin
+        if recent:
+            return fin[:recent_limit(self)]
+        self.history_all_records = fin
+        from .job_groups import project_records
+        return project_records(self, snap, fin, tab="history")
 
     def history_jobs(self, snap=None):
         return self.finished_jobs(snap)
@@ -319,21 +325,14 @@ class App:
         return fin
 
     def recent_jobs(self, snap=None):
-        from .table_tools import snapshot, filter_text, recent_limit, recent_matches
+        from .table_tools import snapshot
         snap = snapshot(self, self.store.snapshot()) if snap is None else snap
-        active = {j.id for j in snap["jobs"]}
-        pending = [j for j in reversed(list(snap.get("departed_jobs", {}).values())) if j.id not in active]
-        from .table_ui import matches
-        pending = [j for j in pending if matches(self, "recent", j, snap) and recent_matches(self, j)]
-        flt = filter_text(self, "recent").casefold()
-        if flt.startswith("#"):
-            pending = [j for j in pending if flt[1:] in [t.casefold() for t in snap.get("tags", {}).get(j.id, {}).get("tags", [])]]
-        elif flt:
-            pending = [j for j in pending if any(flt in value.casefold() for value in (j.id, j.name, j.partition, "awaiting accounting"))]
-        pending_ids = {j.id for j in pending}
-        recent = (pending + [f for f in self.finished_jobs(snap, recent=True) if f.id not in pending_ids])[:recent_limit(self)]
-        from .table_ui import history_value, sort_rows
-        return sort_rows(self, "recent", recent, value=lambda record, column: history_value(record, column, snap))
+        from . import recent_history, job_groups
+        state = recent_history.initialize(self)
+        state.projector = lambda observation, raw: job_groups.project_records(self, observation, raw, tab="recent")
+        recent = state.projector(snap, recent_history.records(self, snap))
+        state.loaded = recent
+        return recent
 
     def table_sort_changed(self, table, *, persist=True):
         """Reanchor exact identities before a queued click/command can use them."""
@@ -343,22 +342,20 @@ class App:
             snap, selected = snapshot(self, self.store.snapshot()), self.selected_id
             if active == "jobs":
                 self.visible_ids = [row["id"] for row in self.views_ref.job_rows(snap, self, self.actions)]
-                if selected not in self.visible_ids and self.table_state["groups"]:
-                    match = re.fullmatch(r"(\d+)_\d+", selected or "")
-                    if (match and match.group(1) in self.table_state["collapsed"]
-                            and any(job.id == selected for job in snap["jobs"])):
-                        # A different sort can change a folded array's representative.
-                        # Reveal the selected task so the next action retains its ID.
-                        self.table_state["collapsed"].remove(match.group(1))
-                        self.visible_ids = [row["id"] for row in self.views_ref.job_rows(snap, self, self.actions)]
                 self.recent_ids = [record.id for record in self.recent_jobs(snap)]
                 ids = self.visible_ids + self.recent_ids
+                if self.reveal_sorted_group(selected, snap, ids):
+                    self.visible_ids = [row["id"] for row in self.views_ref.job_rows(snap, self, self.actions)]
+                    self.recent_ids = [record.id for record in self.recent_jobs(snap)]
+                    ids = self.visible_ids + self.recent_ids
                 if selected in ids:
                     self.cursor["jobs"] = ids.index(selected)
                 self.selected_id = ids[self.clamp_cursor("jobs", len(ids))] if ids else None
                 self.last_jobs_ids, self.jobs_selection_options = ids, self.jobs_options()
             elif active == "history":
                 ids = [record.id for record in self.history_jobs(snap)]
+                if self.reveal_sorted_group(selected, snap, ids):
+                    ids = [record.id for record in self.history_jobs(snap)]
                 if selected in ids:
                     self.cursor["history"] = ids.index(selected)
                 self.last_history_ids = ids
@@ -367,6 +364,9 @@ class App:
             elif active == "group":
                 self.views_ref.group_tab(snap, self, self.width, None)
                 ids = getattr(self, "group_ids", [])
+                if self.reveal_sorted_group(selected, snap, ids):
+                    self.views_ref.group_tab(snap, self, self.width, None)
+                    ids = getattr(self, "group_ids", [])
                 if selected in ids:
                     self.cursor["group"] = ids.index(selected)
                 self.sync_selection()
@@ -380,6 +380,19 @@ class App:
             self.sel_anchor, self.click_row = None, None
         if persist:
             self.save()
+
+    def reveal_sorted_group(self, selected, snap, displayed):
+        """A changed group representative must not retarget a queued action."""
+        if not selected or selected in displayed or not self.table_state.get("groups"):
+            return False
+        from .job_groups import registry, fold
+        groups = registry(self)
+        group = groups.ensure(snap).for_job(selected)
+        if group is None or not groups.is_collapsed(group):
+            return False
+        fold(self, group.id, False)
+        self.selected_id = selected
+        return True
 
     def ordered_source_ids(self):
         """Actions use the rendered order, including between frames."""
@@ -560,6 +573,11 @@ class App:
         elif self.tab == "log" and self.log_job:
             self.selected_id = self.log_job
         elif self.tab == "deps":
+            browser = getattr(self, "history_browser_state", {})
+            view = browser.get("views", {}).get("deps", {})
+            scoped = view.get("selected") if view.get("explicit") else None
+            if scoped and self.selected_id == scoped:
+                return
             cur = self.clamp_cursor("deps", len(self.dep_ids))
             self.selected_id = self.dep_ids[cur] if self.dep_ids else None
         elif self.tab == "group":
@@ -945,6 +963,15 @@ class App:
 
     def move(self, action: str):
         self.click_row = None
+        scoped = getattr(self, "history_browser_state", {}).get("views", {}).get("deps", {})
+        if self.tab == "deps" and scoped.get("explicit"):
+            page = max(1, getattr(self, "deps_scope_page", 1))
+            count = getattr(self, "deps_scope_count", 0)
+            top = getattr(self, "deps_scope_top", 0)
+            limit = max(0, count - page)
+            self.deps_scope_top = max(0, min(limit, {"up": top - 1, "down": top + 1,
+                "page_up": top - page, "page_down": top + page, "home": 0, "end": limit}.get(action, top)))
+            return
         if self.tab == "research":
             if action in ("page_up", "page_down", "home", "end"):
                 if self.research_view == "arrays" and self.research_array_open and action in ("page_up", "page_down"):
@@ -1703,6 +1730,14 @@ class App:
         pointer_mouse(self, y, x, button="motion", shift=shift)
         from .toolbar import handle_mouse as toolbar_mouse
         if toolbar_mouse(self, y, x, button=button, shift=shift):
+            return
+        from .pane_drag import handle_mouse as pane_mouse
+        if pane_mouse(self, y, x, button=button, shift=shift):
+            return
+        from .history_browser import handle_mouse as history_mouse
+        if history_mouse(self, y, x, button=button, shift=shift):
+            return
+        if button == "press" and not shift and pointer_mouse(self, y, x, button="left"):
             return
         from .job_selection import handle_mouse as select_mouse
         if select_mouse(self, y, x, button=button, shift=shift):

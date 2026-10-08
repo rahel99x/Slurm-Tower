@@ -15,7 +15,7 @@ from .model import secs, stamp
 
 
 TABLE_KEYS = {
-    "jobs": ("id", "name", "part", "st", "where", "cpus", "gpu", "time", "left",
+    "jobs": ("id", "name", "progress", "part", "st", "where", "cpus", "gpu", "time", "left",
              "cpu%", "eff", "mem%", "gpu%", "flags", "tags", "info"),
     "history": ("id", "name", "state", "part", "elapsed", "cpus", "gpus", "ce", "me",
                 "rss", "start", "end", "exit", "nodes", "tags"),

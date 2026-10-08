@@ -25,7 +25,7 @@ LOG_ERROR = re.compile(r"\b(?:error|fatal|traceback|oom|killed|failed)\b", re.IG
 LOG_WARNING = re.compile(r"\b(?:warn(?:ing)?|retry(?:ing)?|timeout)\b", re.IGNORECASE)
 LOG_SUCCESS = re.compile(r"\b(?:done|complete(?:d)?|success(?:ful)?)\b", re.IGNORECASE)
 
-JOB_COLS = [Column("id", "JOBID", 5, 16), Column("name", "NAME", 10, 30, flex=True), Column("part", "PART", 4, 9), Column("st", "ST", 2, 3),
+JOB_COLS = [Column("id", "JOBID", 5, 16), Column("name", "NAME", 10, 30, flex=True), Column("progress", "PROG", 6, 6), Column("part", "PART", 4, 9), Column("st", "ST", 2, 3),
             Column("where", "NODES", 6, 18, flex=True), Column("cpus", "CPU", 3, 4, ">"), Column("gpu", "GPU", 3, 8), Column("time", "ELAPSED/LIMIT", 8, 20),
             Column("left", "LEFT/WAIT", 9, 11, ">"), Column("cpu%", "CPU%", 4, 4, ">"), Column("eff", "EFF", 4, 5, ">"), Column("mem%", "MEM%", 4, 4, ">"),
             Column("gpu%", "GPU%", 4, 4, ">"), Column("flags", "FLAGS", 5, 12), Column("tags", "TAGS", 4, 14), Column("info", "INFO", 34, 60, flex=True)]
@@ -41,6 +41,8 @@ def job_sort_values(job: Job, row: dict, snap: dict, keys=None) -> dict:
                   user=job.user, where=job.nodelist or (job.nodes if job.pending else None),
                   cpus=job.cpus, gpu=job.gpus, prio=job.priority,
                   flags=row.get("flags", ""), tags=row.get("tags", ""), info=row.get("info", ""))
+    if "progress" in requested:
+        values["progress"] = row.get("_progress_value")
     # A JOBID or name click should not parse timestamps or inspect telemetry for
     # every row. Only active measured columns need their unrounded observations.
     if "time" in requested:
@@ -489,6 +491,8 @@ class Views:
         from .table_sort import chain, sort_rows
         live, gpu = snap["live"], snap["gpu"]
         cascade = chain(app, "jobs")
+        from .job_progress import published, observation
+        progress_sources = published(app, snap)
         rows = []
         for j in snap["jobs"]:
             if not matches(app, "jobs", j, snap):
@@ -527,6 +531,10 @@ class Views:
             if mark:
                 row["info"] += f" {self.g.dot} {mark.upper()}"
                 row["_style"] = "yellow"
+            progress = observation(j, progress_sources)
+            row["progress"] = progress.format(self.g.ascii)
+            row["_progress_value"] = progress.fraction
+            row["_styles"]["progress"] = progress.style
             rec = snap.get("tags", {}).get(j.id, {})
             row["tags"] = " ".join(rec.get("tags", []))
             row["pinned"] = bool(rec.get("pinned"))
@@ -561,7 +569,7 @@ class Views:
             else:
                 rows = [r for r in rows if flt in r["name"].lower() or flt in r["id"].lower() or flt in r["part"].lower() or flt in r["info"].lower() or flt in r["tags"].lower()]
         from .table_ui import group_rows
-        return group_rows(app, rows)
+        return group_rows(app, rows, snap)
 
     def selected_panel(self, snap: dict, j: Optional[Job], width: int, log_lines: int, app) -> List[Row]:
         if j is None:
@@ -752,7 +760,14 @@ class Views:
         self.cfg_tags = snap.get("tags", {})
         rows_d = self.job_rows(snap, app, actions) if prepared_rows is None else prepared_rows
         app.visible_ids = [r["id"] for r in rows_d]
+        from . import recent_history
+        native = bool(height is not None and getattr(app, "job_panel_defer_content", False))
+        if native:
+            height = max(0, getattr(app, "workspace_main_usable_height", height))
+            queue_capacity, recent_capacity = recent_history.allocate(app, height, len(rows_d))
         fin = app.recent_jobs(snap)
+        if native and not fin:
+            queue_capacity, recent_capacity = recent_history.allocate(app, height, len(rows_d), recent_count=0)
         app.recent_ids = [f.id for f in fin]
         app.jobs_selection_options = app.jobs_options()
         n = len(rows_d)
@@ -774,6 +789,8 @@ class Views:
         else:
             det, detail_hits = render_details(self, snap, app, selected_record, width,
                                              getattr(app, "job_panel_target_height", height))
+            if native:
+                det, detail_hits = [], []
         events = [e for e in snap["events"] if not e.get("old")][-4:] or snap["events"][-4:]
         if height is None:
             trows, _ = table(job_columns, rows_d, width, self.g.ascii, droppable=JOB_DROP, cursor=None, marks=(), mark_char=None)
@@ -792,15 +809,17 @@ class Views:
             item = moving[-1]
             transit = [[(" ", "")] + gradient_bar(self.g, item["progress"], min(12, max(1, width // 5)), "#67e8f9", "#a78bfa") +
                        [(f" {item['job']} {item.get('name', '')} {'->' if self.g.ascii else '↓'} Recents", "cyan+bold")]]
-        vis = min(n, max(1, budget // 3 - 2)) if n else 0
-        if getattr(app, "job_panel_source_canvas", False):
+        vis = min(n, queue_capacity) if native else min(n, max(1, budget // 3 - 2)) if n else 0
+        if not native and getattr(app, "job_panel_source_canvas", False):
             budget = max(budget, len(det) + max(16, height // 3) + len(fin) + 16)
-        fin_vis = len(fin)
-        show_queue = True
+        fin_vis = min(len(fin), recent_capacity) if native else len(fin)
+        show_queue = bool(n and queue_capacity) if native else True
+        if native:
+            events, transit = [], []
         def used():
             return ((2 + vis if n else 3) if show_queue else 0) + (len(det) + 1 if det else 0) + \
                    (fin_vis + 2 if fin_vis else 0) + (len(events) + 1 if events else 0) + len(transit)
-        while used() > budget:
+        while not native and used() > budget:
             if transit:
                 transit = []
             elif events:
@@ -815,10 +834,11 @@ class Views:
                 show_queue = False
             else:
                 break
-        if show_queue and n:
+        if show_queue and n and not native:
             vis = min(n, vis + max(0, budget - used()))
         top = app.scroll_to("jobs", min(cur, max(0, n - 1)), max(1, vis), n)
         shown = rows_d[top:top + vis]
+        app.job_progress_visible = [row["id"] for row in shown]
         marks = {i for i, r in enumerate(shown) if r["id"] in app.marks}
         for r in shown:
             r["_mark"] = self.g.pin if r.get("pinned") else ""
@@ -828,6 +848,11 @@ class Views:
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
         out = [rule(self.g, width, title)] + trows if show_queue else []
         hits = header_hits("jobs", cells, 1) + [(2 + i, "job", r["id"]) for i, r in enumerate(shown)] if show_queue else []
+        if show_queue:
+            self.group_controls(app, out, hits, [r["job"] for r in shown], 2, "jobs", width)
+            if native:
+                while len(out) < queue_capacity + 2:
+                    out.append([("", "")])
         if show_queue and not rows_d:
             out.append([("   no jobs match the filter; Esc clears it" if app.filter else "   Your queue is clear. New jobs appear here automatically.", "dim")])
         if det:
@@ -845,10 +870,33 @@ class Views:
                                              app=app, header_cells=recent_cells, sort_tab="recent")
             hits += header_hits("recent", recent_cells, base + 1) + [(base + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
             out += recent_rows
+            self.group_controls(app, out, hits, recent_shown, base + 2, "recent", width)
+            hits.append((base, "control", {"id": "recent-divider", "label": "Resize Queue and Recents",
+                "left": 0, "right": width, "action": ("command", "pane-focus recent:jobs"), "group": "pane-dividers"}))
+        if native:
+            recent_history.publish(app, fin, recent_capacity, n)
+            if not rows_d and not fin:
+                out = [rule(self.g, width, "jobs"), [("   no jobs match the filter; Esc clears it" if app.filter else
+                    "   Your queue is clear. New jobs appear here automatically.", "dim")]]
         # Inline Details owns the supporting pane. The inspector and
         # investigation include the selected job's own evidence instead.
         record_page(app, "jobs", len(shown) + (len(recent_shown) if fin_vis else 0))
         return out, hits
+
+    def group_controls(self, app, rows, hits, records, base, tab, width):
+        """Attach fold buttons to real representative rows, preserving job IDs."""
+        from .job_groups import metadata_for_record
+        from .pane_drag import _replace
+        for offset, record in enumerate(records):
+            meta = metadata_for_record(app, tab, record.id)
+            y = base + offset
+            if meta is None or not meta.header or y >= len(rows) or width < 2:
+                continue
+            glyph = (">" if meta.collapsed else "v") if self.g.ascii else ("▸" if meta.collapsed else "▾")
+            rows[y] = _replace(rows[y], 0, glyph, "cyan+bold", width)
+            hits.append((y, "control", {"id": "jobgroup:" + tab + ":" + meta.group.id + (":row:" + str(y) if tab == "deps" else ""),
+                "label": meta.group.label + f" / {meta.visible_count} visible / {meta.total_count} observed",
+                "left": 0, "right": 1, "action": ("command", "jobgroup toggle " + meta.group.id), "group": "job-groups"}))
 
     # ---- history tab ------------------------------------------------------------------------------
     FIN_COLS = [Column("id", "JOBID", 5, 16), Column("name", "NAME", 8, 30, flex=True), Column("state", "STATE", 5, 14), Column("part", "PART", 4, 9),
@@ -916,13 +964,14 @@ class Views:
         cur = app.clamp_cursor("history", n)
         app.selected_id = fin[cur].id if fin else None
         counts: Dict[str, int] = {}
-        for f in fin:
+        observed = getattr(app, "history_all_records", fin)
+        for f in observed:
             counts[f.state] = counts.get(f.state, 0) + 1
-        core_h = sum(f.core_hours for f in fin)
-        gpu_h = sum(f.gpu_hours for f in fin)
-        effs = [f.cpu_eff for f in fin if f.cpu_eff is not None]
+        core_h = sum(f.core_hours for f in observed)
+        gpu_h = sum(f.gpu_hours for f in observed)
+        effs = [f.cpu_eff for f in observed if f.cpu_eff is not None]
         interval_label = date_label(app) if getattr(app, "table_tools_state", {}).get("dates") else f"last {app.analytics_days_value():g} days"
-        summary: Row = [(f" {interval_label}: {n} jobs  ", "bold")]
+        summary: Row = [(f" {interval_label}: {len(observed)} jobs  ", "bold")]
         for st, c in sorted(counts.items(), key=lambda kv: -kv[1]):
             summary.append((f"{st.lower()} {c}  ", "green" if st == "COMPLETED" else ("yellow" if st.startswith("CANCEL") else "red")))
         sort_label = describe(app, "history") if chain(app, "history") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
@@ -946,6 +995,7 @@ class Views:
         if not fin:
             out.append([("   nothing matches the filter; Esc clears it" if app.filter else "   No completed runs yet. Finished jobs and efficiency appear here.", "dim")])
         hits = header_hits("history", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
+        self.group_controls(app, out, hits, shown, len(prefix) + 2, "history", width)
         if fin:
             out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
         record_page(app, "history", len(shown))
@@ -1289,6 +1339,8 @@ class Views:
         flt = app.filter.lower()
         if flt:
             rows = [r for r in rows if flt in r["user"].lower() or flt in r["name"].lower() or flt in r["id"].lower() or flt in r["part"].lower()]
+        from .table_ui import group_rows
+        rows = group_rows(app, rows, snap, tab="group")
         n = len(rows)
         ids = [r["id"] for r in rows]
         previous = getattr(app, "group_ids", [])
@@ -1314,6 +1366,7 @@ class Views:
         sort_label = describe(app, "group") if chain(app, "group") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
         out += [rule(g, width, title + f", {sort_label}")] + trows
         hits = user_hits + header_hits("group", cells, base) + [(base + 1 + i, "group", r["id"]) for i, r in enumerate(shown)]
+        self.group_controls(app, out, hits, [r["job"] for r in shown], base + 1, "group", width)
         record_page(app, "group", len(shown))
         return out, hits
 
@@ -1321,13 +1374,55 @@ class Views:
     def deps_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
         """Dependency chains as trees; the cursor selects a job, and the actions apply to it and everything downstream."""
         g = self.g
+        browser = getattr(app, "history_browser_state", {})
+        view = browser.get("views", {}).get("deps", {})
+        scoped = view.get("selected") if view.get("explicit") else None
+        if scoped:
+            record = app.job_record(scoped, snap)
+            if record is None:
+                app.selected_id = scoped
+                return [rule(g, width, "dependencies / " + scoped), [(" This job is no longer in the current observations. Select another job in history.", "dim")]], []
+            if record is not None:
+                app.selected_id = scoped
+                out = [rule(g, width, "dependencies / " + scoped)]
+                if isinstance(record, Job):
+                    graph = DepGraph(snap["jobs"], {f.id: f.name for f in snap["finished"]})
+                    upstream, downstream = graph.upstream(scoped), graph.downstream(scoped)
+                    out += [[(" " + record.name + " / " + record.state.lower(), "heading+bold")],
+                            [(" Dependency: " + (record.dependency or "none reported"), "cyan")],
+                            [(f" {len(upstream)} upstream / {len(downstream)} downstream", "dim")]]
+                    out += [[(" " + jid, "cyan")] for jid in upstream + downstream]
+                else:
+                    out += self.finished_summary(record, width)
+                    details = snap.get("details", {}).get(scoped, {})
+                    dependency = details.get("Dependency")
+                    out += [[(" Dependency: " + (str(dependency) if dependency else "not retained in accounting"), "dim")],
+                            [(" Historical dependency edges require saved scheduler metadata.", "dim")]]
+                if getattr(app, "deps_scope_job", None) != scoped:
+                    app.deps_scope_job, app.deps_scope_top = scoped, 0
+                app.deps_scope_count = len(out) - 1
+                rect = getattr(app, "history_browser_content_rect", None)
+                actual_height = min(height, rect.height) if height is not None and rect is not None else height
+                app.deps_scope_page = max(1, (actual_height or len(out)) - 1)
+                if height is not None:
+                    from .scrolling import viewport
+                    top = viewport(app, "deps:scope", getattr(app, "deps_scope_top", 0),
+                        app.deps_scope_count, app.deps_scope_page, context=(scoped, width, actual_height))
+                    out = out[:1] + out[1 + top:1 + top + app.deps_scope_page]
+                return [L.clip_row(row, width) for row in out], []
         names = {f.id: f"{f.name} {f.state.lower()}" for f in snap["finished"]}
         graph = DepGraph(snap["jobs"], names)
         jobs = graph.jobs
+        related_ids = graph.related()
         trees = graph.trees()
-        out: List[Row] = [rule(g, width, f"dependency chains: {len(graph.edges)} edges among {len(graph.related())} jobs (c cancels a job and everything downstream, h releases a held chain)")]
+        from .job_groups import project_records
+        records_by_id = {record.id: record for record in list(snap.get("finished", ())) + list(snap.get("departed_jobs", {}).values()) + list(snap["jobs"])}
+        records = [records_by_id.get(jid) for tree in trees for _, _, jid in tree]
+        grouped = project_records(app, snap, [record for record in records if record is not None], tab="deps")
+        displayed = {record.id for record in grouped}
+        out: List[Row] = [rule(g, width, f"dependency chains: {len(graph.edges)} edges among {len(related_ids)} jobs (c cancels a job and everything downstream, h releases a held chain)")]
         if self.visual_room(width, height) and trees:
-            related = [jobs[jid] for jid in graph.related() if jid in jobs]
+            related = [jobs[jid] for jid in related_ids if jid in jobs]
             held = sum(j.held for j in related)
             out += self.composition([("running", sum(not j.pending for j in related), "green"),
                                      ("waiting", sum(j.pending for j in related) - held, "yellow"),
@@ -1337,10 +1432,12 @@ class Views:
         if not trees:
             out.append([("   no job depends on another (the Dependency field of squeue is empty for all of yours)", "dim")])
         hits = []
-        cur = app.clamp_cursor("deps", sum(len(t) for t in trees))
+        cur = app.clamp_cursor("deps", sum(record is None or record.id in displayed for record in records))
         k = 0
         for tree in trees:
             for depth, kind, jid in tree:
+                if jid in records_by_id and jid not in displayed:
+                    continue
                 j = jobs.get(jid)
                 if j is None:
                     desc, style = names.get(jid, "no longer in the queue"), "dim"
@@ -1350,11 +1447,15 @@ class Views:
                 else:
                     desc, style = f"{j.state.lower()} {j.elapsed} of {j.limit} on {j.nodelist}", "green" if j.state == "RUNNING" else ""
                 name = j.name if j else ""
-                branch = ("" if depth == 0 else "   " * (depth - 1) + ("  " + (g.box[2] if not g.ascii else "+") + (g.box[4] if not g.ascii else "-") + " "))
+                max_indent = min(30, max(0, width // 4))
+                if depth and 3 * (depth - 1) > max_indent:
+                    branch = cut(("..." if g.ascii else "…") + str(depth) + " ", max_indent, g.ascii) + " + "
+                else:
+                    branch = ("" if depth == 0 else "   " * (depth - 1) + ("  " + (g.box[2] if not g.ascii else "+") + (g.box[4] if not g.ascii else "-") + " "))
                 kind_t = (kind + " " + (g.arrow + " ") if kind else "")
                 row: Row = [("   " + branch, "dim"), (kind_t, "magenta"), (f"{jid} ", "cyan"), (pad(cut(name, 20, g.ascii), 20), "bold"), ("  " + desc, style)]
                 if jid in app.marks:
-                    row.insert(0, (g.mark, "magenta"))
+                    row.insert(0, (" " + g.mark, "magenta"))
                 if k == cur and height is not None:
                     row = [(t, "rev") for t, _ in row]
                 out.append(row)
@@ -1371,10 +1472,14 @@ class Views:
             j = jobs.get(sel)
             if j and j.pending:
                 out.append([("   waits for " + ", ".join(graph.blocked_by(sel)), "yellow")])
-        others = [j for j in snap["jobs"] if j.id not in graph.related()]
+        others = [j for j in snap["jobs"] if j.id not in related_ids]
         if others:
             out.append(rule(g, width, f"{len(others)} independent jobs"))
             out.append([("   " + cut("  ".join(f"{j.id}({j.name})" for j in others), width - 4, g.ascii), "dim")])
+        for y, _, jid in list(hits):
+            record = records_by_id.get(jid)
+            if record is not None:
+                self.group_controls(app, out, hits, [record], y, "deps", width)
         if height is not None:
             # Keep the selected dependency visible while retaining its position in the
             # full graph for keyboard actions and chain confirmations.
@@ -1731,6 +1836,10 @@ class Views:
         for i in app.store.series_jobs():
             if i not in ids:
                 ids.append(i)
+        chosen = getattr(app, "analytics_job", None)
+        if chosen and chosen not in ids and any(record.id == chosen for record in
+                list(snap.get("jobs", ())) + list(snap.get("finished", ())) + list(snap.get("departed_jobs", {}).values())):
+            ids.append(chosen)
         return ids
 
     def analytics_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
@@ -1863,6 +1972,8 @@ class Views:
     def analytics_job(self, snap: dict, app, width: int, avail: Optional[int]) -> List[Row]:
         g = self.g
         ids = self.analytics_jobs(snap, app)
+        if app.analytics_job and app.analytics_job not in ids:
+            return [rule(g, width, "job series / " + str(app.analytics_job)), [(" This job is no longer in the current observations. Select another job in history.", "dim")]]
         if not ids:
             return [rule(g, width, "job series"), [("   no running job and no recorded series yet (series accumulate while the dashboard runs)", "dim")]]
         if app.analytics_job not in ids:
@@ -2030,6 +2141,14 @@ class Views:
         return out
 
     def compose(self, snap: dict, app, width: int, height: Optional[int], actions=None, *, feedback=True) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
+        from .job_groups import frame
+        from .table_tools import snapshot
+        if app.tab not in ("jobs", "history", "group", "deps", "log", "analytics", "research") or not app.table_state.get("groups"):
+            return self._compose(snap, app, width, height, actions, feedback=feedback)
+        with frame(app, snapshot(app, snap)):
+            return self._compose(snap, app, width, height, actions, feedback=feedback)
+
+    def _compose(self, snap: dict, app, width: int, height: Optional[int], actions=None, *, feedback=True) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         width = max(0, width)
         app.width = width
         if height is not None:
@@ -2042,6 +2161,8 @@ class Views:
         app.freeze_label = freeze_status(app, snap)
         snap = snapshot(app, snap)
         if height is not None and height <= 0:
+            from .pane_drag import begin_frame
+            begin_frame(app, width, height)
             app.tab_hits, app.last_rows, app.last_hits = [], [], []
             app.frame_rows = []
             if feedback:
@@ -2050,6 +2171,8 @@ class Views:
             return [], []
         head = self.header(snap, app, width)
         app.body_origin = len(head)
+        from .pane_drag import begin_frame
+        begin_frame(app, width, height)
         body_h = None if height is None else max(0, height - len(head) - 1)
         prepared_jobs = None
         def jobs_renderer(panel_width, panel_height):
@@ -2066,7 +2189,9 @@ class Views:
                   "research": lambda: self.research_tab(snap, app, panel_width, panel_height)}.get(app.tab)
             return (self.plugin_tab(snap, app, panel_width, panel_height), []) if fn is None else fn()
         from .workspace_layout import render_body
-        body, hits = render_body(self, snap, app, width, body_h, actions, default_renderer)
+        from .history_browser import wrap_render
+        body, hits = wrap_render(self, snap, app, width, body_h,
+            lambda panel_width, panel_height: render_body(self, snap, app, panel_width, panel_height, actions, default_renderer))
         hits = [(y + len(head), kind, key) for y, kind, key in hits]
         if height is None:
             return [L.clip_row(r, width) for r in head + body], hits
@@ -2074,6 +2199,31 @@ class Views:
         while len(rows) < height - 1:
             rows.append([("", "")])
         rows = rows[:height - 1]
+        if app.tab == "jobs":
+            from . import recent_history, pane_drag
+            from .workspace_layout import Rect
+            recent_state = recent_history.initialize(app)
+            divider = next(((y, value) for y, kind, value in hits if kind == "control" and
+                            isinstance(value, dict) and value.get("id") == "recent-divider"), None)
+            main = getattr(app, "workspace_main_rect", None)
+            if divider and main is not None:
+                y, value = divider
+                left, right = value["left"], value["right"]
+                padding = 1 if getattr(app.layout_state, "density", "compact") == "comfortable" and main.width >= 8 and main.height >= 7 else 0
+                origin = main.y + 1 + padding
+                extent = max(1, getattr(app, "workspace_main_usable_height", main.height - 1) - 1)
+                original_ratio, original_manual = recent_state.ratio, recent_state.manual_split
+                def resize_recent(percentage):
+                    recent_history.resize(app, 100 - percentage)
+                    if percentage == 100 - original_ratio:
+                        recent_state.manual_split = original_manual
+                pane_drag.register(app, "recent:jobs", "horizontal", left, y, max(1, right - left), 1,
+                    origin, extent, 100 - recent_state.ratio,
+                    resize_recent,
+                    minimum=10, maximum=90, label="Resize Queue and Recents")
+                recent_state.rect = Rect(left, y + 2, max(0, right - left), max(0, main.y + main.height - padding - y - 2))
+            else:
+                recent_state.rect = None
         app.last_rows = [list(row) for row in rows]         # pristine content; copy excludes feedback glyphs
         if app.sel_anchor is not None:
             a, b = sorted((app.sel_anchor, min(app.sel_end, len(rows) - 1)))

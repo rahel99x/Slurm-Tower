@@ -130,7 +130,7 @@ def test_column_overlay_keyboard_order_width_visibility(dashboard):
     assert "id" not in app.table_state["widths"]["jobs"]
     table_ui.handle_key(app, "down")
     table_ui.handle_key(app, "space")
-    assert "part" in app.table_state["hidden"]["jobs"]
+    assert "progress" in app.table_state["hidden"]["jobs"]
     overlay = table_ui.overlay(views, app.store.snapshot(), app, 100, 30)
     assert "width" in "\n".join(L.row_text(row) for _, _, row in overlay)
     table_ui.handle_key(app, "r")
@@ -386,12 +386,18 @@ def test_commands_keep_independent_filters_after_restart(dashboard):
 
 
 def test_recents_real_controller_limit_filter_and_history_range(dashboard, monkeypatch):
+    from tower import recent_history
     store, app, views = dashboard
     store.finished.extend(Finished(str(100 + index), f"older-{index}", "COMPLETED", end="2026-10-01T12:00:00") for index in range(30))
     app.run_command("recents 10")
-    assert len(app.recent_jobs(store.snapshot())) == 10
+    # The count is a preview minimum. Native Jobs layout admits the complete
+    # visible Recents page, preserving accounting order before its own sort.
+    count = max(10, recent_history.initialize(app).page)
+    expected = [record.id for record in store.finished[:count]]
+    assert [record.id for record in app.recent_jobs(store.snapshot())] == expected
+    assert len(expected) == count
     app.filter = "no active job"
-    assert len(app.recent_jobs(store.snapshot())) == 10
+    assert [record.id for record in app.recent_jobs(store.snapshot())] == expected
     table_tools.set_filter_text(app, "recent", "older-29")
     assert [record.id for record in app.recent_jobs(store.snapshot())] == ["129"]
     monkeypatch.setattr(clock, "now", lambda: datetime(2026, 10, 5, 12).timestamp())

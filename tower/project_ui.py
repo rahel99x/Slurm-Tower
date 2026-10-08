@@ -205,6 +205,8 @@ def _task(app, title, worker, complete, failed=None):
 
 def cancel_automatic(app):
     """Give an explicit project/research command priority without blocking."""
+    from .job_progress import cancel_automatic as cancel_progress
+    cancel_progress(app)
     state = initialize(app)
     hub = getattr(app, "research", None)
     if state.get("auto_pending"):
@@ -249,13 +251,21 @@ def _apply_run(app, value, *, automatic=False, refresh=False):
     previous = state.get("binding") or {}
     current_entry = resolve_log_entry(app) if previous else None
     source_changed = (any(previous.get(key) != binding.get(key) for key in
-                          ("project_root", "run_id", "job_id", "metrics_file", "contract", "run_root", "passport",
+                          ("project_root", "run_id", "job_id", "attempt", "metrics_file", "contract", "run_root", "passport",
                            "planning_file", "planning_files", "submit_file", "log_manifest", "stdout", "stderr"))
                       or state.get("logs", []) != value["logs"])
-    identity_changed = any(previous.get(key) != binding.get(key) for key in ("project_root", "run_id", "job_id"))
+    identity_changed = any(previous.get(key) != binding.get(key) for key in ("project_root", "run_id", "job_id", "attempt"))
     new_log_paths = {entry["path"] for entry in value["logs"]}
+    previous_log_paths = {entry["path"] for entry in state.get("logs", [])}
+    current_path = current_entry.get("path") if current_entry else None
+    # The native catalog also contains scheduler and discovered files outside
+    # the run's declarations. A report refresh does not revoke those sources.
+    native_source = bool(current_entry and (current_entry.get("source") in ("scheduler", "discovered", "directory")
+                          or str(current_entry.get("id", "")).startswith("scheduler.")))
+    project_source = bool(current_entry and (current_entry.get("source") == "project"
+                           or current_path in previous_log_paths and not native_source))
     reset_logs = (not refresh or identity_changed
-                  or bool(current_entry and current_entry.get("path") not in new_log_paths))
+                  or project_source and current_path not in new_log_paths)
     if reset_logs:
         before_source_change(app)
     if "binding_backup" not in state:
@@ -267,7 +277,7 @@ def _apply_run(app, value, *, automatic=False, refresh=False):
                                    "settings_extra": copy.deepcopy({key: value for key, value in hub.settings.items() if key not in keep}),
                                    "log_manifest": app.cfg["logs"].get("manifest_file", ""), "passport_record": hub.passport, "passport_diff": hub.passport_diff}
     state.update(binding=binding, logs=value["logs"], run_warnings=value["warnings"], restore_run_id=binding["run_id"],
-                 summary=f"{'Linked' if automatic else 'Selected'} {binding['run_id']} / attempt {binding['attempt']} / {binding['state']}")
+                 summary=f"{'Linked' if automatic else 'Selected'} {binding['run_id']} / attempt {binding.get('attempt', '?')} / {binding['state']}")
     if source_changed or not refresh:
         state.update(tree=None, preview=None)
     if not refresh:

@@ -17,7 +17,7 @@ REQUIRED = {"id", "name", "st", "state"}
 
 
 def initialize(app):
-    app.table_state = {"hidden": {}, "order": {}, "widths": {}, "filters": {}, "facets": {}, "views": {}, "sorts": {}, "cursor": 0, "tab": "jobs", "groups": False, "collapsed": [], "control_hits": []}
+    app.table_state = {"hidden": {}, "order": {}, "widths": {}, "filters": {}, "facets": {}, "views": {}, "sorts": {}, "cursor": 0, "tab": "jobs", "groups": True, "collapsed": [], "control_hits": []}
 
 
 def restore(app, data):
@@ -51,8 +51,10 @@ def restore(app, data):
                 app.table_state["views"][name] = _view(app, value)
             except ValueError:
                 continue
-    app.table_state["groups"] = data.get("groups") is True
-    app.table_state["collapsed"] = [value for value in data.get("collapsed", [])[:256] if isinstance(value, str) and value.isdigit()] if isinstance(data.get("collapsed"), list) else []
+    if "groups" in data:
+        app.table_state["groups"] = data.get("groups") is True
+    from .job_groups import valid_group_id
+    app.table_state["collapsed"] = [value for value in data.get("collapsed", [])[:256] if valid_group_id(value)] if isinstance(data.get("collapsed"), list) else []
 
 
 def save(app):
@@ -60,35 +62,12 @@ def save(app):
 
 
 def command_names():
-    return ["columns", "facet", "savedview", "jobgroups", "sortby"]
+    return ["columns", "facet", "savedview", "jobgroups", "jobgroup", "sortby"]
 
 
-def group_rows(app, rows):
-    state = app.table_state
-    if not state["groups"]:
-        return rows
-    groups, ordered = {}, []
-    for item in rows:
-        match = re.fullmatch(r"(\d+)_\d+", item["job"].id)
-        base = match.group(1) if match else None
-        if base:
-            if base not in groups:
-                groups[base] = []
-                ordered.append((base, groups[base]))
-            groups[base].append(item)
-        else:
-            ordered.append((None, [item]))
-    result = []
-    for base, items in ordered:
-        if base and len(items) > 1:
-            first = dict(items[0])
-            first["info"] += f" | array {base}: {len(items)} observed tasks; " + ("Right expands" if base in state["collapsed"] else "Left collapses")
-            result.append(first)
-            if base not in state["collapsed"]:
-                result.extend(items[1:])
-        else:
-            result.extend(items)
-    return result
+def group_rows(app, rows, snap=None, tab="jobs", *, index=None):
+    from .job_groups import project_rows
+    return project_rows(app, rows, snap, tab, index=index)
 
 
 def definitions(tab):
@@ -179,9 +158,14 @@ def columns(app, tab, original):
     if selected is not None:
         indicators = {key: f" {'^' if direction == 'asc' else 'v'}{index}"
                       for index, (key, direction) in enumerate(selected, 1)}
-        return [replace(column, title=column.title + indicators[column.key],
-                        lo=column.lo if column.key in widths else max(column.lo, L.vlen(column.title + indicators[column.key])),
-                        hi=column.hi if column.key in widths else max(column.hi, L.vlen(column.title + indicators[column.key])))
+        # Keep compact progress at its requested width, including the full
+        # cascading priority. Other headings retain their normal sizing.
+        titles = {column.key: ((L.cut(column.title, max(0, column.hi - L.vlen(indicators[column.key])))
+                   if column.key == "progress" else column.title) + indicators[column.key])
+                  for column in original if column.key in indicators}
+        return [replace(column, title=titles[column.key],
+                        lo=column.lo if column.key in widths else max(column.lo, L.vlen(titles[column.key])),
+                        hi=column.hi if column.key in widths else max(column.hi, L.vlen(titles[column.key])))
                 if column.key in indicators else column for column in original
                 if column.key not in hidden or column.key in REQUIRED]
     key = app.sort.get(tab, "")
@@ -264,6 +248,24 @@ def run_command(app, args):
     if not args or args[0] not in command_names():
         return False
     command, values = args[0], list(args[1:])
+    if command == "jobgroup":
+        if len(values) != 2 or values[0] not in ("toggle", "open", "close"):
+            app.fail("Usage: jobgroup toggle|open|close GROUP_ID")
+            return True
+        from .job_groups import fold, registry
+        from .table_tools import snapshot
+        groups = registry(app)
+        groups.ensure(snapshot(app, app.store.snapshot()))
+        gid = values[1]
+        if gid.isdigit() and "array:" + gid in groups.index.groups:
+            gid = "array:" + gid
+        collapsed = {"toggle": None, "open": False, "close": True}[values[0]]
+        if not fold(app, gid, collapsed):
+            app.fail("That launch group is no longer present")
+        else:
+            group = groups.index.groups[gid]
+            app.say(group.label + (" closed" if groups.is_collapsed(group) else " open") + "; " + group.reason)
+        return True
     if command == "sortby":
         # A column can share a table name (History's NODES; Nodes' MY JOBS).
         # Treat it as the current column when followed by a direction, or when
@@ -302,7 +304,7 @@ def run_command(app, args):
             app.fail("Usage: jobgroups [on|off]")
         else:
             app.table_state["groups"] = not app.table_state["groups"] if not values else values == ["on"]
-            app.say("Array task grouping " + ("on; Left/Right folds the selected array" if app.table_state["groups"] else "off"))
+            app.say("Launch grouping " + ("on; Left/Right closes or opens the selected group" if app.table_state["groups"] else "off"))
         return True
     tab = values.pop(0) if values and values[0] in TABLE_KEYS else app.tab
     if tab not in TABLE_KEYS:
@@ -430,17 +432,13 @@ def run_command(app, args):
 
 
 def handle_key(app, key):
-    if app.mode == "main" and app.tab == "jobs" and app.table_state["groups"] and key in ("left", "right"):
-        match = re.fullmatch(r"(\d+)_\d+", app.selected_id or "")
-        if match:
-            collapsed = set(app.table_state["collapsed"])
-            if key == "left":
-                collapsed.add(match.group(1))
-            else:
-                collapsed.discard(match.group(1))
-            app.table_state["collapsed"] = sorted(collapsed)[:256]
-            return True
-        return False
+    if app.mode == "main" and app.tab in ("jobs", "history", "group", "deps") and app.table_state["groups"] and key in ("left", "right"):
+        from .job_groups import fold, registry
+        from .table_tools import snapshot
+        groups = registry(app)
+        groups.ensure(snapshot(app, app.store.snapshot()))
+        group = groups.index.for_job(app.selected_id)
+        return fold(app, group.id, key == "left") if group else False
     if app.mode != "columns":
         return False
     state = app.table_state

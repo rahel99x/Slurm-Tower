@@ -23,6 +23,14 @@ Tower states when timing is missing, mixed, or backwards. In these cases, it sho
 
 Use `:logalign off` for positional rows. Press `[` to choose the left original source for copy. Press `]` to choose the right original source for copy.
 
+Drag the grey separator between the two sources to change their widths.
+Its one-cell capture buffer and keyboard focus use the shared divider controls.
+Use `:pane-focus log:sources`, then Left or Right, for keyboard adjustment.
+The split starts at 50 percent and stays between 20 and 80 percent.
+This shorter divider has no diamond.
+Changing its size preserves the exact original copy source and bytes.
+See [Adjustable dividers](adaptive-workspaces.md#change-panel-size) for cancellation and saved preferences.
+
 <a id="feature-25"></a>
 
 ## Compare two log files

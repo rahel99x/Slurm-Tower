@@ -206,4 +206,11 @@ def test_actual_screen_retains_footer_selection_and_pristine_copy(terminal):
     assert content.count("\n") == 2
     assert "◆" not in content
     assert "FOOTER_ONLY_NOTICE" not in content
-    assert all("◆" not in L.row_text(row) for row in terminal.app.last_rows)
+    # Pristine rows retain the structural splitter diamond, but exclude the
+    # selection diamond inserted in the last screen cell.
+    divider = terminal.app.pane_drag_state["dividers"]["workspace:jobs"]
+    structural_y = divider.y + (divider.height - 1) // 2
+    for y, row in enumerate(terminal.app.last_rows):
+        text = L.row_text(row)
+        assert text.count("◆") == (1 if y == structural_y else 0)
+        assert not text.endswith("◆")

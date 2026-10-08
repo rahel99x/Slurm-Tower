@@ -15,13 +15,14 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.3.1 |
+| Release | Tower 4.4.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
 [Fedora desktop setup](docs/DESKTOP.md) ·
 [Live workbench](docs/guides/live-workbench.md) ·
 [Mouse and button navigation](docs/guides/pointer-navigation.md) ·
+[Adjustable workspaces and job advice](docs/guides/adaptive-workspaces.md) ·
 [Display and input performance](docs/guides/ui-performance.md) ·
 [Controls](docs/CONTROLS.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
@@ -276,7 +277,7 @@ The [planning guide](docs/WAVE_TWO.md) explains predictions, uncertainty, scalin
 
 1. Open Jobs.
 2. Select the job in the active table or Recents.
-3. Click Inspector, Logs, Investigate, Research, or Analytics in Details.
+3. Click Inspector, Logs, Investigate, Research, Analytics, or Quick Advisor in Details.
 4. Use arrow keys and Enter to select and activate another visible button.
 5. Click its content to scroll, or use `:jobpanel focus` for native panel keyboard controls.
 6. Press Esc as needed to return to the job rows.
@@ -292,6 +293,33 @@ Analytics provides Job series, History, Timeline, Advisor, and Compare.
 Choose a subview and scroll its content vertically.
 Each inline view fits the available width without horizontal panning.
 See [Live workbench](docs/guides/live-workbench.md) for panel navigation and live updates.
+
+Drag a grey divider to give either panel more space.
+The full vertical divider has a centred blue diamond.
+Drag the horizontal divider above Recents to show more recent jobs.
+Use its wheel or arrow controls to reach older matching history.
+The initial Recents preview size does not prevent further scrolling.
+
+Quick Advisor calculates only after you request it.
+Its loading box keeps the display available while a background task examines the selected job's resource history and published evidence.
+Read its evidence limits, then use Refresh analysis when newer measurements need a new report.
+See [Adjustable workspaces and job advice](docs/guides/adaptive-workspaces.md) for procedures and operating limits.
+
+Analytics, Dependencies, Logs, and Research provide a job-history panel beside their data.
+Click a job to inspect its exact charts, sources, or context.
+Drag the `⠿` handle to a page edge to use a column or horizontal strip.
+Use `:history-dock left|right|top|bottom|auto` when you need keyboard access.
+The history choices update from published job records during the session.
+
+Tower recognizes scheduler arrays, explicit launch markers, and ordinary launch bursts with matching provenance.
+Click a group's fold symbol to hide or show its jobs across the job pages.
+Use `:jobgroups off` when you need individual rows.
+Collapsed groups retain a real representative job ID; hidden members do not become action targets automatically.
+
+The six-cell Progress column uses the job's published application progress when available.
+Its `t` fallback shows elapsed time against the Slurm limit, not completed work.
+Projects can publish `progress.completed` and `progress.total` in their linked `metrics.jsonl`.
+See [Job progress](docs/guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for display states, alternate numeric keys, and sorting.
 
 To mark several jobs, drag the mouse through their visible rows.
 Hold Shift to add the dragged range to existing marks.

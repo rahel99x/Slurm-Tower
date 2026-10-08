@@ -462,6 +462,25 @@ the writer supplies `completed`, `total`, and `unit`. A measurement's wall-clock
 timestamp and its elapsed duration are separate quantities: use a monotonic
 clock to measure runtime, and an epoch clock for `t`.
 
+Jobs reads application progress from this linked run's `paths.metrics` file.
+Publish the top-level `progress` object shown above. Existing integrations can
+also publish the numeric metric `progress_fraction` from 0 to 1,
+`progress_pct` from 0 to 100, or `completed_steps` with `total_steps` under the
+same completed/total rules. The six-cell PROG column uses the exact job and run
+attempt. Another job's file cannot supply its progress. Missing application
+progress uses `t` for elapsed time divided by the requested time limit, or `--`
+when that limit is unavailable. The `t` value is not completion or ETA.
+
+Visible Main jobs refresh from discovered standard project inventories during
+runtime. The existing background reader reads at most four linked reports per
+cycle and rotates through the visible jobs. Its base interval is eight seconds,
+subject to the update multiplier and reader minimum intervals. Each report read
+uses a confined tail of at most 64 KiB. Inventory lookup examines at most 256
+runs, and the scalar cache holds at most 128 entries. Ambiguous run attempts and
+stale results cannot update another job. Explicit Quick Advisor and project
+tasks take priority. See [Adaptive workspaces](guides/adaptive-workspaces.md)
+for the display and sorting controls.
+
 If Tower is installed in the application's Python environment:
 
 ```python

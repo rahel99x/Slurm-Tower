@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import copy
+import math
 import re
 from typing import Callable, Optional
 
@@ -124,6 +125,22 @@ def _key(app, panel: Optional[str] = None) -> str:
     return str(getattr(app, "tab", "jobs")) + ":" + (panel or state.focus)
 
 
+def _focus_main_content(app) -> None:
+    """An explicit Main focus leaves nested button and browser navigation."""
+    panel = getattr(app, "job_panel_state", None)
+    if isinstance(panel, dict):
+        panel["focus"] = ""
+    interaction = getattr(app, "interaction_state", None)
+    if isinstance(interaction, dict):
+        interaction["active"], interaction["focused"] = False, None
+        interaction["pending_focus"] = None
+    browser = getattr(app, "history_browser_state", None)
+    if isinstance(browser, dict):
+        browser["focused"] = False
+    from .pane_drag import blur
+    blur(app)
+
+
 def _scroll(app, action: str) -> None:
     state = initialize(app)
     key = _key(app)
@@ -161,6 +178,8 @@ def handle_key(app, key: str) -> bool:
     if key in ("ctrl-w", "ctrl_w", "f6"):
         panels = state.available if len(state.available) > 1 else PANELS
         state.focus = panels[(panels.index(state.focus) + 1) % len(panels)] if state.focus in panels else panels[0]
+        if state.focus == "main":
+            _focus_main_content(app)
         _say(app, f"Focus: {state.focus}; arrows scroll Details, z maximizes")
         return True
     if key == "z" and getattr(app, "tab", "") != "log":
@@ -204,6 +223,8 @@ def run_command(app, args: list[str]) -> bool:
             panels = state.available if len(state.available) > 1 else PANELS
             target = panels[(panels.index(state.focus) + 1) % len(panels)] if state.focus in panels else panels[0]
         state.focus = target
+        if target == "main":
+            _focus_main_content(app)
         _say(app, "Focus: " + target)
     elif command == "maximize":
         if len(rest) > 1 or (rest and rest[0] not in ("on", "off")):
@@ -277,9 +298,66 @@ def geometry(app, width: int, height: int, *, has_details: bool = True) -> dict[
         main_width = max(24, min(width - 25, (width - 1) * state.ratio // 100))
         return {"main": Rect(0, 0, main_width, height),
                 "details": Rect(main_width + 1, 0, width - main_width - 1, height)}
-    main_height = max(3, min(height - 3, (height - 1) * state.ratio // 100))
+    main_height = max(3, min(height - 4, (height - 1) * state.ratio // 100))
     return {"main": Rect(0, 0, width, main_height),
             "details": Rect(0, main_height + 1, width, height - main_height - 1)}
+
+
+def _content_origin(app, width, height):
+    browser = getattr(app, "history_browser_state", {})
+    frame = browser.get("frame") if isinstance(browser, dict) else None
+    rect = getattr(app, "history_browser_content_rect", None)
+    if (isinstance(frame, dict) and rect is not None and frame.get("tab") == getattr(app, "tab", "") and
+            frame.get("mode") == getattr(app, "mode", "main") == "main" and
+            frame.get("geometry") == (getattr(app, "width", None), getattr(app, "height", None)) and
+            getattr(rect, "width", None) == width and getattr(rect, "height", None) == height):
+        return rect.x, rect.y
+    return 0, getattr(app, "body_origin", 0)
+
+
+def _main_geometry(app, rects):
+    """Publish the queue's actual budget before its source rows are prepared."""
+    state = initialize(app)
+    rect = rects.get("main")
+    width = max((value.x + value.width for value in rects.values()), default=0)
+    height = max((value.y + value.height for value in rects.values()), default=0)
+    origin_x, origin_y = _content_origin(app, width, height)
+    app.workspace_main_rect = (Rect(rect.x + origin_x, rect.y + origin_y, rect.width, rect.height)
+                               if rect else None)
+    if rect is None:
+        app.workspace_main_usable_height = 0
+        return
+    native_jobs = (getattr(app, "tab", "") == "jobs" and
+                   isinstance(getattr(app, "job_panel_state", None), dict))
+    padding = 1 if (state.density == "comfortable" and rect.width >= 8 and rect.height >= 5
+                    and not (native_jobs and rect.height < 7)) else 0
+    app.workspace_main_usable_height = max(0, rect.height - 1 - padding * 2)
+
+
+def _divider(app, rects, width, height):
+    """Register the actual reserved gap, preserving exact panel hit geometry."""
+    if len(rects) != 2 or "main" not in rects or "details" not in rects:
+        return None
+    from . import pane_drag
+    state = initialize(app)
+    main, details = rects["main"], rects["details"]
+    origin_x, origin_y = _content_origin(app, width, height)
+    key = "workspace:" + str(getattr(app, "tab", "jobs"))
+    if details.x > main.x:
+        extent = max(1, width - 1)
+        minimum = max(20, math.ceil(24 * 100 / extent))
+        maximum = min(80, (width - 25) * 100 // extent)
+        values = ("vertical", origin_x + main.x + main.width, origin_y, 1, height, origin_x, extent)
+    else:
+        extent = max(1, height - 1)
+        minimum = max(20, math.ceil(3 * 100 / extent))
+        maximum = min(80, (height - 4) * 100 // extent)
+        values = ("horizontal", origin_x, origin_y + main.y + main.height, width, 1, origin_y, extent)
+    if minimum > maximum:
+        return None
+    return pane_drag.register(app, key, *values, state.ratio, lambda value: setattr(state, "ratio", value),
+                              minimum=minimum, maximum=maximum, full_vertical=values[0] == "vertical",
+                              label="Resize Main and Details")
 
 
 def _section_title(row: L.Row) -> Optional[str]:
@@ -354,7 +432,7 @@ def _wrap_row(row: L.Row, width: int) -> list[L.Row]:
     lines, current, used, last_space = [], [], 0, -1
     for text, style in row:
         for character in text[:131072]:
-            cell_width = 1 if ord(character) < 0x1100 else L.vlen(character)
+            cell_width = 1 if character.isascii() else L.vlen(character)
             if cell_width > width:
                 character, cell_width = "?", 1
             if character == "\n":
@@ -480,6 +558,7 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
     if state.focus not in state.available:
         state.focus = "main"
     rects = geometry(app, width, height, has_details=has_details)
+    _main_geometry(app, rects)
     canvas = [[(" " * width, "text+bg:canvas")] for _ in range(height)]
     # Keep columns as style segments, rather than individual character cells.
     rendered, output_hits = {}, []
@@ -640,6 +719,18 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         if x < width:
             row.append((" " * (width - x), "bg:canvas"))
         canvas[y] = L.clip_row(row, width)
+    divider = _divider(app, rects, width, height)
+    if divider:
+        from . import pane_drag
+        origin_x, origin_y = _content_origin(app, width, height)
+        pane_drag.paint(canvas, app, divider.key, origin_x=origin_x, origin_y=origin_y, ascii_=ascii_)
+        hit = pane_drag.control_hit(app, divider.key, origin_y=origin_y)
+        if hit and isinstance(getattr(app, "interaction_state", None), dict):
+            if origin_x:
+                y, kind, descriptor = hit
+                hit = (y, kind, {**descriptor, "left": descriptor["left"] - origin_x,
+                                 "right": descriptor["right"] - origin_x})
+            output_hits.append(hit)
     # A scalar row-only hit cannot describe two selectable items in side-by-side
     # columns. Keep interactive table hits in Main; Details is scrollable text.
     if getattr(app, "tab", "") == "jobs":
@@ -667,6 +758,7 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         # The default Jobs page uses its Details column without requiring a
         # density preference. Narrow screens stack the same independent panes.
         rects = geometry(app, width, height, has_details=True)
+        _main_geometry(app, rects)
         detail_rect = rects.get("details")
         app.job_panel_target_height = max(1, detail_rect.height - 2) if detail_rect else max(1, height - 2)
         # Rendering the whole Jobs source at terminal, Main, and Details widths

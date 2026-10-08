@@ -3,6 +3,7 @@ downstream closure for chain actions (cancel or release a job and everything tha
 from __future__ import annotations
 
 import re
+from collections import deque
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .model import Job
@@ -72,9 +73,9 @@ class DepGraph:
 
     def downstream(self, jid: str) -> List[str]:
         """Every job that (transitively) waits for ``jid``, nearest first, without ``jid``."""
-        out, seen, stack = [], {jid}, [jid]
+        out, seen, stack = [], {jid}, deque([jid])
         while stack:
-            cur = stack.pop(0)
+            cur = stack.popleft()
             for _, dep in self.down.get(cur, []):
                 if dep not in seen:
                     seen.add(dep)
@@ -83,9 +84,9 @@ class DepGraph:
         return out
 
     def upstream(self, jid: str) -> List[str]:
-        out, seen, stack = [], {jid}, [jid]
+        out, seen, stack = [], {jid}, deque([jid])
         while stack:
-            cur = stack.pop(0)
+            cur = stack.popleft()
             for _, pre in self.up.get(cur, []):
                 if pre not in seen:
                     seen.add(pre)
@@ -98,19 +99,29 @@ class DepGraph:
         the first (marked by kind ending in '*' when repeated)."""
         out = []
         placed: Set[str] = set()
-        for root in self.roots():
+        roots = self.roots()
+        related = self.related()
+        # A malformed or temporarily inconsistent scheduler observation can
+        # contain a cycle with no root. Keep those jobs visible and bounded;
+        # the repeated edge marker also terminates back edges and self loops.
+        seeds = roots + [jid for jid in self.jobs if jid in related]
+        seeds += sorted(related - self.jobs.keys())
+        for root in seeds:
+            if root in placed:
+                continue
             rows: List[Tuple[int, str, str]] = []
-
-            def rec(jid, depth, kind):
+            pending = [(root, 0, "")]
+            while pending:
+                jid, depth, kind = pending.pop()
                 repeat = jid in placed
                 rows.append((depth, kind + ("*" if repeat else ""), jid))
                 if repeat:
-                    return
+                    continue
                 placed.add(jid)
-                for k, dep in sorted(self.down.get(jid, []), key=lambda kd: kd[1]):
-                    rec(dep, depth + 1, k)
-
-            rec(root, 0, "")
+                # Reverse stack insertion preserves the previous recursive
+                # DFS order, including stable sorting of repeated siblings.
+                for k, dep in reversed(sorted(self.down.get(jid, []), key=lambda kd: kd[1])):
+                    pending.append((dep, depth + 1, k))
             out.append(rows)
         return out
 

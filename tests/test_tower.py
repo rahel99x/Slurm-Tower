@@ -233,7 +233,7 @@ def test_flags_thresholds_and_once_outputs(tmp_path):
     row = next(l for l in text.splitlines() if l.startswith(" 12480003"))
     assert "dep" in row and "Dependency" in row
     head = next(l for l in text.splitlines() if l.startswith(" JOBID"))
-    assert head.split() == ["JOBID", "NAME", "PART", "ST", "^", "NODES", "CPU", "GPU", "ELAPSED/LIMIT", "LEFT/WAIT", "CPU%", "EFF", "MEM%", "GPU%", "FLAGS", "TAGS", "INFO"]
+    assert head.split() == ["JOBID", "NAME", "PROG", "PART", "ST", "^", "NODES", "CPU", "GPU", "ELAPSED/LIMIT", "LEFT/WAIT", "CPU%", "EFF", "MEM%", "GPU%", "FLAGS", "TAGS", "INFO"]
     narrow = screen.once_text(app, views, store, actions, 100, False, tab="jobs")
     head = next(l for l in narrow.splitlines() if l.startswith(" JOBID"))
     assert "FLAGS" not in head and "INFO" in head and all(L.vlen(l) <= 100 for l in narrow.splitlines())
@@ -463,6 +463,27 @@ def test_log_buffer_reads_incrementally_bounds_pages_and_reloads(tmp_path):
     assert sess.following                                                                      # reaching the end follows again
 
 
+def _history_content_rows(app, rows):
+    """Keep viewport styles and cell boundaries while excluding the history dock."""
+    rect = app.history_browser_content_rect
+    result = []
+    for row in rows[rect.y:rect.y + rect.height]:
+        cropped, position = [], 0
+        for text, style in row:
+            characters = []
+            for character in text:
+                cells = 1 if character.isascii() else L.vlen(character)
+                if rect.x <= position and position + cells <= rect.x + rect.width:
+                    characters.append(character)
+                elif cells and position < rect.x + rect.width and position + cells > rect.x:
+                    characters.append(" " * (min(position + cells, rect.x + rect.width) - max(position, rect.x)))
+                position += cells
+            if characters:
+                cropped.append(("".join(characters), style))
+        result.append(cropped)
+    return result
+
+
 def test_log_tab_pages_scroll_and_search_through_the_controller(tmp_path):
     backend, store, sampler, actions, views, app = make_rich_app(tmp_path, rounds=1)
     logdir = tmp_path / "logs"
@@ -473,48 +494,51 @@ def test_log_tab_pages_scroll_and_search_through_the_controller(tmp_path):
         path = logdir / "rb1-allrank-12480001.out"
         path.write_text("".join(f"window {i} done\n" for i in range(300)) + "Traceback: boom\n")
         W, H = 120, 30
+        def render_log():
+            rows, hits = views.compose(store.snapshot(), app, W, H, actions)
+            return _history_content_rows(app, rows), hits
         views.compose(store.snapshot(), app, W, H, actions)
         app.cursor["jobs"] = app.visible_ids.index("12480001")
         views.compose(store.snapshot(), app, W, H, actions)
         app.handle("l")
         sampler.select("12480001"); sampler.round(wait=True)
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        rows, _ = render_log()
         page = app.logs.page                                         # the page the view laid out (screen minus footer, header, rule and status)
-        body = [L.row_text(r) for r in rows if L.row_text(r).startswith(" window") or L.row_text(r).startswith(" Traceback")]
+        body = [L.row_text(r).rstrip() for r in rows if L.row_text(r).startswith(" window") or L.row_text(r).startswith(" Traceback")]
         assert len(body) == page and body[-1] == " Traceback: boom" and app.logs.following
         status = next(L.row_text(r) for r in rows if "lines" in L.row_text(r) and "of 301" in L.row_text(r))
         assert f"lines {302 - page}-301 of 301" in status and "following" in status
         for _ in range(5):
             app.handle("up")
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        body = [L.row_text(r) for r in rows if L.row_text(r).startswith(" window")]
+        rows, _ = render_log()
+        body = [L.row_text(r).rstrip() for r in rows if L.row_text(r).startswith(" window")]
         assert len(body) == page - 1 and body[0] == f" window {301 - page} done" and not app.logs.following
         assert app.logs.cursor == 295  # arrows move the logical cursor before scrolling at the viewport edge
-        cursor_row = next(r for r in rows if r[-1] == (">", "cyan+bold"))
+        cursor_row = next(r for r in rows if r and r[-1][0] == ">" and {"cyan", "bold"} <= set(r[-1][1].split("+")))
         assert L.row_text(cursor_row[:-1]).strip() == "window 295 done"
         app.handle("pgup"); app.handle("pgup")
         app.handle("home")
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        rows, _ = render_log()
         body = [L.row_text(r) for r in rows if L.row_text(r).startswith(" window")]
         assert len(body) == page and body[0].rstrip().endswith(">") and app.logs.top == 0
-        assert L.row_text(next(r for r in rows if r[-1] == (">", "cyan+bold"))[:-1]).strip() == "window 0 done"
+        assert L.row_text(next(r for r in rows if r and r[-1][0] == ">" and {"cyan", "bold"} <= set(r[-1][1].split("+")))[:-1]).strip() == "window 0 done"
         for _ in range(50):
             app.handle("up")                                          # bounded at the top
         assert app.logs.top == 0
         with open(path, "a") as f:                                   # the file grows while paused: the view stays put
             f.write("appended\n")
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        assert L.row_text(rows[-2]).startswith(" window") and app.logs.top == 0
+        rows, _ = render_log()
+        assert L.row_text(rows[-1]).startswith(" window") and app.logs.top == 0
         app.handle("end")
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        assert app.logs.following and L.row_text(rows[-2]) == " appended"
+        rows, _ = render_log()
+        assert app.logs.following and L.row_text(rows[-1]).rstrip() == " appended"
         app.handle("/")
         for ch in "window 12 done":
             app.handle(ch if ch != " " else "space")
         app.handle("enter")
         assert app.logs.search == "window 12 done" and app.message.startswith("1 lines match")
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        hl = [r for r in rows if any(s == "sel" for _, s in r)]
+        rows, _ = render_log()
+        hl = [r for r in rows if any("sel" in s.split("+") for _, s in r)]
         assert len(hl) == 1 and L.row_text(hl[0][:-1]).strip() == "window 12 done" and not app.logs.following
         app.handle("f")
         assert app.logs.following
@@ -852,6 +876,7 @@ def test_group_weather_budget_map_steps_and_trace_through_the_dashboard(tmp_path
         assert "trace" in text and "gpu0 55% (now 80%)" in text and "29 min in the job's own nvidia-smi log, 33% of samples idle" in text
         app.analytics_job, app.analytics_view = "12477369", "job"
         app.handle("7")
+        app.run_command("history-dock off")  # This assertion inspects the full scientific chart title.
         rows, _ = views.compose(store.snapshot(), app, 150, 50, actions)
         text = "\n".join(L.row_text(r) for r in rows)
         assert "gpu 0 utilisation from the job's own nvidia-smi log (1/min, 30 samples)" in text
@@ -943,6 +968,7 @@ def test_dependency_graph_tab_and_chain_actions(tmp_path):
     backend, store, sampler, actions, views, app = make_rich_app(tmp_path, rounds=1)
     W, H = 150, 40
     app.handle("9")
+    app.run_command("history-dock off")  # Inspect the full dependency explanation and chain actions.
     rows, hits = views.compose(store.snapshot(), app, W, H, actions)
     text = "\n".join(L.row_text(r) for r in rows)
     assert app.tab == "deps" and "2 edges among 3 jobs" in text and "afterok -> 12480003 rb2-controls" in text and "afterany -> 12480002_[0-7]" in text and "2 independent jobs" in text
@@ -1003,6 +1029,7 @@ def test_tags_pins_notes_filter_and_compare(tmp_path):
     app.handle("1"); app.marks = {"12480001", "12477369"}
     app.run_command("compare")
     assert app.tab == "analytics" and app.analytics_view == "compare" and app.compare_ids == ["12477369", "12480001"]
+    app.run_command("history-dock off")  # Keep the legacy full-width comparison and Advisor assertions.
     rows, _ = views.compose(store.snapshot(), app, 160, 50, actions)
     text = "\n".join(L.row_text(r) for r in rows)
     assert "compare 2 jobs" in text and "CPU MEAN" in text and "cpu per core, aligned" in text and "memory (GB), aligned" in text and "gpu utilisation, aligned" in text
@@ -1013,7 +1040,7 @@ def test_tags_pins_notes_filter_and_compare(tmp_path):
     assert "mark two or more jobs" in "\n".join(L.row_text(r) for r in rows)
     # the advisor view and command
     app.analytics_view = "advisor"
-    rows, _ = views.compose(store.snapshot(), app, 160, 44, actions)
+    rows, _ = views.compose(store.snapshot(), app, 160, 50, actions)
     text = "\n".join(L.row_text(r) for r in rows)
     assert "advisor: what the jobs" in text and "rb3-identity" in text and "1 out of memory" in text and "running jobs so far" in text and "--mem" in text
     assert app.advise("12475990").startswith("12475990 rb-setup (timeout): --mem 3G") and "--time=03:00:00" in app.advise("rb-setup") and app.advise("nope").startswith("no finished run")
@@ -1170,29 +1197,34 @@ def test_log_extras_wrap_stderr_other_files_and_bookmarks(tmp_path):
         (logdir / "rb1-allrank-12480001_0.out").write_text("task zero\n")
         (logdir / "gpu-util-12480001.csv").write_text("2026/10/01 06:00:01.000, 0, 50, 100\n")
         W, H = 100, 24
+        def render_log():
+            rows, hits = views.compose(store.snapshot(), app, W, H, actions)
+            rect = app.history_browser_content_rect
+            return _history_content_rows(app, rows), [(y - rect.y, kind, value) for y, kind, value in hits
+                                                      if rect.y <= y < rect.y + rect.height]
         views.compose(store.snapshot(), app, W, H, actions)
         app.cursor["jobs"] = app.visible_ids.index("12480001"); views.compose(store.snapshot(), app, W, H, actions)
         app.handle("l"); sampler.select("12480001"); sampler.round(wait=True)
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        rows, _ = render_log()
         page = app.logs.page
         body = [L.row_text(r) for r in rows if re.match(r"^[ *]line \d", L.row_text(r))]
-        assert len(body) == page and body[-1].strip() == "line 39" and "O files" in L.row_text(rows[-1])
+        assert len(body) == page and body[-1].strip() == "line 39" and "O files" in L.row_text(app.frame_rows[-1])
         # wrap: the long line 7 takes two rows and the page still has `page` rows ending at the last line
         app.handle("home")
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        rows, _ = render_log()
         assert any(L.row_text(r).rstrip().endswith("~") or "x" * 60 in L.row_text(r) for r in rows) and not any(L.row_text(r).strip() == "x" * 50 for r in rows)
         app.handle("w"); assert app.logs.wrap and app.message == "long lines wrapped"
-        rows, hits = views.compose(store.snapshot(), app, W, H, actions)
+        rows, hits = render_log()
         first = next(y for y, kind, value in hits if kind == "log_line" and value == "0")
         body = [L.row_text(r) for r in rows[first:first + page]]
-        assert len(body) == page and L.row_text(rows[first][:-1]).strip() == "line 0" and rows[first][-1] == (">", "cyan+bold") and sum(1 for b in body if b.startswith(" x")) >= 1 and "wrapped" in L.row_text(rows[first - 1])
-        app.handle("end"); rows, _ = views.compose(store.snapshot(), app, W, H, actions)
-        assert L.row_text(rows[-2]).strip() == "line 39" and app.logs.following
+        assert len(body) == page and L.row_text(rows[first][:-1]).strip() == "line 0" and rows[first][-1][0] == ">" and {"cyan", "bold"} <= set(rows[first][-1][1].split("+")) and sum(1 for b in body if b.startswith(" x")) >= 1 and "wrapped" in L.row_text(rows[first - 1])
+        app.handle("end"); rows, _ = render_log()
+        assert L.row_text(rows[-1]).strip() == "line 39" and app.logs.following
         app.handle("w"); assert not app.logs.wrap
         # bookmarks: on the current line, then jump, then persisted
         app.handle("m"); assert app.message == "bookmark set at line 40" and app.logs.bookmarks[str(path)] == [39]
         app.handle("home"); app.handle("m"); assert app.logs.bookmarks[str(path)] == [0, 39]
-        rows, hits = views.compose(store.snapshot(), app, W, H, actions)
+        rows, hits = render_log()
         first = next(y for y, kind, value in hits if kind == "log_line" and value == "0")
         assert L.row_text(rows[first]).startswith("*line 0") and "2 bookmarks" in L.row_text(rows[first - 1])
         app.handle("'"); assert app.message == "bookmark at line 40" and not app.logs.following and app.logs.top == 39 - page + 1 or app.logs.top is not None
@@ -1203,14 +1235,14 @@ def test_log_extras_wrap_stderr_other_files_and_bookmarks(tmp_path):
         assert app2.logs.bookmarks == {str(path): [39]}
         # the other files of the job: array task and the GPU trace; then stderr (the same file here)
         app.handle("o"); assert app.logs.file_index == 1 and app.message.endswith("gpu-util-12480001.csv")
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        rows, _ = render_log()
         assert any("o: 2 other files" in L.row_text(r) for r in rows)
         assert any("file 2/3" in L.row_text(r) for r in rows) and any("2026/10/01 06:00:01.000, 0, 50, 100" in L.row_text(r) for r in rows)
-        app.handle("o"); rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        app.handle("o"); rows, _ = render_log()
         assert any("file 3/3" in L.row_text(r) for r in rows) and any(L.row_text(r).strip() == "task zero" for r in rows)
         app.handle("o"); assert app.logs.file_index == 0
         app.handle("e"); assert app.logs.which == "err"
-        rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+        rows, _ = render_log()
         assert any("stderr (the same file as stdout)" in L.row_text(r) for r in rows)
         app.handle("e"); assert app.logs.which == "out"
         app.run_command("wrap"); assert app.logs.wrap

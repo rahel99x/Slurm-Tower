@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Live workbench](live-workbench.md)
 
-Use this guide for Tower 4.3.1's mouse feedback, button navigation, scrolling, and startup display.
+Use this guide for Tower 4.4.0's mouse feedback, button navigation, scrolling, and startup display.
 All controls remain inside the terminal.
 
 ## Check terminal mouse support
@@ -78,6 +78,20 @@ It keeps source minimum intervals and retry backoff.
 Use a direct track click when the terminal does not report dragging.
 Use the wheel, `[-]` and `[+]`, or `:rate N` for exact one-step or numeric control.
 See [Update rate](live-workbench.md#set-the-update-rate) for source limits and saved preferences.
+
+## Resize a panel by dragging
+
+Press the grey divider or one cell beside it.
+Keep the left mouse button pressed, move it to the required position, then release it.
+The full vertical divider has a centred blue diamond.
+The horizontal divider above Recents changes its share of Jobs Main.
+Press Esc during the drag to restore the starting size.
+Page, dialog, and terminal-size changes also end capture and restore that size.
+
+Click a divider to focus keyboard adjustment.
+Use arrows along its movement axis, or Page Up and Page Down, then Enter or Esc to return to the page.
+F8 navigation and `:pane-focus KEY` can focus the same control.
+See [Panel dividers](adaptive-workspaces.md#change-panel-size) for complete commands, layout bounds, and persistence.
 
 ## Use a menu for several changes
 

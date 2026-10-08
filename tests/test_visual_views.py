@@ -144,7 +144,10 @@ def test_dependency_mix_retains_selected_job_hit(visual_dashboard):
     rows, hits = views.compose(store.snapshot(), app, 160, 28, actions)
     selected_row = next(y for y, _, key in hits if key == "24")
     assert "stage24" in L.row_text(rows[selected_row])
-    assert all("sel" in style.split("+") for _, style in rows[selected_row])
+    rect = app.history_browser_content_rect
+    assert rect.x == 0  # The default history dock is on the right.
+    selected_content = L.clip_row(rows[selected_row], rect.width)
+    assert all("sel" in style.split("+") for text, style in selected_content if text.strip())
 
 
 def test_many_group_users_keep_selected_table_row_visible(visual_dashboard):

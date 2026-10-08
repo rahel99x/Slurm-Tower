@@ -16,7 +16,7 @@ from .research import ResearchHub, clean
 
 TABS = (("inspector", "Inspector"), ("logs", "Logs"),
         ("investigate", "Investigate"), ("research", "Research"),
-        ("analytics", "Analytics"), ("off", "Off"))
+        ("analytics", "Analytics"), ("quick", "Quick Advisor"), ("off", "Off"))
 MODES = tuple(name for name, _ in TABS)
 MAX_ROWS = 2048
 MAX_LOG_BYTES = 256 * 1024
@@ -103,6 +103,11 @@ def _activate(app, mode, *, focus=True, view=None):
     callback = getattr(app, "save", None)
     if callable(callback):
         callback()
+    from . import quick_advisor
+    if mode == "quick":
+        quick_advisor.request(app)
+    else:
+        quick_advisor.cancel(app)
     return True
 
 
@@ -121,7 +126,7 @@ def run_command(app, args):
     else:
         callback = getattr(app, "fail", None)
         if callable(callback):
-            callback("jobpanel [inspector|logs|investigate|research [VIEW]|analytics [VIEW]|off|focus]")
+            callback("jobpanel [inspector|logs|investigate|research [VIEW]|analytics [VIEW]|quick|off|focus]")
     return True
 
 
@@ -141,6 +146,10 @@ def handle_key(app, key):
         layout_state(app).focus = "main"
         return True
     if key in ("enter", "tab", "btab"):
+        if key == "enter" and state["focus"] == "content" and state["mode"] == "quick":
+            from . import quick_advisor
+            quick_advisor.request(app)
+            return True
         if state["focus"] == "tabs" and state["mode"] in ("research", "analytics"):
             state["focus"] = "views"
         else:
@@ -241,6 +250,8 @@ def overlay(views, snap, app, width, height):
 def tick(app):
     """Release transient focus when the user leaves the inline workspace."""
     state = initialize(app)
+    from . import quick_advisor
+    quick_advisor.tick(app)
     if getattr(app, "tab", "") != "jobs" or getattr(app, "mode", "main") != "main":
         state["focus"] = ""
         return
@@ -655,10 +666,87 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
     return rows + body[2 + len(ids):]
 
 
+def _quick(views, app, job, width):
+    """Render published diagnostics only; restored modes remain explicitly idle."""
+    from . import clock, quick_advisor
+    state = quick_advisor.initialize(app)
+    if state.get("job") not in (None, job.id):
+        quick_advisor.cancel(app)
+    row = lambda text, style="": [(clean(text, views.g.ascii), style)]
+    rows = [row(f" Job {job.id} / {job.name}", "cyan+bold")]
+    hits = []
+
+    def action(label, command):
+        shown = L.cut(" " + label + " ", max(0, width), views.g.ascii)
+        if shown:
+            hits.append((len(rows), "job_panel_action", ((command, job.id), 0, L.vlen(shown))))
+            rows.append(row(shown, "cyan+bold+bg:surface"))
+
+    if state["status"] in ("queued", "loading"):
+        action("Cancel analysis", "quick_cancel")
+        size = max(0, min(62, width))
+        tl, tr, bl, br, horizontal, vertical = views.g.box
+        if size >= 4:
+            title = L.cut(" Quick Advisor ", size - 4, views.g.ascii)
+            rows.append(row(tl + title + horizontal * max(0, size - 2 - L.vlen(title)) + tr, "cyan+bold"))
+            phase = int(clock.now() * 5) if getattr(app, "animations_enabled", False) else 0
+            spinner = "|/-\\"[phase % 4] if views.g.ascii else "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[phase % 10]
+            message = ("Waiting for the background reader" if state["status"] == "queued"
+                       else "Reading the job's recorded evidence")
+            content = L.cut(" " + spinner + " " + message, size - 2, views.g.ascii)
+            rows.append([(vertical, "cyan"), (L.pad(content, size - 2), "secondary"), (vertical, "cyan")])
+            track = max(1, min(24, size - 5))
+            active = phase % track
+            bar = ("=" if views.g.ascii else "█")
+            empty = ("-" if views.g.ascii else "░")
+            meter = " " + empty * active + bar + empty * (track - active - 1)
+            rows.append([(vertical, "cyan"), (L.pad(meter, size - 2), "cyan+bold"), (vertical, "cyan")])
+            rows.append(row(bl + horizontal * max(0, size - 2) + br, "cyan"))
+        else:
+            rows.append(row(" Analyzing...", "cyan"))
+        rows.append(row(" Input and live updates remain available. No allocation is changed.", "dim"))
+        return rows, hits
+    result = state.get("result") if state["status"] == "ok" else None
+    if result is None or result.get("job") != job.id:
+        action("Analyze this job", "quick_refresh")
+        if state["status"] == "error":
+            rows.append(row(" Analysis unavailable: " + state.get("error", "Unknown reader error"), "yellow"))
+        rows.append(row(" Select Analyze to combine Inspector, resource history and Advisor evidence.", "secondary"))
+        rows.append(row(" Analysis runs only on request. A saved Quick Advisor tab does not start it.", "dim"))
+        rows.append(row(" CPU phases / task RSS / time limits / GPU activity / comparable history", "cyan"))
+        return rows, hits
+    action("Refresh analysis", "quick_refresh")
+    rows.append(row(" " + result["summary"], "heading+bold"))
+    rows.append(row(f" Requested snapshot / {result['sample_count']:,} samples / {result['compatible_runs']} comparable run(s)", "dim"))
+    rows.append(row(" Refresh explicitly to include newer samples. Arrows / wheel scroll this report.", "dim"))
+    styles = {"good": "green", "risk": "red", "caution": "yellow", "unknown": "dim"}
+    marks = {"good": "OK", "risk": "CHECK", "caution": "REVIEW", "unknown": "UNVERIFIED"}
+    for section in result["sections"]:
+        color = styles[section["status"]]
+        rows.append(L.rule(views.g, width, section["name"]))
+        rows.append(row(" " + marks[section["status"]] + " / " + section["title"], color + "+bold"))
+        if section["values"]:
+            rows.append([( " " + L.spark(views.g, section["values"], min(24, max(0, width - 3))), color)])
+        rows.extend(row(" " + fact, "secondary") for fact in section["facts"])
+        rows.append(row(" Next: " + section["action"], "cyan"))
+    rows.append(L.rule(views.g, width, "Evidence limits"))
+    rows.extend(row(" " + limitation, "dim") for limitation in result["limitations"])
+    return rows[:MAX_ROWS], hits
+
+
 def _content_action(app, target):
     """Dispatch explicit content actions in their exact-job rendering context."""
     state = initialize(app)
     kind, value = target
+    if kind in ("quick_refresh", "quick_cancel"):
+        if value != getattr(app, "selected_id", None) or state["mode"] != "quick":
+            return False
+        from . import quick_advisor
+        if kind == "quick_refresh":
+            quick_advisor.request(app)
+        else:
+            quick_advisor.cancel(app)
+        return True
     if kind in ("inline_log", "inline_logs", "inline_evidence"):
         jid = value.get("job") if isinstance(value, dict) else value
         if jid != state.get("job") or jid != getattr(app, "selected_id", None):
@@ -745,6 +833,9 @@ def render(views, snap, app, job, width, height=None):
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     elif state["mode"] == "analytics":
         content, content_hits = _analytics(views, snap, app, job, width, height, state)
+        hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
+    elif state["mode"] == "quick":
+        content, content_hits = _quick(views, app, job, width)
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     else:
         content, content_hits = _inspector(views, snap, app, job, width, state)

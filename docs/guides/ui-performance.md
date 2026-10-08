@@ -2,7 +2,8 @@
 
 [README](../../README.md) · [Mouse and button navigation](pointer-navigation.md) · [Reference](../reference.md)
 
-Tower 4.3.1 improves pointer feedback and long inline views.
+Tower 4.3.1 introduced the cached pointer display and bounded long inline views.
+Tower 4.4.0 retains that path for draggable workspaces, shared launch groups, history browsers, and Quick Advisor.
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
 The display changes do not increase Slurm sampling rates.
 
@@ -61,7 +62,7 @@ Terminal rendering, SSH transport, tmux, and Slurm command duration can each add
 The display optimizations reduce Tower's repeated work.
 They do not impose a universal response-time guarantee.
 
-## Release measurements
+## Tower 4.3.1 release measurements
 
 The release comparison used Tower 4.3.0 at `98b2d86` and the final 4.3.1 source.
 Both revisions used Python 3.12 on the same Linux cloud runner.
@@ -103,6 +104,42 @@ They checked drag release, resize, reversed scrolling, and keyboard input.
 Actual fixture job completion and new metric publication remained visible during continuous pointer movement.
 No scheduler-changing command ran in the tests.
 
+## Tower 4.4.0 workspace measurements
+
+The workspace comparison used Tower 4.3.1 at `f873717` and the final 4.4.0 source.
+Each pair ran sequentially on the same runner with Python 3.12.
+The public benchmark used a 120-column by 36-row Unicode display, 500 jobs, 2,000 accounting records, and 20 measured frames.
+The Research fixture contained 64 metrics and 256 records.
+
+| UI workload, median | 4.3.1 | 4.4.0 |
+| --- | ---: | ---: |
+| Cached Advisor hover | 0.09 ms | 0.14 ms |
+| Advisor wheel frame | 20.32 ms | 24.55 ms |
+| Research document refresh | 4.09 ms | 11.65 ms |
+
+The new history browser adds work to a full document refresh.
+Cached hover still paints two rows without page composition, job-row formatting, Advisor aggregation, chart rasterization, or control-graph publication.
+All three measured workloads attempted no file or scheduler I/O on the display path.
+ASCII checks retained the same work bounds.
+
+A paired local pseudo-terminal run used the same data and `screen-256color`.
+It measured the visible state after actual input and `curses.doupdate()`.
+
+| Input workload | 4.3.1 | 4.4.0 |
+| --- | ---: | ---: |
+| Final hover after 1,000 movement reports, median of three bursts | 52.01 ms | 42.25 ms |
+| Command after 1,000 movement reports | 417.61 ms | 587.65 ms |
+| Target acceptance after 700 Advisor wheel reports | 552.48 ms | 462.46 ms |
+| Reverse through 820 wheel reports, then complete a focus command | 1,054.80 ms | 1,107.71 ms |
+
+These are local observations, not universal response-time guarantees.
+The terminal measurements include queued input and exclude SSH transport and terminal-emulator presentation.
+Both runs used the same compact observer after each terminal update.
+
+Adaptive controls also passed terminal checks at 40, 80, 120, and 180 columns in Unicode and ASCII.
+Those checks covered buffered divider capture, drag cancellation, resize, older Recents, shared folds, exact historical job selection, four history docking orientations, asynchronous Quick Advisor, and six-cell progress sorting.
+The scheduler fixtures allowed only read commands.
+
 ## Validate a source change
 
 Use the reproducible benchmark to measure UI work on your computer:
@@ -139,7 +176,13 @@ python3 scripts/setup.py --mode demo --dev
   tests/test_workspace_render_budget.py \
   tests/test_advisor_render_budget.py \
   tests/test_chart_render_budget.py \
-  tests/test_table_filter_budget.py
+  tests/test_table_filter_budget.py \
+  tests/test_pane_dividers.py \
+  tests/test_adaptive_recents.py \
+  tests/test_job_launch_groups.py \
+  tests/test_history_browser.py \
+  tests/test_quick_advisor.py \
+  tests/test_job_progress.py
 ```
 
 The checks cover bounded work, cache invalidation, input ordering, and continued publication.

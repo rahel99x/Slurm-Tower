@@ -12,9 +12,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .model import Finished, GpuSample, Job, Live, Node, NodeCell, Partition, Step, fint, fnum, gres_gpus, gpus_in_tres, hms, nbytes, secs, stamp
 
-JOB_FMT = "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o"
+JOB_FMT = "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o|%Z"
 START_FMT = "%i|%S"
-GROUP_FMT = "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S"
+GROUP_FMT = "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S|%a|%o|%Z"
 PEND_FMT = "%P|%C|%b|%D"
 SACCT_FIELDS = "JobID,JobName,State,Elapsed,AllocCPUS,TotalCPU,ReqMem,MaxRSS,Start,End,Partition,NNodes,ExitCode,AllocTRES,NodeList,Submit,WorkDir,Timelimit"
 SSTAT_FIELDS = "JobID,AveCPU,MaxRSS,MaxRSSTask,MaxRSSNode,AveRSS,NTasks,MinCPU,MinCPUTask,MinCPUNode"
@@ -159,10 +159,11 @@ class FakeBackend(Backend):
                     reason = ("JobHeldUser" if s["id"] in self.held else s.get("reason", "None")) if state == "PENDING" else "None"
                     lines.append("|".join([s["id"], self.user, s["name"], s["part"], state, hms(elapsed) if state == "RUNNING" else "0:00", s["limit"], str(s["nodes"]), str(s["cpus"]),
                                            gres, reason, str(s["prio"]), s.get("node", "") if state == "RUNNING" else "", self._ts(s["submit"]),
-                                           self._ts(s["start"]) if state == "RUNNING" else "N/A"]))
+                                           self._ts(s["start"]) if state == "RUNNING" else "N/A", "lab_01",
+                                           f"/home/{self.user}/jobs/{s['name'].split('_')[0]}.sbatch", os.getcwd()]))
                 for (i, u, n, p, st, el, lim, nn, c, g, r, pr, nd) in self.others:
                     lines.append("|".join([i, u, n, p, st, hms(el + t) if st == "RUNNING" else "0:00", lim, str(nn), str(c), g, r, str(pr), nd, self._ts(-el - 600),
-                                           self._ts(-el) if st == "RUNNING" else "N/A"]))
+                                           self._ts(-el) if st == "RUNNING" else "N/A", "lab_01", f"/home/{u}/jobs/{n.split('_')[0]}.sbatch", os.getcwd()]))
                 return "\n".join(lines) + "\n", 0.03
             if fmt == PEND_FMT:                             # cluster-wide pending
                 lines = [f"{s['part']}|{s['cpus']}|{('gres/gpu:' + s['gt'] + ':' + str(s['gn'])) if s['gn'] else 'N/A'}|{s['nodes']}" for s, state, _ in self._rows() if state == "PENDING"]
@@ -184,7 +185,7 @@ class FakeBackend(Backend):
                                        s.get("node", "") if not pending else "", s["mem"], self._ts(s["start"]) if s.get("start") is not None and not pending else "N/A",
                                        self._ts(s["submit"]), reason, str(s["prio"]), s.get("dep", "(null)") or "(null)", "lab_01", "normal",
                                        self._ts(s["start"] + secs(s["limit"])) if s.get("start") is not None and not pending else "N/A",
-                                       f"/home/{self.user}/jobs/{s['name'].split('_')[0]}.sbatch"]))
+                                       f"/home/{self.user}/jobs/{s['name'].split('_')[0]}.sbatch", os.getcwd()]))
             return "\n".join(lines) + ("\n" if lines else ""), 0.02
         if name == "sstat":
             jid = cmd[cmd.index("-j") + 1]
@@ -376,10 +377,13 @@ def parse_jobs(text: str) -> List[Job]:
             continue
         gtype, gcount = gres_gpus(f[8])
         nodes = fint(f[6]) or 1
+        # Old recordings have twenty fields. Extra separators in a command or
+        # path make the optional WorkDir ambiguous; omit grouping evidence.
+        workdir = f[20] if len(f) == 21 and os.path.isabs(f[20]) and "\0" not in f[20] else ""
         out.append(Job(id=f[0], name=f[1], partition=f[2], state=f[3], elapsed=f[4], limit=f[5], nodes=nodes, cpus=fint(f[7]), gpu_type=gtype,
                        gpus=gcount * nodes, nodelist="" if f[9].startswith("(") else f[9], mem_req=f[10], start=f[11], submit=f[12], reason=f[13],
                        priority=fint(f[14]), dependency=("" if len(f) < 16 or f[15] in ("(null)", "") else f[15]), account=f[16] if len(f) > 16 else "",
-                       qos=f[17] if len(f) > 17 else "", end=f[18] if len(f) > 18 else "", command=f[19] if len(f) > 19 else ""))
+                       qos=f[17] if len(f) > 17 else "", end=f[18] if len(f) > 18 else "", command=f[19] if len(f) > 19 else "", workdir=workdir))
     return out
 
 
@@ -392,9 +396,11 @@ def parse_group(text: str) -> List[Job]:
             continue
         gtype, gcount = gres_gpus(f[9])
         nodes = fint(f[7]) or 1
+        workdir = f[17] if len(f) == 18 and os.path.isabs(f[17]) and "\0" not in f[17] else ""
         out.append(Job(id=f[0], user=f[1], name=f[2], partition=f[3], state=f[4], elapsed=f[5], limit=f[6], nodes=nodes, cpus=fint(f[8]), gpu_type=gtype,
                        gpus=gcount * nodes, reason=f[10], priority=fint(f[11]), nodelist=f[12] if len(f) > 12 and not f[12].startswith("(") else "",
-                       submit=f[13] if len(f) > 13 else "", start=f[14] if len(f) > 14 and f[14] != "N/A" else ""))
+                       submit=f[13] if len(f) > 13 else "", start=f[14] if len(f) > 14 and f[14] != "N/A" else "",
+                       account=f[15] if len(f) > 15 else "", command=f[16] if len(f) > 16 else "", workdir=workdir))
     return out
 
 
@@ -680,6 +686,7 @@ class Slurm:
         out, _ = self.b.run(["squeue", "-u", self.user, "-h", "-o", JOB_FMT], self.timeout)
         jobs = parse_jobs(out)
         for j in jobs:
+            j.user = self.user        # The existing queue request is explicitly -u scoped.
             j.hosts = self.hostnames(j.nodelist) if j.nodelist else []
         return jobs
 

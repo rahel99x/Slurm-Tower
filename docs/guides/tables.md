@@ -236,13 +236,21 @@ Tower selects the latest candidate records before it applies the Recents sort.
 The Jobs sort does not change Recents. Departed jobs remain visible while
 accounting data is pending.
 
-Use `:recents auto` to permit expansion when several jobs finish, up to 25
-records. Use `:recents expand` for a temporary limit of 25. Use
-`:recents collapse` to restore the configured limit.
+Use `:recents auto` to adapt the initial preview when several jobs finish.
+Use `:recents expand` for an initial preview of 25 records.
+Use `:recents collapse` to restore the configured preview.
+These choices do not impose a hard history limit.
 
-The terminal can show fewer records than the configured limit. Scroll through
-Recents to reach the other records. The `window` filter uses accounting End.
+Drag the grey divider above Recents to change its share of Jobs Main.
+A larger section shows more records.
+Use the wheel inside Recents, or click a recent row and use arrow or page keys, to reach older matching jobs.
+Home reaches the first recent job.
+End loads the matching history needed to reach the last job.
+Tower grows the candidate prefix in bounded pages as you navigate.
+The `window` filter uses accounting End.
 Pending accounting records remain visible with their explicit status.
+The accounting window and filters determine the available history.
+See [Scrollable Recents](adaptive-workspaces.md#show-more-recent-jobs) for selection and layout behaviour.
 
 <a id="feature-10"></a>
 

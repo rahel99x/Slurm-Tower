@@ -12,7 +12,10 @@ import threading
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .slurm import Backend, CommandError
+from .slurm import Backend, CommandError, GROUP_FMT, JOB_FMT
+
+_LEGACY_QUEUE_FORMATS = {JOB_FMT: JOB_FMT.rsplit("|", 1)[0],
+                         GROUP_FMT: GROUP_FMT.rsplit("|", 3)[0]}
 
 
 def _open(path: str, mode: str):
@@ -149,7 +152,16 @@ class ReplayBackend(Backend):
         return lst[index][1]
 
     def run(self, cmd: Sequence[str], timeout: float = 8.0) -> Tuple[str, float]:
-        rec = self._pick(tuple(cmd), self.clock.now())
+        key, now = tuple(cmd), self.clock.now()
+        rec = self._pick(key, now)
+        # Native queue provenance added optional trailing output fields. Old
+        # recordings retain exact command and time matching, with only these
+        # two known format upgrades allowed to read their legacy responses.
+        if rec is None and key not in self.by_key and key and os.path.basename(key[0]) == "squeue" and "-o" in key:
+            index = key.index("-o") + 1
+            legacy = _LEGACY_QUEUE_FORMATS.get(key[index]) if index < len(key) else None
+            if legacy is not None:
+                rec = self._pick(key[:index] + (legacy,) + key[index + 1:], now)
         if rec is None:
             raise CommandError(f"{os.path.basename(cmd[0])}: not in the recording")
         if "err" in rec:

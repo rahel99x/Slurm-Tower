@@ -214,6 +214,7 @@ class Job:
     est_start: str = ""              # squeue --start
     hosts: List[str] = field(default_factory=list)
     user: str = ""                   # set for the account-wide listing
+    workdir: str = ""                # squeue WorkDir; trailing field preserves positional callers
 
     @property
     def pending(self) -> bool:

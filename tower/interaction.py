@@ -283,6 +283,10 @@ def _hit_controls(app, rows, hits, width, height, *, layer=0, spans=None):
                 if panel is not None and panel.y <= y < panel.y + panel.height and panel.x:
                     right = panel.x - 1
             rect = _row_rect(rows, y, width, height, overlays=spans, main_right=right)
+            content = getattr(app, "history_browser_content_rect", None)
+            if rect and getattr(app, "tab", "") in ("analytics", "deps", "log", "research") and content is not None:
+                rect = _rect((max(rect.top, content.y), max(rect.left, content.x),
+                              min(rect.bottom, content.y + content.height), min(rect.right, content.x + content.width)))
             if rect:
                 yield Control(f"{kind}:{value}", str(value), rect, ("row", y, rect.left),
                               kind, button=False, layer=layer)
