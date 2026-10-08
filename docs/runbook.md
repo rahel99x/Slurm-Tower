@@ -326,6 +326,40 @@ for empirical spread. `combine` reads 1..1000 explicitly named individual record
 files, at most 64 KiB each and 8 MiB in aggregate; it performs no directory walk
 and preserves existing output files. All analysis remains terminal only.
 
+### Attach a project's reports during operation
+
+Use the [project reporting standard](PROJECT_STANDARD.md) when creating a new project.
+Its source map defines the required location and format for each Research workspace.
+Keep each execution attempt in `runs/<run_id>/`.
+Record the actual Slurm job ID in that attempt's `run.json`.
+Append application measurements to `metrics.jsonl` and retain the attempt's log index.
+
+Start Tower on the machine that can read those project files.
+Use the CARC profile on the login node or the desktop profile for native Fedora Slurm.
+Open the project with `:project /absolute/project/path`.
+Use the [live project procedure](guides/live-workbench.md#connect-a-project-to-its-jobs) for job attachment, refresh behavior, and source errors.
+
+### Inspect a job without leaving Jobs
+
+1. Select the actual job in the active table or Recents.
+2. Click Inspector, Logs, or Investigate in Details.
+3. Use arrow keys to select another button.
+4. Press Enter to focus inspection content.
+5. Press Esc to return to the job rows.
+
+**Expected result:** Details follows the selected job and refreshes from background snapshots.
+Select Off to hide inspection content.
+Use `:jobpanel focus` for keyboard entry.
+Use the full Logs page when you need complete-file search or copying.
+
+The top-right update control remains available on every page.
+Use `:rate` to inspect the multiplier and effective Jobs interval.
+Use `:rate 5` to request five times the configured fetching frequency.
+Use `:rate reset` to restore 1x.
+Source minimum intervals, timeouts, and retry backoff remain active.
+Inspect Sources for the effective cadences.
+See [Live workbench](guides/live-workbench.md) for the toolbar and complete panel controls.
+
 ## 5. Configure your cluster
 
 All defaults work without a config file. Copy [config.example.json](config.example.json)

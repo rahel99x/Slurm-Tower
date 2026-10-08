@@ -104,14 +104,15 @@ def location(app):
     project = getattr(app, "project_state", None)
     if isinstance(project, dict):
         result["project_context"] = {field: copy.deepcopy(project.get(field)) for field in
-                                     ("root", "binding", "logs", "run_warnings", "restore_run_id", "summary", "status", "run_cursor", "run_top", "output_cursor", "output_top", "filter")}
+                                     ("root", "registered_root", "binding_origin", "auto_suppressed", "binding", "logs", "run_warnings", "restore_run_id", "summary", "status", "run_cursor", "run_top", "output_cursor", "output_top", "filter")}
         for field in ("runs", "warnings"):
             result["project_context"][field] = project.get(field, [])
         backup = project.get("binding_backup")
         result["project_context"]["binding_backup"] = dict(backup) if isinstance(backup, dict) else None
     hub = app.research
     settings = hub.settings if hub is not None else app.cfg.get("research", {})
-    result["research_settings"] = {key: settings.get(key, "") for key in ("metrics_file", "contract", "workdir", "passport", "planning_file")}
+    result["research_settings"] = {key: copy.deepcopy(settings.get(key, {} if key in ("planning_files", "planning_overrides") else ""))
+                                   for key in ("metrics_file", "contract", "workdir", "passport", "planning_file", "planning_files", "planning_overrides", "submit_file")}
     result["log_manifest"] = app.cfg.get("logs", {}).get("manifest_file", "")
     result["passport_context"] = (getattr(hub, "passport", None), getattr(hub, "passport_diff", None))
     return result
@@ -168,7 +169,10 @@ def _restore_location(app, saved):
             project_changed = (project.get("root"), project.get("binding")) != (context.get("root"), context.get("binding"))
             project["generation"] = project.get("generation", 0) + 1
             project["busy"] = False
-            project.update(context)
+            project["auto_generation"] = project.get("auto_generation", 0) + 1
+            project["auto_pending"] = False
+            project.update({key: value if key in ("runs", "warnings") else copy.deepcopy(value)
+                            for key, value in context.items()})
             if project.get("binding_backup") is None:
                 project.pop("binding_backup", None)
             project["tree"], project["preview"] = None, None
@@ -176,7 +180,7 @@ def _restore_location(app, saved):
         if app.research is not None and saved.get("research_settings") is not None:
             settings = saved["research_settings"]
             if project_changed or any(app.research.settings.get(key, "") != value for key, value in settings.items()):
-                app.research.configure(**settings)
+                app.research.configure(**copy.deepcopy(settings))
             app.research.passport, app.research.passport_diff = saved.get("passport_context", (None, None))
         for field in ("research_view", "research_job_id", "research_scroll", "analytics_view", "analytics_job", "detail_id",
                       "nodes_view", "log_job", "selected_id"):

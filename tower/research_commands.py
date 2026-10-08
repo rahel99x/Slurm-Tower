@@ -197,6 +197,8 @@ def execute(app, cmd, args, *, ready=None):
         if app.interactive and ready is None and (cmd in OFFLINE or cmd == "array" or (cmd == "submit" and args)):
             if getattr(app.files, "remote", False) or getattr(app, "replay", None):
                 raise ValueError("this research command requires local files on the cluster")
+            from .project_ui import cancel_automatic
+            cancel_automatic(app)
             if cmd in OFFLINE:
                 fn = lambda: offline_result(cmd, args)
             elif cmd == "submit":
@@ -214,6 +216,8 @@ def execute(app, cmd, args, *, ready=None):
             result, code = ready if ready is not None else offline_result(cmd, args)
             app.research_result = result
             if cmd == "prepare":
+                from .research import detach_manual_source
+                detach_manual_source(app)
                 hub.plan = result
                 hub.configure()
                 app.research_view = "submit"
@@ -255,6 +259,8 @@ def execute(app, cmd, args, *, ready=None):
             select_job(app, args[0], view="evidence")
             app.say(f"investigating {args[0]}")
         elif cmd == "array":
+            from .research import detach_manual_source
+            detach_manual_source(app)
             hub.plan = ready if ready is not None else array_plan(args, app.store.jobs, app.store.finished)
             if not hub.plan.get("valid"):
                 raise ValueError("retry script failed preflight; prepare a valid script before retrying")
@@ -267,9 +273,14 @@ def execute(app, cmd, args, *, ready=None):
             if getattr(app, "replay", None):
                 raise ValueError("submissions are unavailable during replay")
             if args:
+                from .research import detach_manual_source
+                detach_manual_source(app)
                 hub.plan, opts = ready if ready is not None else prepare_args(args)
                 passport_dir = opts.passport_dir
             else:
+                from .project_ui import selected_binding
+                if selected_binding(app) is not None:
+                    raise ValueError("run submission reports are read-only; use :prepare SCRIPT --workdir DIR to review a new submission")
                 passport_dir = None
             if not hub.plan or not hub.plan.get("valid"):
                 raise ValueError("prepare a valid batch script first; review issues in Research / Submit")

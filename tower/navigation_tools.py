@@ -92,6 +92,8 @@ def _portable_location(app):
             # attached sources. Loaded passport objects remain session-local;
             # the original declared passport path survives in settings.
             saved["project_context"]["binding_backup"] = {"settings": backup.get("settings", {}),
+                "settings_extra": {key: value for key, value in backup.get("settings_extra", {}).items()
+                                   if key in ("interval", "planning_file", "planning_files", "planning_overrides", "submit_file")},
                 "log_manifest": backup.get("log_manifest", ""), "passport_record": None, "passport_diff": None}
     if "table_tools_context" in saved:
         saved["table_tools_context"].pop("freeze", None)
@@ -129,8 +131,27 @@ def _valid_location(value):
     if backup is not None:
         if not isinstance(backup, dict) or not isinstance(backup.get("settings"), dict) or not _plain(backup.get("log_manifest"), 4096):
             raise ValueError("invalid original project sources")
-        if any(key not in ("metrics_file", "contract", "workdir", "passport", "planning_file") or not _plain(path, 4096) for key, path in backup["settings"].items()):
-            raise ValueError("invalid original project source path")
+        extra = backup.get("settings_extra", {})
+        if not isinstance(extra, dict):
+            raise ValueError("invalid original research settings")
+        from .projects import PLANNING_PATHS
+        for key, path in dict(extra, **backup["settings"]).items():
+            if key in ("metrics_file", "contract", "workdir", "passport", "planning_file", "submit_file"):
+                if not _plain(path, 4096):
+                    raise ValueError("invalid original project source path")
+            elif key == "planning_files":
+                if (not isinstance(path, dict) or path.keys() - set(PLANNING_PATHS)
+                        or any(not _plain(value, 4096) for value in path.values())):
+                    raise ValueError("invalid original per-view planning paths")
+            elif key == "planning_overrides":
+                if (not isinstance(path, dict) or path.keys() - set(PLANNING_PATHS)
+                        or any(not isinstance(options, dict) or len(options) > 16 for options in path.values())):
+                    raise ValueError("invalid original planning overrides")
+            elif key == "interval":
+                if type(path) not in (int, float) or not 1 <= path <= 86400:
+                    raise ValueError("invalid original research interval")
+            else:
+                raise ValueError("invalid original research setting")
     from .table_sort import TABLE_KEYS, validate_chain
     from .views import SORTS
     for table, key in result.get("sort", {}).items():

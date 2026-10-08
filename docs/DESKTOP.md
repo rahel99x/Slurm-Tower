@@ -223,6 +223,22 @@ Use `:terminaldoctor` for terminal and path evidence.
 Use `:terminaltest` to check glyphs, keys, and mouse input.
 Use `:settings` to adjust display preferences and active sampling intervals.
 
+### Use live inspection controls
+
+Select a job in Jobs or Recents.
+Click Inspector, Logs, or Investigate in Details to inspect that job in place.
+Select Off to hide the inspection content.
+Use `:jobpanel focus` for keyboard entry.
+The selected job and available files update during the session.
+
+The top-right update slider requests a fetching multiplier from 1x to 50x.
+Use `:rate` to inspect the active multiplier and effective Jobs interval.
+Use `:rate N` to select a whole-number multiplier, or `:rate reset` to restore 1x.
+The desktop Jobs interval starts at two seconds at 1x.
+Source minimum intervals and retry backoff limit higher rates.
+Sources shows the effective cadence.
+See [Live workbench](guides/live-workbench.md) for the toolbar, controls, limits, and project reporting procedure.
+
 ### Optional desktop clipboard
 
 For a Fedora Wayland session, install the optional local clipboard helper:

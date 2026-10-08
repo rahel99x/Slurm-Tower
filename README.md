@@ -15,11 +15,12 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.1 |
+| Release | Tower 4.2 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
 [Fedora desktop setup](docs/DESKTOP.md) ·
+[Live workbench](docs/guides/live-workbench.md) ·
 [Controls](docs/CONTROLS.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
@@ -185,6 +186,7 @@ Uppercase and lowercase keys have different functions.
 | `Ctrl-G` | Search jobs, runs, logs, views, workspaces, and commands |
 | `Ctrl-P` | Open the Research workspace picker |
 | `Ctrl-A` | Open Activity and background task results |
+| F10 | Open or close the File, Edit, View, and Help menus |
 | `:` | Open the editable command palette |
 | `?` | Open searchable help |
 | `Esc` | Close the current overlay or clear the current selection |
@@ -202,6 +204,11 @@ JOBID uses numeric order, including array task IDs.
 For example, `9` precedes `10`, and `123_2` precedes `123_10`.
 Unknown measurements remain last in either direction.
 Removing one sort rule preserves the other rules.
+
+The toolbar occupies the first display row.
+Click its `x` control to quit.
+The top-right update control remains visible above pages and overlays.
+See [Live workbench](docs/guides/live-workbench.md) for every menu choice and slider control.
 
 ```text
 :sortby jobs name asc
@@ -242,8 +249,9 @@ See the [50-improvement guide](docs/QUALITY_OF_LIFE.md) for the new workflows.
 
 Use Left and Right to change subviews in Analytics, Nodes, and Research.
 Research has twelve workspaces:
-Experiment, Arrays, Evidence, Artifacts, Passport, Submit, Predict, Forecast,
+Experiment, Arrays, Evidence, Artifacts, Passport, Submit, Resources, Forecast,
 Blockers, Tradeoffs, Scaling, and Workflow.
+Resources uses the `predict` command-line identifier.
 
 The [complete reference](docs/reference.md#tabs) defines each page and metric.
 The [Research guide](docs/RESEARCH.md) explains application reports and submission preparation.
@@ -253,18 +261,26 @@ The [planning guide](docs/WAVE_TWO.md) explains predictions, uncertainty, scalin
 
 ### Inspect a completed or failed job
 
-1. Open Jobs or History.
-2. Select the job in the active table, Recents, or History.
-3. Press `I` to inspect its identity, resources, steps, files, and evidence.
-4. Press `l` to open its logs.
-5. Press `O` to open its grouped log-file list.
-6. Select a file with the arrow keys.
-7. Press `Enter` to open the file.
-8. Press `Esc` to return to the file list.
+1. Open Jobs.
+2. Select the job in the active table or Recents.
+3. Click Inspector, Logs, or Investigate in Details.
+4. Use arrow keys to change the active button.
+5. Press Enter to focus its content.
+6. Press Esc to return to the job rows.
 
 **Expected result:** The inspector and logs remain attached to the selected job ID.
 A missing historical path remains unavailable.
 Use a run's `logs.json` index to retain project-owned log locations.
+
+Select Off to hide inspection content.
+Use `:jobpanel focus` to reach the buttons without a mouse.
+See [Live workbench](docs/guides/live-workbench.md) for panel navigation and live updates.
+
+In History, select the completed or failed job.
+Press `I` for its inspector or `l` for its full Logs page.
+In Logs, press `O` for the grouped file list.
+Select a file with arrow keys and press Enter.
+Press Esc to return to that list.
 
 When a job leaves the active queue, Recents shows it as awaiting accounting.
 Tower requests a bounded accounting refresh.
@@ -294,6 +310,7 @@ See [log search](docs/guides/log-search.md) and [log display](docs/guides/log-vi
 Use the [project reporting standard](docs/PROJECT_STANDARD.md) for portable integration.
 Copy the [project template](examples/project-template/README.md) when you start an integration.
 The reporter uses the Python standard library.
+The standard defines an exact source location for each of the twelve Research workspaces.
 
 ```text
 my-project/
@@ -308,6 +325,7 @@ my-project/
       logs/                 project-owned log files
       outputs/              declared result files
       passports/            immutable provenance records
+      reports/              reports for this execution attempt
   reports/                  selected planning observations
 ```
 
@@ -324,6 +342,13 @@ my-project/
 Project discovery is bounded and explicit.
 It does not recursively scan your source tree.
 Local project runs can be inspected without a Slurm job.
+
+Keep each report attached to its execution attempt.
+Retain the exact job ID in `run.json` and declare each required source path.
+Use the [Research source map](docs/PROJECT_STANDARD.md#files-for-every-research-view) when you instrument a new project.
+An unambiguous exact job ID links the selected job to its run's declared reports.
+Tower rechecks inventories and source files in the background during operation.
+The [live project procedure](docs/guides/live-workbench.md#connect-a-project-to-its-jobs) explains runtime attachment and refresh.
 
 Use the [JSON Schema guide](docs/schemas/README.md) to check interchange files.
 Keep generated run directories and private reports out of Git.
@@ -397,6 +422,11 @@ Use `--no-state` to disable normal state reads and writes.
 The [configuration reference](docs/reference.md#configuration) describes every section.
 The [navigation guide](docs/guides/navigation.md) describes interactive settings and key bindings.
 
+Use the always-visible update control to request a fetching rate from 1x to 50x.
+Use `:rate N` for the equivalent command, or `:rate reset` to restore 1x.
+Source minimum intervals and retry backoff remain in effect.
+Sources shows the effective intervals.
+
 Live GPU sampling creates short `srun` steps inside an existing allocation.
 It can fall back to SSH on a compute node.
 Enable this feature only where cluster policy permits it.
@@ -412,6 +442,7 @@ See [Documentation style](docs/DOCUMENTATION_STYLE.md) for terminology and proce
 | Install, update, or diagnose a CARC launch | [Adaptive runbook](docs/runbook.md) |
 | Use an existing Slurm installation on Fedora | [Desktop setup](docs/DESKTOP.md) |
 | Find a key, command, CLI option, or mouse action | [Controls](docs/CONTROLS.md) |
+| Use the toolbar, inline job panels, and update-rate slider | [Live workbench](docs/guides/live-workbench.md) |
 | Find any of the 50 quality-of-life changes | [Improvement index](docs/QUALITY_OF_LIFE.md) |
 | Sort, filter, mark, and inspect table records | [Table guide](docs/guides/tables.md) |
 | Read older log content or search complete files | [Log search guide](docs/guides/log-search.md) |

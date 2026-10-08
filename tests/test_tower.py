@@ -213,7 +213,8 @@ def test_controller_filter_sort_tabs_overlays_and_mouse(tmp_path):
     y = [h for h in hits if h[2] == "12480005"][0][0]
     app.click(y, 5, hits)
     assert app.cursor["jobs"] == app.visible_ids.index("12480005")
-    app.click(2, app.tab_hits[2][1] + 1, hits)                           # the tab bar
+    tab_y, left, _, _ = next(hit for hit in app.tab_hits if hit[3] == "history")
+    app.click(tab_y, left + 1, hits)                                   # the painted tab bar
     assert app.tab == "history"
     app.handle("1"); app.handle("l")
     assert app.tab == "log" and app.log_job == "12480005"
@@ -345,7 +346,9 @@ def test_selection_copy_and_exports(tmp_path):
     app.handle("E"); path_t = app.message.split()[-1]
     app.handle("C"); path_c = app.message.split()[-1]
     app.handle("space"); app.handle("J"); path_j = app.message.split()[-1]
-    assert Path(path_t).read_text().startswith(" tower - alex") and "-- selected" in Path(path_t).read_text()
+    exported = Path(path_t).read_text()
+    assert exported.splitlines()[0].startswith(" x  File  Edit  View  Help")
+    assert exported.splitlines()[1].startswith(" tower - alex") and "-- selected" in exported
     assert Path(path_c).read_text().splitlines()[0].startswith("id,name,part") and "12477369" in Path(path_c).read_text()
     js = json.loads(Path(path_j).read_text())
     assert js[0]["id"] == "12480001" and js[0]["job"]["name"] == "rb1-allrank" and len(js[0]["series"]) >= 3 and "live" in js[0]
@@ -1134,7 +1137,7 @@ def test_replay_controls_scrub_bar_and_palette(tmp_path):
         sampler.round(wait=True)
         rows, _ = views.compose(store.snapshot(), app, 150, 40, None)
         text = "\n".join(L.row_text(r) for r in rows)
-        assert "REPLAY" in text and "paused" in text and " replay " in L.row_text(rows[2]) and "x1" in L.row_text(rows[2]) and rp.clock.frac == 0.0
+        assert "REPLAY" in text and "paused" in text and " replay " in L.row_text(rows[3]) and "x1" in L.row_text(rows[3]) and rp.clock.frac == 0.0
         app.handle(">"); assert rp.clock.now() == rp.t1 and app.message == "60 s forward"            # the recording is shorter than a minute: clamped to its end
         app.handle("<"); assert rp.clock.now() == rp.t0
         app.handle("}"); app.handle("}"); assert rp.clock.speed == 4.0 and app.message == "speed x4"
@@ -1148,7 +1151,7 @@ def test_replay_controls_scrub_bar_and_palette(tmp_path):
         app.run_command("replay seek nonsense"); assert app.message.startswith("replay seek <")
         app.run_command("replay"); assert app.message.startswith("replay <pause")
         rows, _ = views.compose(store.snapshot(), app, 150, 40, None)
-        assert "x10" in L.row_text(rows[2])
+        assert "x10" in L.row_text(rows[3])
     finally:
         clock.reset()
     app2 = App(Store(state_dir=None, persist=False), None, None, Config(), "alex", ascii_=True)

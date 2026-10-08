@@ -248,6 +248,7 @@ class LogSession:
         self._async_active = None
         self._async_generation = 0
         self._async_attempts = {}
+        self.polling_multiplier = 1
 
     # ---- bookmarks ------------------------------------------------------------------------------
     def toggle_bookmark(self, path: str, index: int) -> bool:
@@ -336,6 +337,8 @@ class LogSession:
             base.loading = True
         interval = max(1.5 if getattr(files, "remote", False) else .5,
                        float(getattr(files, "min_refresh", 0)))
+        from .refresh_rate import file_interval
+        interval = file_interval(interval, self.polling_multiplier, remote=bool(getattr(files, "remote", False)))
         now = time.monotonic()
         if worker is None or self._async_pending is not None or now - self._async_attempts.get(key, -interval) < interval:
             return

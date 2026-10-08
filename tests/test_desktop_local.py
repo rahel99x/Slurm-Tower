@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -20,6 +22,49 @@ from tower.slurm import Backend
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_native_desktop_automatically_links_and_refreshes_actual_project_reports(native_desktop):
+    """Local Slurm subprocess metadata finds the copied producer's exact run."""
+    fixture = native_desktop
+    shutil.copytree(ROOT / 'examples/project-template', fixture.root, dirs_exist_ok=True)
+    spec = importlib.util.spec_from_file_location('desktop_run_reporter', fixture.root / 'reporting.py')
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    run = producer.begin_run(fixture.root, 'native-desktop-7', name='desktop-cpu',
+                             script='experiment.py', job_id='7')
+    producer.write_metric(run, {'native_loss': .75}, step=1)
+    producer.publish_research(run, 'predict', {'kind': 'tower.planning', 'version': 1,
+                                              'history': [], 'job_id': '7'})
+    output = fixture.run('--once', '--tab', 'research')
+    assert output.returncode == 0, output.stderr
+    assert 'native_loss' in output.stdout and 'DEMO' not in output.stdout
+    session = fixture.build('--no-state', '--rate', '50')
+    try:
+        cli.settle(session, 'research')
+        from tower import project_ui
+        binding = project_ui.selected_binding(session.app)
+        assert binding['job_id'] == '7' and binding['run_id'] == run.name
+        assert binding['metrics_file'] == str(run / 'metrics.jsonl')
+        assert binding['planning_files']['predict'] == str(run / 'reports/predict.json')
+        generation = session.app.research.generation
+        producer.write_metric(run, {'native_loss': .25}, step=2)
+        producer.publish_research(run, 'workflow', {'kind': 'tower.planning', 'version': 1,
+                                                   'jobs': [], 'job_id': '7'})
+        project_ui.settle(session.app, session.store.snapshot())
+        binding = project_ui.selected_binding(session.app)
+        assert binding['planning_files']['workflow'] == str(run / 'reports/workflow.json')
+        assert session.app.research.generation > generation
+        session.app.research.request(session.app.research.context(session.store.snapshot(), session.app),
+                                     wait=True, force=True)
+        text = '\n'.join(''.join(segment for segment, _ in row)
+                         for row in session.views.compose(session.store.snapshot(), session.app, 160, None)[0])
+        assert 'native_loss' in text and '0.25' in text
+        assert session.sampler.effective_interval('jobs') == .5
+        assert session.app.tab == 'research' and session.app.selected_id == '7'
+    finally:
+        session.close()
+    assert {call[0] for call in fixture.calls()} <= {'squeue', 'scontrol', 'sinfo', 'sacct', 'sstat', 'sshare'}
 CPU_ROW = ('7|desktop-cpu|localcpu|RUNNING|00:00:12|01:00:00|1|2|N/A|fedora-box|1G|'
            '2026-10-07T00:00:00|2026-10-07T00:00:00|None|1|(null)||normal|N/A|/tmp/cpu.sbatch\n')
 NATIVE_COMMAND = r'''

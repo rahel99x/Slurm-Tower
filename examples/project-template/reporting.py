@@ -23,6 +23,12 @@ MAX_AGGREGATE = 1 << 20
 MAX_SCRIPT = 8 << 20
 MAX_LOGS = 256
 MAX_LOG_JSON = 256 << 10
+PLANNING_VIEWS = {"predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow"}
+REPORT_VIEWS = PLANNING_VIEWS | {"planning", "submit"}
+PLAN_FIELDS = ("schema", "script", "workdir", "argv", "command", "overrides", "script_sha256",
+               "parameters", "inputs", "outputs", "resources", "directives", "issues", "valid")
+PLAN_WORKFLOW_FIELDS = ("workflow_node_id", "symbolic_dependencies", "workflow_orchestration",
+                        "requires_workflow_orchestration", "submittable")
 RESOURCE_KEYS = {"partition", "cpus", "nodes", "gpus", "gpu_type", "account", "qos",
                  "mem_bytes", "time_seconds"}
 QUERY_KEYS = RESOURCE_KEYS | {"name", "script_sha256", "parameters", "input_size", "memory_scope"}
@@ -397,7 +403,7 @@ def begin_run(root, run_id, *, name, script, experiment_id=None, attempt=1,
     runs = _under(root, "runs/.unused", create_parent=True).parent
     run_dir = runs / run_id
     run_dir.mkdir(mode=0o700)  # no exist_ok: retries must have a new unique run ID
-    for child in ("outputs", "logs", "passports"):
+    for child in ("outputs", "logs", "passports", "reports"):
         (run_dir / child).mkdir(mode=0o700)
     for filename in ("metrics.jsonl", "logs/stdout.log", "logs/stderr.log"):
         (run_dir / filename).touch(mode=0o600, exist_ok=False)
@@ -407,7 +413,8 @@ def begin_run(root, run_id, *, name, script, experiment_id=None, attempt=1,
                 "provenance": {"script": str(script_path.relative_to(root)), "script_sha256": digest.hexdigest()},
                 "paths": {"metrics": "metrics.jsonl", "summary": "summary.json", "outputs": "outputs",
                           "logs": "logs", "stdout": "logs/stdout.log", "stderr": "logs/stderr.log",
-                          "log_index": "logs.json", "passports": "passports"}}
+                          "log_index": "logs.json", "passports": "passports",
+                          "planning": "reports/planning.json", "submit": "reports/submit.json"}}
     if job_id is not None:
         manifest["job_id"] = job_id
     if input_size is not None:
@@ -561,6 +568,54 @@ def export_planning(root, run_dirs, *, reference_run=None, output="reports/plann
     return bundle
 
 
+def publish_research(run_dir, view, document):
+    """Publish one actual native source and bind its exact per-run location.
+
+    This stdlib helper checks the interchange header, finite bounded JSON and
+    selected job identity. Tower's native analysis performs scientific checks;
+    this helper does not create observations, launch jobs, or execute plans.
+    ``submit`` accepts only an intact native ``tower run prepare`` result and
+    remains a read-only report in the dashboard. Use one run coordinator.
+    """
+    if not isinstance(view, str) or view not in REPORT_VIEWS:
+        raise ValueError("report view must be planning, predict, forecast, blockers, tradeoffs, scaling, workflow, or submit")
+    run_dir = _directory(run_dir)
+    manifest = _read_json(run_dir / "run.json")
+    if (not isinstance(manifest, dict) or manifest.get("schema") != "tower.run/v1"
+            or manifest.get("run_id") != run_dir.name or not isinstance(manifest.get("paths", {}), dict)):
+        raise ValueError("run manifest must describe the selected run")
+    if not isinstance(document, dict):
+        raise ValueError("report must be a native JSON object")
+    _encoded(document, MAX_AGGREGATE)
+    if view == "submit":
+        if (document.get("schema") != "tower.submission-plan/v1"
+                or not set(PLAN_FIELDS) <= document.keys() or not isinstance(document.get("valid"), bool)
+                or not isinstance(document.get("resources"), dict) or not isinstance(document.get("issues"), list)):
+            raise ValueError("submit report must be an intact native tower.submission-plan/v1 preflight")
+        fields = {key: document[key] for key in PLAN_FIELDS}
+        fields.update({key: document[key] for key in PLAN_WORKFLOW_FIELDS if key in document})
+        digest = hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=True,
+                                           allow_nan=False).encode()).hexdigest()
+        if document.get("plan_id") != digest:
+            raise ValueError("preflight plan_id does not match its captured review fields")
+    else:
+        kinds = {"tower.planning"}
+        if view in {"workflow", "scaling"}:
+            kinds.add("tower." + view)
+        if (type(document.get("version")) is not int or document["version"] != 1
+                or document.get("kind") not in kinds):
+            raise ValueError("planning reports require their native version-1 planning/workflow/scaling header")
+        if "job_id" in document and document["job_id"] != manifest.get("job_id"):
+            raise ValueError("report job_id must match this run's actual scheduler identity")
+    relative = f"reports/{view}.json"
+    target = _under(run_dir, relative, create_parent=True)
+    updated = dict(manifest, paths=dict(manifest.get("paths", {}), **{view: relative}))
+    _encoded(updated, 65536)
+    _atomic_json(target, document, replace=True)
+    _atomic_json(run_dir / "run.json", updated, replace=True)
+    return target
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -569,8 +624,16 @@ def main(argv=None):
     export.add_argument("--root", default=".")
     export.add_argument("--reference", help="one selected run supplies the prediction query")
     export.add_argument("--output", default="reports/planning.json")
+    report = commands.add_parser("report", help="atomically attach an actual native per-view research source")
+    report.add_argument("view", choices=sorted(REPORT_VIEWS))
+    report.add_argument("source", help="existing native JSON source; never executed")
+    report.add_argument("--run", required=True, help="exact attempt directory containing run.json")
     args = parser.parse_args(argv)
     try:
+        if args.command == "report":
+            target = publish_research(args.run, args.view, _read_json(args.source))
+            print(f"Published {args.view} source: {target}; no scheduler action.")
+            return 0
         output = export_planning(args.root, args.runs, reference_run=args.reference, output=args.output)
     except (OSError, ValueError) as exc:
         parser.exit(2, f"reporting: {exc}\n")

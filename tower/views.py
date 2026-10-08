@@ -264,7 +264,8 @@ class Views:
         eng = getattr(app.store, "alerts", None)
         if eng is not None and eng.active_count():
             r1.append((f"   {'!' if self.g.ascii else '⚠'} {eng.active_count()} alert{'s' if eng.active_count() != 1 else ''}: " + cut(", ".join(eng.active_text()[:3]), 60, self.g.ascii), "red+bold"))
-        if age is not None and age > 3 * self.cfg["intervals"]["jobs"] + 2:
+        from .refresh_rate import cadence
+        if age is not None and age > 3 * cadence(app, "jobs") + 2:
             r1.append((f"   (data {int(age)}s old)", "yellow"))
         r2: Row = [(f" free GPUs: {free}    fair share: {sh}", "")]
         if acc:
@@ -283,10 +284,11 @@ class Views:
         if budget_hint and width - vlen(L.row_text(r2)) >= vlen(budget_hint):
             r2.append((budget_hint, "dim"))
         tabs, tab_hits = self.tab_bar(snap, app, width)
-        app.tab_hits = [(3 if rp is not None else 2, x0, x1, key) for x0, x1, key in tab_hits]
-        rows = [r1, r2, tabs]
+        from .toolbar import render_bar
+        app.tab_hits = [(4 if rp is not None else 3, x0, x1, key) for x0, x1, key in tab_hits]
+        rows = [render_bar(self, app, width), r1, r2, tabs]
         if rp is not None:
-            rows.insert(2, self.replay_bar(rp, width))
+            rows.insert(3, self.replay_bar(rp, width))
         bad = [h for h in snap.get("health", {}).values() if h.error and h.enabled]
         if bad:
             rows.append([(" sources: " + "; ".join(f"{h.name}: {cut(h.error, 60, self.g.ascii)}" for h in bad[:3]), "red")])
@@ -295,6 +297,11 @@ class Views:
         trail = breadcrumb(app, width, self.g.ascii)
         if trail:
             rows.append(trail)
+        if app.tab in ("jobs", "history", "research", "log"):
+            from .project_ui import status_row
+            attachment = status_row(app, width, self.g.ascii)
+            if attachment:
+                rows.append(attachment)
         fields = chips(app, app.tab, width, self.g.ascii)
         app.table_chip_y = len(rows) if fields else None
         if fields:
@@ -661,6 +668,8 @@ class Views:
         entry = self._preview_cache.get(key)
         remote = bool(getattr(self.files, "remote", False))
         ttl = 5.0 if remote else .5
+        from .refresh_rate import file_interval, multiplier
+        ttl = file_interval(ttl, multiplier(app), remote=remote)
         now = time.monotonic()
         if entry and now - entry[0] < ttl:
             self._preview_cache.move_to_end(key)
@@ -752,9 +761,16 @@ class Views:
         app.selected_id = ids[cur] if ids else None
         recent_focus = bool(fin) and cur >= n
         sel = rows_d[cur]["job"] if n and not recent_focus else None
-        det = self.selected_panel(snap, sel, width, app.log_lines, app)
-        if recent_focus:
-            det = self.finished_summary(fin[cur - n], width)
+        from .job_panels import render as render_details
+        selected_record = fin[cur - n] if recent_focus else sel
+        if height is None:
+            det = self.selected_panel(snap, sel, width, app.log_lines, app)
+            if recent_focus:
+                det = self.finished_summary(fin[cur - n], width)
+            detail_hits = []
+        else:
+            det, detail_hits = render_details(self, snap, app, selected_record, width,
+                                             getattr(app, "job_panel_target_height", height))
         events = [e for e in snap["events"] if not e.get("old")][-4:] or snap["events"][-4:]
         if height is None:
             trows, _ = table(job_columns, rows_d, width, self.g.ascii, droppable=JOB_DROP, cursor=None, marks=(), mark_char=None)
@@ -810,7 +826,9 @@ class Views:
         if show_queue and not rows_d:
             out.append([("   no jobs match the filter; Esc clears it" if app.filter else "   Your queue is clear. New jobs appear here automatically.", "dim")])
         if det:
+            detail_base = len(out) + 1
             out += [rule(self.g, width, "selected")] + det
+            hits += [(detail_base + y, kind, value) for y, kind, value in detail_hits if y < len(det)]
         out += transit
         if fin_vis:
             recent_cur = cur - n if recent_focus else 0
@@ -822,7 +840,8 @@ class Views:
                                              app=app, header_cells=recent_cells, sort_tab="recent")
             hits += header_hits("recent", recent_cells, base + 1) + [(base + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
             out += recent_rows
-        out += self.event_rows(events, width)
+        # Inline Details owns the supporting pane. The inspector and
+        # investigation include the selected job's own evidence instead.
         record_page(app, "jobs", len(shown) + (len(recent_shown) if fin_vis else 0))
         return out, hits
 
@@ -840,7 +859,9 @@ class Views:
         from .table_ui import columns
         sort_tab = sort_tab or ("recent" if title == "recent" else "history")
         cols = columns(app, sort_tab, self.FIN_COLS) if app else self.FIN_COLS
-        rows, _ = table(cols, data, width, self.g.ascii, indent="   ", droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cursor,
+        drop = (("nodes", "exit", "start", "gpus", "part", "rss", "tags") if any(row.get("tags") for row in data)
+                else ("tags", "nodes", "exit", "start", "gpus", "part", "rss"))
+        rows, _ = table(cols, data, width, self.g.ascii, indent="   ", droppable=drop, cursor=cursor,
                         header_cells=header_cells)
         return [rule(self.g, width, title)] + rows
 
@@ -1432,6 +1453,8 @@ class Views:
         from .research import clean
         if app.logs.catalog is None:
             app.logs.catalog = LogCatalog(self.files)
+        from .refresh_rate import multiplier
+        app.logs.catalog.polling_multiplier = multiplier(app)
         messages = []
         try:
             manifest = self.log_manifest_path(app, job, kv)
@@ -1643,9 +1666,11 @@ class Views:
         rows = []
         for h in hs:
             state = "off" if not h.enabled else ("error" if h.error else ("ok" if h.last_ok else "pending"))
-            rows.append(dict(name=h.name, state=state, every=f"{self.cfg['intervals'].get(h.name, 0):g}s", last=short_duration(now - h.last_ok) + " ago" if h.last_ok else "never",
+            from .refresh_rate import cadence
+            every = cadence(app, h.name)
+            rows.append(dict(name=h.name, state=state, every=f"{every:g}s", last=short_duration(now - h.last_ok) + " ago" if h.last_ok else "never",
                              latency=f"{h.latency_ms:.0f} ms" if h.latency_ms else "", calls=h.calls, errors=h.errors, backoff=f"{h.backoff:.0f}s" if h.backoff else "",
-                             _sort={"every": self.cfg["intervals"].get(h.name, 0),
+                             _sort={"every": every,
                                     "last": now - h.last_ok if h.last_ok else None,
                                     "latency": h.latency_ms if h.calls else None,
                                     "backoff": h.backoff},
@@ -2007,6 +2032,7 @@ class Views:
             app.tab_hits, app.last_rows, app.last_hits = [], [], []
             return [], []
         head = self.header(snap, app, width)
+        app.body_origin = len(head)
         body_h = None if height is None else max(0, height - len(head) - 1)
         prepared_jobs = None
         def jobs_renderer(panel_width, panel_height):

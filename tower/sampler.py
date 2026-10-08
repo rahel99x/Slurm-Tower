@@ -10,6 +10,7 @@ from typing import Callable, Dict, List, Optional
 
 from . import clock
 from .model import Health, Job, Store
+from .refresh_rate import source_interval, validate_multiplier
 from .slurm import CommandError, Slurm
 
 
@@ -20,8 +21,9 @@ HISTORY_FAST_ATTEMPTS = 5
 class Sampler(threading.Thread):
     def __init__(self, slurm: Slurm, store: Store, intervals: Dict[str, float], gpu_types: List[str], history_days: float = 2.0,
                  account: str = "", gpu_sampling: bool = True, workers: int = 4, on_event: Optional[Callable[[dict], None]] = None,
-                 weather: bool = True, probes: Optional[List[dict]] = None, budget: bool = True, files=None):
+                 weather: bool = True, probes: Optional[List[dict]] = None, budget: bool = True, files=None, polling_multiplier: int = 1):
         super().__init__(daemon=True, name="tower-sampler")
+        self.polling_multiplier = validate_multiplier(polling_multiplier)
         self.slurm, self.store, self.intervals = slurm, store, dict(intervals)
         self.gpu_types, self.history_days, self.account = list(gpu_types), history_days, account
         self.gpu_sampling = gpu_sampling
@@ -70,10 +72,24 @@ class Sampler(threading.Thread):
 
     def add_source(self, name: str, interval: float, fn: Callable[[Slurm, Store], None]) -> None:
         """A plugin source: ``fn(slurm, store)`` every ``interval`` seconds, with health and backoff like the others."""
-        self.sources[name] = lambda: fn(self.slurm, self.store)
-        self.intervals[name] = float(interval)
-        self.store.health[name] = Health(name=name)
-        self.last_run[name] = 0.0
+        with self._schedule_lock:
+            self.sources[name] = lambda: fn(self.slurm, self.store)
+            self.intervals[name] = float(interval)
+            self.store.health[name] = Health(name=name)
+            self.last_run[name] = 0.0
+
+    def set_polling_multiplier(self, value):
+        """Wake scheduling without resetting deadlines, errors, or base intervals."""
+        value = validate_multiplier(value)
+        with self._schedule_lock:
+            changed = self.polling_multiplier != value
+            self.polling_multiplier = value
+        if changed:
+            self.kick.set()
+        return value
+
+    def effective_interval(self, name):
+        return source_interval(self.intervals.get(name, 30.0), self.polling_multiplier, source=name)
 
     def emit(self, events: List[dict]) -> None:
         for ev in events:
@@ -108,7 +124,7 @@ class Sampler(threading.Thread):
             return False
         if name == "fin_details" and not self.want_fin:
             return False
-        regular = now - self.last_run[name] >= self.intervals.get(name, 30.0) + h.backoff
+        regular = now - self.last_run[name] >= self.effective_interval(name) + h.backoff
         if name == "details" and not regular:
             request = self._details_refresh
             return bool(request and request[0] == self.want_detail and not h.backoff and
@@ -502,18 +518,22 @@ class Sampler(threading.Thread):
                 self._details_refresh = None
 
     def select(self, jid: Optional[str]):
-        """The screen's selected job: its details are fetched now and refreshed on the details cadence."""
-        if jid != self.want_detail:
-            self.want_detail = jid
-            self.last_run["details"] = 0.0
-            self.kick.set()
+        """Fetch new selection promptly while preserving a failing source's deadline."""
+        with self._schedule_lock:
+            if jid != self.want_detail:
+                self.want_detail = jid
+                if not self.health("details").backoff:
+                    self.last_run["details"] = 0.0
+                self.kick.set()
 
     def select_fin(self, jid: Optional[str]):
         """A finished job whose steps the details overlay shows (sacct -j, once)."""
-        if jid != self.want_fin:
-            self.want_fin = jid
-            self.last_run["fin_details"] = 0.0
-            self.kick.set()
+        with self._schedule_lock:
+            if jid != self.want_fin:
+                self.want_fin = jid
+                if not self.health("fin_details").backoff:
+                    self.last_run["fin_details"] = 0.0
+                self.kick.set()
 
     def select_trace(self, jid: Optional[str]):
         if jid != self.want_trace:

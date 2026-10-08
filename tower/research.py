@@ -7,6 +7,7 @@ import math
 import os
 import threading
 import time
+import copy
 
 from . import clock
 from .remote import LocalFiles
@@ -48,7 +49,7 @@ def detach_manual_source(app):
     if selected_binding(app) is not None:
         from .navigation_ui import record
         record(app, "research", force=True)
-        clear_binding(app)
+    clear_binding(app, suppress_auto=True)
 
 
 class ResearchHub:
@@ -66,6 +67,8 @@ class ResearchHub:
         if isinstance(interval, bool) or not isinstance(interval, (int, float)) or not 1 <= interval <= 86400:
             raise ValueError("research.interval must be finite and between 1 and 86400 seconds")
         self.interval = float(interval)
+        from .refresh_rate import validate_multiplier
+        self.polling_multiplier = validate_multiplier(cfg.get("polling_multiplier", 1))
         self.lock = threading.RLock()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tower-research")
         self.future = None
@@ -94,6 +97,16 @@ class ResearchHub:
             self.planning_source = None
             self.planning_choices = None
 
+    def set_polling_multiplier(self, value):
+        from .refresh_rate import validate_multiplier
+        value = validate_multiplier(value)
+        with self.lock:
+            self.polling_multiplier = value
+
+    def refresh_interval(self):
+        from .refresh_rate import file_interval
+        return file_interval(self.interval, self.polling_multiplier, remote=bool(getattr(self.files, "remote", False)))
+
     def start_task(self, fn, completion):
         """Explicit UI commands share the single worker, without an unbounded queue."""
         with self.lock:
@@ -101,6 +114,19 @@ class ResearchHub:
                 return False
             self.future = self.pool.submit(fn)
             self.pending = (self.future, completion)
+            return True
+
+    def cancel_task(self, completion):
+        """Detach one automatic callback so an explicit command can take priority.
+
+        A running read completes on the same single worker; no second worker or
+        unbounded queue is created. Its unpublished result is discarded.
+        """
+        with self.lock:
+            if not self.pending or self.pending[1] is not completion:
+                return False
+            self.pending[0].cancel()
+            self.pending = None
             return True
 
     def poll_task(self):
@@ -131,11 +157,11 @@ class ResearchHub:
             project_logs = [dict(entry) for entry in log_entries(app)]
         return {"view": getattr(app, "research_view", "experiment"), "jid": jid,
                 "explicit_jid": getattr(app, "research_job_id", None),
-                "job": job, "snap": snap, "settings": dict(self.settings),
+                "job": job, "snap": snap, "settings": copy.deepcopy(self.settings),
                 "log_settings": dict(getattr(app, "cfg", {}).get("logs", self.log_settings)),
                 "run_id": binding.get("run_id") if binding else None,
                 "run_root": binding.get("run_root") if binding else None,
-                "binding": dict(binding) if binding else None,
+                "binding": copy.deepcopy(binding) if binding else None,
                 "project_logs": project_logs,
                 "project_warnings": list(project_state.get("run_warnings", [])) if binding else [],
                 "generation": self.generation}
@@ -160,7 +186,7 @@ class ResearchHub:
                 if self.pending:
                     return self.current(context)
                 entry = self.cache.get(self._key(context))
-                if not force and entry and time.monotonic() - entry[0] < self.interval:
+                if not force and entry and time.monotonic() - entry[0] < self.refresh_interval():
                     self.cache.move_to_end(self._key(context))
                     return entry[1]
                 if self.future is None or self.future.done():
@@ -212,7 +238,8 @@ class ResearchHub:
             if self.reader is None:
                 from .metrics import MetricReader
                 self.reader = MetricReader(self.files)
-            return self.reader.read(path)
+            return (self.reader.read_confined(path, context["binding"]) if context.get("binding")
+                    else self.reader.read(path))
         if view == "arrays":
             from .arrays import summarize
             return {"status": "ok", "groups": summarize(snap.get("jobs", []), snap.get("finished", []))}
@@ -223,6 +250,9 @@ class ResearchHub:
                 return {"status": "empty", "summary": "Attach a JSON output contract with :artifacts CONTRACT ROOT."}
             if self.files.remote:
                 return {"status": "incomplete", "summary": "Output validation needs a local checkout on the job's cluster. Run Tower on the CARC login node."}
+            if context.get("binding"):
+                from .projects import read_bound_artifacts
+                return read_bound_artifacts(context["binding"], files=self.files)
             return validate_contract(load_contract(os.path.expanduser(path)), settings.get("workdir") or os.getcwd(), files=self.files)
         if view == "passport":
             from .provenance import load
@@ -230,9 +260,29 @@ class ResearchHub:
             if path:
                 if self.files.remote:
                     return {"status": "incomplete", "summary": "Passport inspection requires running Tower on the cluster."}
-                return {"status": "ok", "passport": load(os.path.expanduser(path)), "differences": self.passport_diff}
+                if context.get("binding"):
+                    from .projects import read_bound_passport
+                    passport = read_bound_passport(context["binding"], path)
+                else:
+                    passport = load(os.path.expanduser(path))
+                return {"status": "ok", "passport": passport, "differences": self.passport_diff}
             return {"status": "ok", "passport": self.passport, "differences": self.passport_diff} if self.passport or self.passport_diff is not None else {"status": "empty", "summary": "Capture a run with :passport capture SCRIPT --workdir DIR."}
         if view == "submit":
+            if context.get("binding"):
+                path = settings.get("submit_file", "")
+                if not path:
+                    return {"status": "empty", "summary": "This run declares no submission report; prepare a batch script explicitly to submit a new job."}
+                from .projects import read_bound_json
+                from .submission import SCHEMA, _digest
+                plan = read_bound_json(context["binding"], path, key="submit")
+                if (not isinstance(plan, dict) or plan.get("schema") != SCHEMA or type(plan.get("valid")) is not bool
+                        or not isinstance(plan.get("resources"), dict) or not isinstance(plan.get("issues"), list)
+                        or plan.get("plan_id") != _digest(plan)):
+                    raise ValueError("run submission report is not an intact native preflight plan")
+                for issue in plan["issues"]:
+                    if not isinstance(issue, dict) or not all(isinstance(issue.get(key), str) for key in ("level", "message")):
+                        raise ValueError("run submission report contains malformed issue records")
+                return {"status": "ok", "plan": plan, "display_only": True, "source": path}
             return {"status": "ok", "plan": self.plan} if self.plan else {"status": "empty", "summary": "Prepare a batch script with :prepare SCRIPT --workdir DIR [resource flags]."}
         if view == "evidence":
             from .investigate import investigate
@@ -310,17 +360,22 @@ class ResearchHub:
             path, limit = entry["path"], min(MAX_LOG_BYTES, remaining)
             try:
                 before, metadata_error = None, None
-                if hasattr(self.files, "snapshot_stat"):
+                bound_log = bool(binding and entry.get("source") == "project")
+                if bound_log:
+                    from .projects import read_bound_tail
+                    data, size, before = read_bound_tail(binding, entry, limit)
+                elif hasattr(self.files, "snapshot_stat"):
                     try:
                         before = self.files.snapshot_stat(path)
                     except OSError as exc:
                         metadata_error = exc
-                data, size = self._tail(path, limit)
+                if not bound_log:
+                    data, size = self._tail(path, limit)
                 if metadata_error is not None:
                     raise metadata_error
                 if not isinstance(data, bytes) or len(data) > limit:
                     raise ValueError("file adapter returned an oversized or invalid log excerpt")
-                after = self.files.snapshot_stat(path) if before is not None else None
+                after = before if bound_log else self.files.snapshot_stat(path) if before is not None else None
                 if before is not None and before != after:
                     raise ValueError("log changed during inspection; refresh Evidence")
                 if isinstance(size, bool) or not isinstance(size, int) or size < len(data):
@@ -362,7 +417,7 @@ class ResearchHub:
         source, job = None, context["job"]
         selected_file_id = None
         overrides = dict(settings.get("planning_overrides", {}).get(view, {}))
-        path = settings.get("planning_file", "")
+        path = settings.get("planning_files", {}).get(view) or settings.get("planning_file", "")
         if path:
             if self.files.remote:
                 return {"status": "incomplete", "summary": "Local planning files require running Tower on the cluster."}
@@ -372,18 +427,34 @@ class ResearchHub:
                 max_bytes = MAX_BYTES
             with self.lock:
                 cached = self.planning_source
-            if cached and cached[0] == path and cached[3] == max_bytes and time.monotonic() - cached[1] < self.interval:
+            if cached and cached[0] == path and cached[3] == max_bytes and time.monotonic() - cached[1] < self.refresh_interval():
                 source = cached[2]
             else:
-                source = load_json(path, max_bytes=max_bytes)
+                if context.get("binding"):
+                    from .projects import read_bound_json
+                    key = view if settings.get("planning_files", {}).get(view) else "planning"
+                    source = read_bound_json(context["binding"], path, key=key, max_bytes=max_bytes)
+                else:
+                    source = load_json(path, max_bytes=max_bytes)
                 with self.lock:
                     if not self.closed and context["generation"] == self.generation:
                         self.planning_source = (path, time.monotonic(), source, max_bytes)
+            if (context.get("binding") and view in ("predict", "forecast", "blockers", "tradeoffs")
+                    and isinstance(source, dict) and source.get("job_id") is not None
+                    and str(source["job_id"]) != str(context["jid"])):
+                raise ValueError("planning job identity does not match the selected run")
             if isinstance(source, list) and view in ("forecast", "blockers"):
                 source = {"jobs": source}
             if isinstance(source, dict) and "jobs" in source and view in ("predict", "forecast", "blockers", "tradeoffs"):
                 rows = source["jobs"]
                 current = context["jid"] if any(str(record(j).get("id") or record(j).get("job_id")) == str(context["jid"]) for j in rows) else overrides.get("job_id")
+                if context.get("binding"):
+                    # A run-specific report must not fall back to a sibling job.
+                    current = context["jid"]
+                    if current is None:
+                        raise ValueError("selected run has no scheduler job identity for this planning job list")
+                    if source.get("job_id") is not None and str(source["job_id"]) != str(current):
+                        raise ValueError("planning job identity does not match the selected run")
                 job = select_job(rows, current or source.get("job_id"), pending=view in ("forecast", "blockers"))
                 selected_file_id = record(job).get("id") or record(job).get("job_id")
         elif self.demo and view in ("predict", "tradeoffs", "scaling", "workflow"):

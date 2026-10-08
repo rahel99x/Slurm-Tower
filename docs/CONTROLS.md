@@ -73,6 +73,7 @@ Use the [runbook](runbook.md#3-adapt-setup-to-your-environment) for other setup 
 | `Ctrl-G` | Open universal jump search |
 | `Ctrl-P` | Open the Research workspace picker |
 | `Ctrl-A` | Open Activity |
+| F10 | Open or close the terminal toolbar menu |
 | `:` | Open the command palette |
 | `/` | Filter the current list or search the current log |
 | `?` | Open contextual searchable help |
@@ -100,6 +101,36 @@ The [navigation guide](guides/navigation.md) describes Forward, saved locations,
 Use `:tab IDENTIFIER` to open a page by command.
 Use `:workspace NAME` to open a Research workspace.
 Use `:view NAME` to select an Analytics or Research subview.
+
+## Terminal toolbar and update slider
+
+The first display row contains `x`, File, Edit, View, Help, and the update-rate control.
+The toolbar remains available above pages and overlays.
+Menu actions use the same commands and reviews as their keyboard equivalents.
+
+| Control | Function |
+| --- | --- |
+| Click a menu label, F10, or `:menu [File\|Edit\|View\|Help]` | Open a menu |
+| Left / Right, Tab / Shift-Tab in a menu | Select the previous or next menu |
+| `f`, `e`, `v`, `h` in a menu | Select File, Edit, View, or Help |
+| Up / Down, page keys, Home / End in a menu | Select a menu choice |
+| Enter / Space, or click a menu choice | Activate the choice |
+| Esc, `q`, F10, or click outside the menu | Dismiss the menu |
+| Click `x` | Exit Tower |
+| Click or drag the update track | Choose a requested multiplier from 1x to 50x |
+| Click `[-]` / `[+]`, or use the wheel over the update control | Decrease or increase the multiplier by one |
+| Click the multiplier, or View → Focus update-rate slider | Focus slider keyboard controls |
+| Arrows, `-` / `+` with slider focus | Adjust the multiplier by one |
+| Home / End with slider focus | Select 1x or 50x |
+| Esc / Enter / Tab with slider focus | Return input to the page |
+| `:rate [N\|reset]` | Inspect the multiplier, set 1–50, or restore 1x |
+| `:about` | Open version and toolbar instructions |
+
+A menu choice ending in `...` opens an editable command prompt.
+Unavailable choices report their required context.
+Clicking outside a menu dismisses it without activating the underlying page.
+See [Live workbench](guides/live-workbench.md#use-the-terminal-toolbar) for every menu choice.
+See [Update rate](guides/live-workbench.md#set-the-update-rate) for source limits and saved preferences.
 
 ## Navigation, settings, and input
 
@@ -190,6 +221,28 @@ Click column headings for cascading sorts.
 Use `:sortby [TABLE] COLUMN [asc|desc|off]` for the equivalent command.
 Use `:sortby [TABLE] clear` to remove every rule in that table.
 See [Tables](guides/tables.md) for sort editing, column controls, filters, marks, and drill-down.
+
+### Jobs Details buttons
+
+Jobs provides Inspector, Logs, Investigate, and Off buttons in Details.
+The buttons inspect the selected active or recent job without leaving Jobs.
+
+| Control | Function |
+| --- | --- |
+| Click a Details button | Select its mode and focus the button row |
+| Arrow keys with button focus | Select and activate the previous or next button |
+| Home / End with button focus | Select Inspector or Off |
+| Enter / Tab with button or content focus | Toggle focus between buttons and content |
+| Up / Down, page keys with content focus | Scroll inspection content or retained log lines |
+| Left / Right with Logs content focus | Select the previous or next exact log file |
+| Home / End with Logs content focus | Reach the oldest retained line or follow the tail |
+| Click a log source button | Read that file and focus log content |
+| Esc | Return input to the job rows |
+| `:jobpanel [inspector\|logs\|investigate\|off\|focus]` | Select a mode or focus the buttons without a mouse |
+
+Use the full Logs page for complete-file search and copying.
+Off hides inspection content and starts no new log or evidence reads.
+See [Live workbench](guides/live-workbench.md#inspect-a-job-inside-jobs) for procedures and layout behavior.
 
 ## Table inspection
 
@@ -472,17 +525,17 @@ Job-changing commands open a review; scripted changes require `--yes`.
 
 | Family | Commands | Reference |
 | --- | --- | --- |
-| Help and command discovery | `help`, `commands`, `quit` | [Navigation](guides/navigation.md) |
+| Help and command discovery | `menu`, `about`, `help`, `commands`, `quit` | [Live workbench](guides/live-workbench.md#use-the-terminal-toolbar) |
 | Main navigation | `tab`, `view`, `workspace`, `workspaces`, `back`, `forward`, `jump`, `location` | [Navigation](guides/navigation.md) |
 | Settings and field inspection | `settings`, `keybindings`, `explain`, `peek` | [Navigation](guides/navigation.md) |
 | Panel layout | `density`, `focus`, `maximize`, `layout`, `panel-scroll` | [Workbench](WORKBENCH.md#shape-your-workspace) |
 | Table inspection | `sort`, `sortby`, `sorteditor`, `headers`, `columns`, `facet`, `filters`, `where`, `savedview`, `viewpicker`, `jobgroups`, `filter`, `days`, `historyrange`, `recents`, `marked`, `freeze`, `jobactions`, `node`, `drill` | [Tables](guides/tables.md) |
 | Job selection and annotations | `mark`, `unmark`, `pin`, `tag`, `untag`, `note`, `compare` | [Reference](reference.md#keys-remappable-in-the-config) |
 | Job changes | `cancel`, `hold`, `release`, `requeue`, `top`, `resubmit`, `chain` | [Reference](reference.md#keys-remappable-in-the-config) |
-| Selected job | `inspect`, `log`, `investigate`, `advise` | [Workbench](WORKBENCH.md#navigate-and-issue-commands) |
+| Selected job | `jobpanel`, `inspect`, `log`, `investigate`, `advise` | [Live workbench](guides/live-workbench.md#inspect-a-job-inside-jobs) |
 | Log files and presentation | `find`, `wrap`, `bookmark`, `logview`, `logpan`, `loggroup`, `logpreview`, `logalign`, `logdiff`, `logjson`, `logfold`, `logunread` | [Log display](guides/log-view.md) |
 | Complete-file log inspection | `logolder`, `logsearch`, `logsearchmode`, `logresults`, `loggoto`, `logmark`, `logmarks` | [Log search](guides/log-search.md) |
-| Sampling and profiles | `refresh`, `source`, `gpu`, `bell`, `profile`, `theme` | [Reference](reference.md#remote-mode-and-profiles) |
+| Sampling and profiles | `rate`, `refresh`, `source`, `gpu`, `bell`, `profile`, `theme` | [Live workbench](guides/live-workbench.md#set-the-update-rate) |
 | Activity and output | `activity`, `notifications`, `task`, `export`, `exports`, `copy` | [Operations](guides/operations.md) |
 | Completion and alert delivery | `inbox`, `alerts` | [Operations](guides/operations.md) |
 | Terminal diagnostics | `terminaldoctor`, `terminaltest` | [Operations](guides/operations.md) |
@@ -517,6 +570,7 @@ Run `tower --help` for the parser's complete current syntax.
 | `--user USER` | Select the scheduler user |
 | `--account ACCOUNT` | Select the account used for aggregate views |
 | `--interval SECONDS` | Set the job sampling interval |
+| `--rate MULTIPLIER` | Set the startup fetching multiplier from 1 to 50; override the saved preference |
 | `--days DAYS` | Set the accounting lookback window |
 | `--no-gpu` | Disable live GPU sampling |
 | `--bell` | Ring on observed job starts |

@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tower native captured submission preflight v1",
+  "description": "The intact JSON result of tower run prepare. run.json paths.submit binds it for read-only Research/Submit display; it cannot arm a scheduler action.",
+  "type": "object",
+  "required": [
+    "schema",
+    "script",
+    "workdir",
+    "argv",
+    "command",
+    "overrides",
+    "script_sha256",
+    "parameters",
+    "inputs",
+    "outputs",
+    "resources",
+    "directives",
+    "issues",
+    "valid",
+    "plan_id"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "const": "tower.submission-plan/v1"
+    },
+    "script": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "workdir": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "argv": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      }
+    },
+    "command": {
+      "type": "string",
+      "maxLength": 131072
+    },
+    "resources": {
+      "type": "object"
+    },
+    "directives": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object"
+      }
+    },
+    "overrides": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      }
+    },
+    "parameters": {
+      "type": "object"
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 256
+    },
+    "outputs": {
+      "type": "array",
+      "maxItems": 256
+    },
+    "script_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "required": [
+          "level",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "level": {
+            "enum": [
+              "error",
+              "warning",
+              "info"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        }
+      }
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "workflow_node_id": {
+      "type": "string"
+    },
+    "symbolic_dependencies": {
+      "type": "array"
+    },
+    "workflow_orchestration": {
+      "type": "string"
+    },
+    "requires_workflow_orchestration": {
+      "type": "boolean"
+    },
+    "submittable": {
+      "type": "boolean"
+    }
+  },
+  "$comment": "Use the actual native producer. Native loading checks plan_id against the review fields; schema validation alone cannot verify this digest or script freshness. Native plan save allows 2 MiB, but automatic research attachment uses the smaller 1 MiB report budget. Preserve captured source-machine paths without changing the protected fields."
+}

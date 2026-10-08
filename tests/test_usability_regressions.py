@@ -240,14 +240,20 @@ def test_recent_rows_show_current_tags_without_visiting_history(dashboard, heigh
     assert app.tab == "jobs"
     dashboard.store.tags = {"700": {"tags": ["first"]}}
     app.filter = "#first"
-    rows, _ = dashboard.views.compose(dashboard.store.snapshot(), app, 240, height)
-    selected_row = next(row_text(row) for row in rows if "700" in row_text(row) and "failed experiment" in row_text(row))
+    rows, hits = dashboard.views.compose(dashboard.store.snapshot(), app, 240, height)
+    # A wide Details pane may share a physical row with a table header. Use
+    # the exact recent-row hit rather than text from an unrelated right pane.
+    selected_row = (row_text(rows[next(y for y, kind, jid in hits if kind == "recent" and jid == "700")])
+                    if height is not None else next(row_text(row) for row in rows
+                    if "700" in row_text(row) and "failed experiment" in row_text(row)))
     assert "first" in selected_row
     # Replace the mapping, so a tag cache retained from a prior frame cannot pass.
     dashboard.store.tags = {"700": {"tags": ["revised"]}}
     app.filter = "#revised"
-    rows, _ = dashboard.views.compose(dashboard.store.snapshot(), app, 240, height)
-    selected_row = next(row_text(row) for row in rows if "700" in row_text(row) and "failed experiment" in row_text(row))
+    rows, hits = dashboard.views.compose(dashboard.store.snapshot(), app, 240, height)
+    selected_row = (row_text(rows[next(y for y, kind, jid in hits if kind == "recent" and jid == "700")])
+                    if height is not None else next(row_text(row) for row in rows
+                    if "700" in row_text(row) and "failed experiment" in row_text(row)))
     assert "revised" in selected_row
     assert "first" not in selected_row
     assert app.tab == "jobs"

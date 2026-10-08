@@ -151,6 +151,8 @@ def scoped_state_dir(backend, cfg: Config, user: str) -> str:
 
 def build(args, cfg: Config) -> Session:
     state_namespace(cfg)
+    from .refresh_rate import validate_multiplier
+    cfg.set("polling_multiplier", validate_multiplier(args.rate if args.rate is not None else cfg.get("polling_multiplier", 1)))
     user = args.user or cfg["user"] or os.environ.get("USER", "")
     if args.fake and not user:
         user = "alex"
@@ -192,6 +194,9 @@ def build(args, cfg: Config) -> Session:
     from .research import ResearchHub
     app.research = ResearchHub(cfg, files, demo=args.fake, slurm=slurm,
                               settings={k: getattr(args, k) for k in ("metrics_file", "contract", "workdir", "passport", "planning_file")})
+    if args.rate is not None:
+        from .refresh_rate import set_multiplier
+        set_multiplier(app, args.rate)
     from .forecast import ForecastTracker
     app.research.forecasts = ForecastTracker()
     app.research.forecast_restore_warning = ""
@@ -244,6 +249,8 @@ def settle(s: Session, tab: str = None):
         s.sampler.want_detail = s.app.selected_id
     s.sampler.last_run["details"] = s.sampler.last_run["account"] = 0.0
     s.sampler.round(wait=True)
+    from .project_ui import settle as settle_project
+    settle_project(s.app, s.store.snapshot())
     if tab:
         s.app.tab = tab
     if tab == "research":
@@ -291,7 +298,7 @@ def scripted(args, s: Session) -> int:
         print(f"wait-for: {e}", file=sys.stderr)
         return 1
     t0 = time.time()
-    poll = max(0.5, args.poll or s.sampler.intervals["jobs"])
+    poll = max(0.5, args.poll or s.sampler.effective_interval("jobs"))
     while True:
         s.sampler.round(wait=True)
         try:
@@ -320,6 +327,8 @@ def parse(argv):
     ap.add_argument("--user", default="")
     ap.add_argument("--account", default="", help="account whose overall load the header shows (default: the first of sshare -U)")
     ap.add_argument("--interval", type=float, default=0.0, help="seconds between squeue samples (config: intervals.jobs)")
+    ap.add_argument("--rate", type=int, choices=range(1, 51), metavar="1..50", default=None,
+                    help="live update speed multiplier; overrides saved preference, with source limits and backoff retained")
     ap.add_argument("--days", type=float, default=0.0, help="history window in days (config: history_days)")
     ap.add_argument("--no-gpu", action="store_true", help="no nvidia-smi sampling")
     ap.add_argument("--bell", action="store_true", help="ring when one of your jobs starts")
@@ -376,7 +385,7 @@ def parse(argv):
         i = run_index
         pre, post, cmd = argv[:i], argv[i + 1:], []
         switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--unicode", "--no-color", "--no-gpu", "--bell", "--paused", "--json"}
-        valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval"}
+        valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval", "--rate"}
         batch_command = bool(post and post[0] and any(c.startswith(post[0]) for c in ("resubmit", "prepare", "submit", "array")))
         from .research_commands import COMMANDS, command_value_option
         from .planning_commands import COMMANDS as planning_commands
@@ -495,7 +504,7 @@ def main(argv=None):
             sampler.start()
             try:
                 if args.watch or not sys.stdout.isatty():
-                    screen.run_watch(app, views, sampler, store, actions, cfg, interval=max(0.5, sampler.intervals["jobs"]), color=color)
+                    screen.run_watch(app, views, sampler, store, actions, cfg, interval=max(0.5, sampler.effective_interval("jobs")), color=color)
                 else:
                     screen.run_curses(app, views, sampler, store, actions, cfg)
             except KeyboardInterrupt:

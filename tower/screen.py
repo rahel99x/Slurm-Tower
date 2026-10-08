@@ -297,13 +297,17 @@ def _navigation_context(app):
     analysis = getattr(app, "analysis_state", {})
     table = getattr(app, "table_tools_state", {})
     page = getattr(app, "log_tools_state", {}).get("page") or {}
+    toolbar = getattr(app, "toolbar_state", {}) or {}
+    panels = getattr(app, "job_panel_state", {}) or {}
     return (app.mode, app.tab, analysis.get("modal"), analysis.get("chart_job"), analysis.get("metric"),
             table.get("modal"), table.get("tab"), table.get("node"), table.get("action_job"),
             page.get("path"), page.get("start"), page.get("end"), page.get("snapshot", {}).get("ident"),
             getattr(app, "research_job_id", None),
             getattr(app, "research_view", None), getattr(app, "analytics_job", None),
             getattr(app, "log_job", None), getattr(logs, "path", None),
-            getattr(logs, "browser", None))
+            getattr(logs, "browser", None),
+            toolbar.get("menu"), toolbar.get("focus"), toolbar.get("cursor"), toolbar.get("panel"),
+            panels.get("mode"), panels.get("focus"))
 
 
 def _batchable_input(app, event, curses):
@@ -361,6 +365,19 @@ def _apply_input(app, event, hits, curses):
         return
     _, mx, my, _, bstate = mouse
     shift = bool(bstate & getattr(curses, "BUTTON_SHIFT", 0))
+    from .toolbar import handle_mouse as toolbar_mouse
+    button = ("wheel-up" if bstate & getattr(curses, "BUTTON4_PRESSED", 0) else
+              "wheel-down" if bstate & getattr(curses, "BUTTON5_PRESSED", 0) else
+              "right" if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)) else
+              "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED) else
+              "release" if bstate & getattr(curses, "BUTTON1_RELEASED", 0) else "motion")
+    if isinstance(getattr(app, "toolbar_state", None), dict) and toolbar_mouse(app, my, mx, button=button, shift=shift):
+        return
+    if button in ("wheel-up", "wheel-down"):
+        from .job_panels import contains as in_job_panel
+        if in_job_panel(app, my, mx):
+            app.click(my, mx, hits, button=button, shift=shift)
+            return
     if app.mode == "terminal_probe":
         button = ("wheel-up" if bstate & getattr(curses, "BUTTON4_PRESSED", 0) else
                   "wheel-down" if bstate & getattr(curses, "BUTTON5_PRESSED", 0) else
@@ -372,7 +389,8 @@ def _apply_input(app, event, hits, curses):
         app.click(my, mx, hits, button="right")
     elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
         origin = app.tab
-        double_target = (not shift and app.mode == "main" and any(
+        from .job_panels import contains as in_job_panel
+        double_target = (not shift and app.mode == "main" and not in_job_panel(app, my, mx) and any(
             y == my and ((origin == "jobs" and kind in ("job", "recent"))
                          or (origin == "history" and kind == "fin")
                          or (origin == "log" and app.logs.browser and kind == "log_file"))
@@ -485,6 +503,11 @@ def run_curses(app, views, sampler, store, actions, cfg):
             if ov:
                 for y, x0, segs in ov:
                     paint(y, x0, segs, width, height)
+            if height > 0:
+                # A small terminal can put an ordinary modal on row zero.
+                # Global controls retain their visible and clickable geometry.
+                from .toolbar import render_bar
+                paint(0, 0, render_bar(views, app, width), width, height)
             started = sum(1 for e in snap["events"] if e.get("kind") == "started" and not e.get("old"))
             if app.bell and started > rung:
                 curses.beep()

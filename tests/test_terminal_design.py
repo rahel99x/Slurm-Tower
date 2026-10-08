@@ -105,8 +105,8 @@ def test_replay_tab_mouse_coordinates_follow_inserted_scrub_bar(dashboard):
     store, app, views, actions = dashboard
     app.replay = SimpleNamespace(clock=SimpleNamespace(now=lambda: 1000, t0=900, t1=1100, frac=0.5, speed=1, paused=True, at_end=False))
     rows, hits = views.compose(store.snapshot(), app, 160, 30, actions)
-    assert "replay" in L.row_text(rows[2])
-    assert all(y == 3 for y, _, _, _ in app.tab_hits)
+    assert "replay" in L.row_text(rows[3])
+    assert all(y == 4 for y, _, _, _ in app.tab_hits)
     target = next(h for h in app.tab_hits if h[3] == "sources")
     app.click(target[0], target[1], hits)
     assert app.tab == "sources"
@@ -155,7 +155,8 @@ def test_demo_label_is_visible_before_metrics(dashboard):
     store, app, views, actions = dashboard
     app.demo = True
     rows, _ = views.compose(store.snapshot(), app, 80, 24, actions)
-    assert "[DEMO]" in L.row_text(rows[0])
+    assert "File" in L.row_text(rows[0]) and "Updates" in L.row_text(rows[0])
+    assert "[DEMO]" in L.row_text(rows[1])
 
 
 def test_selected_panel_distinguishes_unknown_metrics_from_real_zero(dashboard):

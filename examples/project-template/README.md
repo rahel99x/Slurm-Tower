@@ -1,8 +1,8 @@
 # Portable Tower project template
 
 Copy this directory into a new project. The application writes portable JSON;
-it does not need Tower installed. Tower reads explicitly selected files using
-its existing terminal views and commands. The complete convention and schemas
+it does not need Tower installed. Tower attaches exact job-bound reports through
+bounded runtime discovery or explicit selection. The complete convention and schemas
 are in [the project integration guide](https://github.com/rahel99x/Slurm-Tower/blob/main/docs/PROJECT_STANDARD.md).
 The included MIT `LICENSE` permits reuse and adaptation; retain its notice when
 copying the reporting code.
@@ -21,6 +21,8 @@ tower --fake --config .tower/config.json --workdir "$PWD/runs/demo-001" \
 `--fake` supplies explicitly simulated scheduler data for this local walkthrough;
 the selected application metrics and outputs are real. On CARC, omit `--fake`
 and add `--profile carc` to use the supplied profile with slower polling.
+On native Fedora Slurm, omit `--fake` and use the supplied `--profile desktop`.
+The desktop profile shows CPU partitions and keeps desktop saved state separate.
 
 The example computes a real approximation of pi, reports actual error and
 progress, and records measured wall time and coordinator CPU time. A local run
@@ -55,6 +57,8 @@ your-project/
     logs.json                      Grouped index of exact per-run log locations
     metrics.jsonl                  Append-only native Tower metric rows
     summary.json                   One terminal summary per attempt
+    reports/planning.json           Optional shared native planning source
+    reports/<view>.json             Optional exact per-view source; declared in run.json
     outputs/results.json           Scientific outputs declared by the contract
     logs/stdout.log                 Application stdout
     logs/stderr.log                 Application stderr
@@ -72,12 +76,14 @@ project, also put deterministic code-tree, dataset, environment, and scientific
 configuration digests in `parameters`; exclude timestamps, run paths, and retry
 identifiers. Do not pool runs after changing work or inputs.
 
-`run.json` and `summary.json` are reporting conventions. Tower 3.0's explicit
-`:project /absolute/project` and `:runs` picker discovers bounded direct run
-inventories; `:run select RUN_ID` attaches the selected attempt's metrics, logs,
-and output contract without borrowing another job's identity. Tower does not
-scan arbitrary folders or choose an active run automatically. The config also
-supports explicit metrics, output checks, and a selected planning aggregate.
+`run.json` and `summary.json` are reporting conventions. For automatic attachment,
+publish the actual `job_id` and use a scheduler WorkDir at this project root or
+beneath its standard `runs/<run_id>` directory. Tower discovers bounded direct
+inventories and attaches only an unambiguous exact selected-job match.
+`:project /absolute/project` registers a root, and `:run select RUN_ID` selects
+an attempt explicitly. Local runs without job IDs and duplicate requeued IDs
+need explicit selection. No arbitrary filesystem search or newest-run guess is used.
+The config also supports explicit metrics, output checks, and a planning aggregate.
 The config also binds the native `logs.json` index, so application logs can be
 opened independently of the scheduler's launch stdout/stderr.
 
@@ -94,6 +100,73 @@ Always launch these examples from the project root. In this config:
 - Contract output paths are relative to the selected `--workdir`.
 - Each manifest `paths` entry is relative to its own run directory. Its
   `provenance.script` is relative to the project root.
+
+The reporter creates an empty `reports/` directory and declares
+`paths.planning = reports/planning.json` plus `paths.submit = reports/submit.json`.
+Missing reports stay missing until actually produced. An exact per-view
+declaration overrides the shared planning source. Runtime polling follows
+appends and atomic replacements without changing the current tab.
+
+## Report sources for all twelve Research views
+
+Use the [complete per-view source table](https://github.com/rahel99x/Slurm-Tower/blob/main/docs/PROJECT_STANDARD.md#files-for-every-research-view)
+when adapting another application. These are the producer locations:
+
+| View ID | This template's location | Producer |
+| --- | --- | --- |
+| `experiment` | `runs/<run_id>/metrics.jsonl` | Actual numeric application measurements and progress |
+| `arrays` | One distinct attempt directory per exact array task | Actual scheduler task identities/states; no separate arrays file |
+| `evidence` | `logs.json`, its exact files, and `metrics.jsonl` | Application/worker logs plus real scheduler observations |
+| `artifacts` | `.tower/contracts/outputs.v1.json` and declared run outputs | Project-owned output expectations and actual files |
+| `passport` | `runs/<run_id>/passports/` | Genuine Tower provenance capture |
+| `submit` | `runs/<run_id>/reports/submit.json` | Intact offline `tower run prepare` result; read-only attachment |
+| `predict` | `runs/<run_id>/reports/predict.json` | Native planning bundle of selected summaries and query |
+| `forecast` | `runs/<run_id>/reports/forecast.json` | Actual queued-job and pre-start prediction observations |
+| `blockers` | `runs/<run_id>/reports/blockers.json` | Actual matching job/controller/node/partition snapshot |
+| `tradeoffs` | `runs/<run_id>/reports/tradeoffs.json` | Explicit comparable configurations and measured histories |
+| `scaling` | `runs/<run_id>/reports/scaling.json` | Controlled repeats or an actual native scaling recipe |
+| `workflow` | `runs/<run_id>/reports/workflow.json` | Real dependency recipe and timing evidence when known |
+
+Use the dependency-free publisher for actual native source objects:
+
+```python
+from reporting import publish_research
+
+publish_research(run, "predict", actual_selected_bundle)
+publish_research(run, "workflow", actual_workflow_recipe)
+```
+
+It writes the exact per-run location and updates its inventory path. It checks
+finite bounded JSON, native headers, an explicit source job ID, and native
+preflight fingerprints. Tower performs scientific and semantic validation.
+This helper does not create measurements, infer scheduler observations, or
+launch a job. Recipes and summaries remain project-owned evidence.
+
+Publish an existing native source through the same helper:
+
+```bash
+python3 reporting.py report workflow .tower/definitions/workflow.json --run runs/demo-001
+python3 reporting.py export runs/demo-001 --reference runs/demo-001 \
+  --output runs/demo-001/reports/planning.json
+```
+
+The one-step workflow remains useful without invented durations. The single
+local summary still cannot support calibrated resource intervals. Forecast and
+blocker source files must contain actual native input observations, not the
+analysis JSON printed by the offline forecast/blocker commands.
+
+For Submit evidence, capture an actual preflight:
+
+```bash
+preflight_file=$(mktemp)
+tower run prepare jobs/run.sbatch --workdir "$PWD" > "$preflight_file"
+python3 reporting.py report submit "$preflight_file" --run runs/demo-001
+rm "$preflight_file"
+```
+
+Review the preparation result. A blocked native preflight can be displayed;
+a plain command error is refused. The captured report never arms submission.
+Prepare again interactively for a current reviewed scheduler action.
 
 For artifact checks use the same config and run directory with
 `--research-view artifacts`. For aggregate resource analysis use

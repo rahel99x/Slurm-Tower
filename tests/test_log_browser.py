@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 
 import pytest
 
@@ -126,7 +127,12 @@ class BrowserDashboard:
 
 @pytest.fixture
 def browser(tmp_path):
-    return BrowserDashboard(tmp_path)
+    dashboard = BrowserDashboard(tmp_path)
+    try:
+        yield dashboard
+    finally:
+        if dashboard.app.research:
+            dashboard.app.research.close()
 
 
 @pytest.mark.parametrize("ascii_", [True, False])
@@ -306,6 +312,23 @@ def test_grouped_catalog_and_open_file_remain_bound_during_live_queue_changes(br
     assert browser.app.logs.entries[browser.app.logs.browser_cursor]["id"] == entry["id"]
     assert browser.sampler.selected[-1] == "77"
     browser.app.handle("enter")
+    # Discovery now shares the background file reader. A cold file stays
+    # visibly pending until the next UI iterations publish its exact snapshot.
+    text, _, _ = browser.render()
+    assert "Reading the selected log in the background" in text
+    assert "ACTIVE_JOB_900_SHOULD_NOT_APPEAR" not in text
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        browser.app.tick()
+        text, _, _ = browser.render()
+        assert browser.app.log_job == "77"
+        assert browser.app.logs.path == str(browser.paths["component"])
+        assert "ACTIVE_JOB_900_SHOULD_NOT_APPEAR" not in text
+        if browser.markers[str(browser.paths["component"])] in text:
+            break
+        time.sleep(.005)
+    else:
+        pytest.fail("The pinned job's background log did not become visible")
     browser.assert_file(browser.paths["component"])
 
 

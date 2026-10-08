@@ -23,6 +23,7 @@ DEFAULTS: Dict[str, Any] = {
     "gpu_sampling": True,                # nvidia-smi inside the job's allocation
     "bell": False,                       # terminal bell when one of your jobs starts
     "animations": True,                  # short completion motion and two History pulses (reader is static)
+    "polling_multiplier": 1,             # requested live update speed, whole number 1..50; source floors and backoff still apply
     "workspace": {"density": "comfortable", "split": 45},
     "intervals": {                       # seconds between samples of each source
         "jobs": 2.0, "starts": 10.0, "live": 10.0, "gpu": 5.0, "nodes": 15.0, "partitions": 60.0, "finished": 60.0,
@@ -86,6 +87,7 @@ log_max_mb = 32                 # the Log tab keeps the last this many MB of a f
 gpu_sampling = true             # nvidia-smi inside the job's allocation (each sample is a small job step)
 bell = false                    # terminal bell when one of your jobs starts
 animations = true               # short completion motion and two History pulses; false keeps static notices
+polling_multiplier = 1           # live update speed 1..50; base intervals, source limits and error backoff stay intact
 
 # partitions = ["gpu", "main"]  # cluster tab: partitions to show (empty: those with GPUs or with your jobs)
 weather = true                  # queue weather on the Cluster tab: pending work ahead per partition, sbatch --test-only probes

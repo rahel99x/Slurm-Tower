@@ -444,6 +444,8 @@ def _snapshot_tail(files, path, limit):
 def _request(app, key, fn, *, ttl=META_TTL):
     """Coalesce presentation requests into the shared existing single worker."""
     state = _state(app)
+    from .refresh_rate import file_interval, multiplier
+    ttl = file_interval(ttl, multiplier(app), remote=bool(getattr(app.logs.files, "remote", False)))
     cached = state["cache"].get(key)
     if cached and time.monotonic() - cached[0] < ttl:
         state["cache"].move_to_end(key)

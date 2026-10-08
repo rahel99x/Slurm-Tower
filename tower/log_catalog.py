@@ -302,6 +302,7 @@ class LogCatalog:
     def __init__(self, files=None, *, ttl=30, max_entries=8):
         self.files = files or LocalFiles()
         self.ttl = max(0, float(ttl))
+        self.polling_multiplier = 1
         self.max_entries = max(1, min(8, int(max_entries)))
         self.cache = OrderedDict()
         self.generation = 0
@@ -347,7 +348,9 @@ class LogCatalog:
                 self.generation += 1
                 self.active = key
             entry = self.cache.get(key)
-            if not force and entry and time.monotonic() - entry[0] < self.ttl:
+            from .refresh_rate import file_interval
+            interval = file_interval(self.ttl, self.polling_multiplier, remote=bool(getattr(self.files, "remote", False)))
+            if not force and entry and time.monotonic() - entry[0] < interval:
                 self.cache.move_to_end(key)
                 return entry[1]
             if self.pending is not None:

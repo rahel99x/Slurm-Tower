@@ -393,7 +393,8 @@ def _remote(spec: dict[str, Any], root: str, files: Any) -> dict[str, Any]:
 
 
 def validate_contract(contract: dict[str, Any], root: str | os.PathLike[str], *, files: Any = None,
-                      max_bytes: int = DEFAULT_MAX_BYTES, max_entries: int = DEFAULT_MAX_ENTRIES) -> dict[str, Any]:
+                      max_bytes: int = DEFAULT_MAX_BYTES, max_entries: int = DEFAULT_MAX_ENTRIES,
+                      root_fd: int | None = None) -> dict[str, Any]:
     """Validate declared outputs without executing user code.
 
     Bytes are a shared read budget, not a per-file allowance. Oversized files and
@@ -411,7 +412,7 @@ def validate_contract(contract: dict[str, Any], root: str | os.PathLike[str], *,
                                         "bytes_read": 0,
                                         "max_entries": max_entries if type(max_entries) is int and 0 <= max_entries <= MAX_OUTPUTS else None,
                                         "entries_checked": 0}}
-    root_fd = None
+    supplied_root_fd, root_fd = root_fd, None
     try:
         specs = _contract(contract)
         if type(max_bytes) is not int or not 0 <= max_bytes <= MAX_READ_BYTES:
@@ -427,7 +428,10 @@ def validate_contract(contract: dict[str, Any], root: str | os.PathLike[str], *,
             if not PurePosixPath(root_path).is_absolute() or ".." in PurePosixPath(root_path).parts:
                 raise ValueError("remote root must be an absolute path without traversal")
         elif specs and max_entries:
-            root_fd = os.open(Path(root_path).resolve(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            root_fd = (os.dup(supplied_root_fd) if supplied_root_fd is not None
+                       else os.open(Path(root_path).resolve(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+            if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+                raise ValueError("confined output root must be a directory")
         for index, spec in enumerate(specs):
             if index >= max_entries:
                 output = _finish({"path": spec["path"], "checks": [_check("inspection", "not_checked", "Shared entry budget exhausted")],

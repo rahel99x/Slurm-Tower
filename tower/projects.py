@@ -14,6 +14,7 @@ import math
 import os
 import re
 import stat
+from contextlib import contextmanager
 
 from .artifacts import _contract, _json, _open_local, _signature, validate_contract
 from .remote import LocalFiles
@@ -28,7 +29,8 @@ MAX_TREE_NODES = 2048
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _STATES = set("CREATED SUBMITTED PENDING RUNNING COMPLETING COMPLETED FAILED CANCELLED TIMEOUT OUT_OF_MEMORY NODE_FAIL PREEMPTED BOOT_FAIL DEADLINE REQUEUED REQUEUE_FED REQUEUE_HOLD RESIZING REVOKED SIGNALING SPECIAL_EXIT STAGE_OUT STOPPED SUSPENDED UNKNOWN INTERRUPTED".split())
 _FIELDS = set("schema project_id run_id experiment_id attempt name state job_id start end submit paths provenance parameters results metadata description resources input_size".split())
-_PATHS = set("metrics summary outputs logs passports stdout stderr log_index".split())
+_PATHS = set("metrics summary outputs logs passports stdout stderr log_index planning predict forecast blockers tradeoffs scaling workflow submit".split())
+PLANNING_PATHS = ("predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow")
 
 
 def _local(files):
@@ -119,7 +121,20 @@ def _root(path):
     if not isinstance(path, str) or not path or "\x00" in path:
         raise ValueError("project root must be an explicit filesystem path")
     root = os.path.abspath(os.path.expanduser(path))
-    return root, os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    # Pin every parent, including the supplied root's ancestors. A valid
+    # inventory cannot turn a replaced project directory into an external read.
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in root.split("/"):
+            if not component:
+                continue
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return root, fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _directory(root_fd, path):
@@ -232,6 +247,183 @@ def discover_project(path, *, files=None):
     return result
 
 
+def job_project_roots(workdir, registered=""):
+    """Choose at most two lexical roots; never search arbitrary ancestors.
+
+    A job normally runs at ROOT, or beneath ROOT/runs/RUN_ID. Other layouts
+    require an explicit :project ROOT registration.
+    """
+    roots = []
+    if isinstance(registered, str) and registered:
+        roots.append(os.path.abspath(os.path.expanduser(registered)))
+    if isinstance(workdir, str) and workdir.startswith("/") and len(workdir) <= 4096 and all(c.isprintable() for c in workdir):
+        path = os.path.normpath(workdir)
+        parts = path.split("/")
+        indexes = [index for index in range(1, len(parts) - 1) if parts[index] == "runs" and _IDENT.fullmatch(parts[index + 1])]
+        root = "/".join(parts[:indexes[-1]]) or "/" if indexes else path
+        if root not in roots:
+            roots.append(root)
+    return roots[:2]
+
+
+def discover_job(roots, job_id, *, files=None):
+    """Bind a single exact scheduler identity, refusing partial/ambiguous scans."""
+    _local(files)
+    _text(job_id, "job_id")
+    if not isinstance(roots, (list, tuple)) or len(roots) > 2:
+        raise ValueError("automatic discovery permits at most two explicit roots")
+    projects_found, matches, warnings = [], [], []
+    incomplete = False
+    seen = set()
+    for root in roots:
+        try:
+            found = discover_project(root, files=files)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            warnings.append(f"Project unavailable: {root}: {exc}")
+            incomplete = True
+            continue
+        if found["root"] in seen:
+            continue
+        seen.add(found["root"])
+        projects_found.append(found)
+        incomplete = incomplete or found["limited"] or bool(found["warnings"])
+        warnings.extend(found["warnings"][:32])
+        matches.extend((found["root"], run["run_id"]) for run in found["runs"] if run.get("job_id") == job_id)
+    result = {"status": "missing", "selected": None, "projects": projects_found, "warnings": warnings[:64],
+              "summary": f"No run inventory declares exact job_id {job_id}"}
+    if incomplete:
+        result.update(status="incomplete", summary="Project discovery is incomplete; choose a run explicitly with :runs")
+    elif len(matches) > 1:
+        result.update(status="ambiguous", summary=f"{len(matches)} inventories declare job_id {job_id}; choose the actual attempt with :runs")
+    elif len(matches) == 1:
+        selected = select_run(*matches[0], files=files)
+        if selected["binding"].get("job_id") != job_id:
+            result.update(status="changed", summary="Run identity changed during discovery; waiting for the next refresh")
+        else:
+            result.update(status="ready", selected=selected, summary=f"Linked job {job_id} to run {matches[0][1]}")
+    return result
+
+
+@contextmanager
+def bound_run_root(binding):
+    """Pin and revalidate one exact run before a report read, including parents."""
+    if not isinstance(binding, dict):
+        raise ValueError("an exact run binding is required")
+    root, project_fd = _root(binding.get("project_root"))
+    run_fd = None
+    try:
+        run_id = binding.get("run_id")
+        if not isinstance(run_id, str) or not _IDENT.fullmatch(run_id):
+            raise ValueError("invalid bound run ID")
+        expected = os.path.join(root, "runs", run_id)
+        if binding.get("run_root") != expected:
+            raise ValueError("bound run root is outside its project")
+        current = _inventory(project_fd, run_id)["inventory"]
+        if current.get("job_id") != binding.get("job_id"):
+            raise ValueError("run job identity changed; waiting for automatic rebinding")
+        run_fd = _directory(project_fd, "runs/" + run_id)
+        yield project_fd, run_fd, current
+    finally:
+        if run_fd is not None:
+            os.close(run_fd)
+        os.close(project_fd)
+
+
+def bound_relative(binding, path, current, *, key=None):
+    """Check a current declaration before reading a cached absolute source."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError("bound report path must be absolute")
+    relative = os.path.relpath(path, binding["run_root"]).replace(os.sep, "/")
+    relative_path(relative)
+    if key is not None and current.get("paths", {}).get(key) != relative:
+        raise ValueError("run report declaration changed; waiting for automatic rebinding")
+    return relative
+
+
+def read_bound_json(binding, path, *, key=None, max_bytes=1048576):
+    """Read stable JSON through an exact run descriptor, never its replaced path."""
+    with bound_run_root(binding) as (_, run_fd, current):
+        relative = bound_relative(binding, path, current, key=key)
+        data, _ = _read(run_fd, relative, max_bytes)
+        value = _json(data)
+        from .planning_io import _bounded
+        _bounded(value, 32)
+        if not isinstance(value, (dict, list)):
+            raise ValueError("run report JSON must be an object or array")
+        return value
+
+
+def read_bound_passport(binding, path):
+    with bound_run_root(binding) as (_, run_fd, current):
+        relative = bound_relative(binding, path, current)
+        directory = current.get("paths", {}).get("passports", "")
+        if not binding.get("passport_explicit") and (not directory or not relative.startswith(directory + "/")):
+            raise ValueError("passport is outside the current declared passport directory")
+        data, _ = _read(run_fd, relative, 1048576)
+        value = _json(data)
+        from .provenance import validate
+        validate(value)
+        if binding.get("job_id") is not None and value.get("job_id") not in (None, binding["job_id"]):
+            raise ValueError("passport job identity does not match the selected run")
+        return value
+
+
+def read_bound_artifacts(binding, *, files=None):
+    _local(files)
+    with bound_run_root(binding) as (project_fd, run_fd, _):
+        data, _ = _read(project_fd, ".tower/contracts/outputs.v1.json", 262144)
+        return validate_contract(_json(data), binding["run_root"], files=files, root_fd=run_fd)
+
+
+def read_bound_tail(binding, entry, max_bytes):
+    """Read one currently declared log through pinned, no-symlink parents."""
+    if type(max_bytes) is not int or not 0 <= max_bytes <= 1048576:
+        raise ValueError("project evidence log read is bounded to one MiB")
+    with bound_run_root(binding) as (_, run_fd, current):
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise ValueError("project log path must be absolute")
+        allowed = {os.path.join(binding["run_root"], current["paths"][key])
+                   for key in ("stdout", "stderr") if current.get("paths", {}).get(key)}
+        manifest = current.get("paths", {}).get("log_index")
+        if manifest:
+            data, _ = _read(run_fd, manifest, 262144)
+            document = _json(data)
+            if document.get("run_id", binding["run_id"]) != binding["run_id"]:
+                raise ValueError("log manifest identity does not match selected run")
+            from .log_catalog import _manifest_entries
+            allowed.update(item["path"] for item in _manifest_entries(document, binding.get("job_id"), os.path.join(binding["run_root"], manifest)))
+        if path not in allowed:
+            raise ValueError("project log is no longer declared by this exact run")
+        relative = os.path.relpath(path, binding["run_root"]).replace(os.sep, "/")
+        external_root = None
+        try:
+            if relative == ".." or relative.startswith("../"):
+                external_root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                root_fd, relative = external_root, path.lstrip("/")
+            else:
+                root_fd = run_fd
+            relative_path(relative)
+            fd, parent, name = _open_local(root_fd, relative)
+            try:
+                before = os.fstat(fd)
+                length = min(before.st_size, max_bytes)
+                data = os.pread(fd, length, max(0, before.st_size - length))
+                named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if len(data) != length or _signature(before) != _signature(os.fstat(fd)) or _signature(before) != _signature(named):
+                    raise ValueError("project log changed during evidence read")
+                identity = {"size": before.st_size, "ident": (before.st_dev, before.st_ino), "updated": (before.st_mtime_ns, before.st_ctime_ns)}
+                return data, before.st_size, identity
+            finally:
+                os.close(fd)
+                os.close(parent)
+        finally:
+            if external_root is not None:
+                os.close(external_root)
+
+
 def _declared_path(root_fd, root, value, *, directory=False):
     relative_path(value)
     try:
@@ -260,15 +452,27 @@ def select_run(path, run_id, *, files=None):
         run_root = os.path.join(root, "runs", run_id)
         run_fd = _directory(root_fd, "runs/" + run_id)
         binding = {"project_root": root, "run_root": run_root, **{key: inventory.get(key) for key in ("run_id", "experiment_id", "attempt", "state", "job_id")},
-                   "metrics_file": "", "log_manifest": "", "stdout": "", "stderr": "", "contract": "", "passport": ""}
+                   "metrics_file": "", "log_manifest": "", "stdout": "", "stderr": "", "contract": "", "passport": "",
+                   "planning_file": "", "planning_files": {}, "submit_file": ""}
         result = {"status": "ready", "run": run, "binding": binding, "logs": [], "warnings": []}
         paths = inventory.get("paths", {})
-        for key, target in (("metrics", "metrics_file"), ("log_index", "log_manifest"), ("stdout", "stdout"), ("stderr", "stderr")):
+        for key, target in (("metrics", "metrics_file"), ("log_index", "log_manifest"), ("stdout", "stdout"), ("stderr", "stderr"),
+                            ("planning", "planning_file"), ("submit", "submit_file")):
             if key not in paths:
                 continue
             try:
                 absolute, state = _declared_path(run_fd, run_root, paths[key])
                 binding[target] = absolute
+                if state != "ready":
+                    result["warnings"].append(f"{key}: {state}")
+            except (OSError, ValueError) as exc:
+                result["warnings"].append(f"{key}: binding refused ({exc})")
+        for key in PLANNING_PATHS:
+            if key not in paths:
+                continue
+            try:
+                absolute, state = _declared_path(run_fd, run_root, paths[key])
+                binding["planning_files"][key] = absolute
                 if state != "ready":
                     result["warnings"].append(f"{key}: {state}")
             except (OSError, ValueError) as exc:

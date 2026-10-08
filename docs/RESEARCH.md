@@ -3,7 +3,7 @@
 Tower's Research workspace connects application progress, run evidence, batch
 submission, arrays, failure investigation, and declared outputs. Everything runs
 in a terminal. The scientific result comes from your application; Tower reads
-explicit reports and scheduler evidence rather than guessing convergence from
+job-bound reports and scheduler evidence rather than guessing convergence from
 CPU or GPU utilization.
 
 For a common layout and reporting contract across your own projects, use the
@@ -13,16 +13,51 @@ For a common layout and reporting contract across your own projects, use the
 
 | View | What it answers | Source |
 | --- | --- | --- |
-| Experiment | Is the application progressing, and how are its metrics changing? | Explicit JSONL metrics |
-| Passport | Which script, code revision, inputs, and requests describe this run? | Local bounded capture |
-| Submit | What exactly will be submitted, and what issues need attention? | Script directives and argv options |
+| Experiment | Is the application progressing, and how are its metrics changing? | The selected run's JSONL metrics |
+| Passport | Which script, code revision, inputs, and requests describe this run? | Verified immutable native capture |
+| Submit | What does the preflight show, and what issues need attention? | Current prepared plan or read-only captured native report |
 | Arrays | Which observed tasks succeeded, failed, or remain active? | Current queue and accounting |
 | Evidence | Which observations support a possible failure explanation? | Job records and selected log excerpts |
 | Artifacts | Do the declared outputs meet their checks? | An explicit JSON contract |
+| Resources | Which measured resource requests fit comparable work? | Selected summaries and an explicit prediction query |
+| Forecast | What evidence supports a queued job's possible start? | Actual scheduler predictions and observed outcomes |
+| Blockers | Which observed scheduler constraints explain pending work? | Matching job, controller, node, partition, and health facts |
+| Tradeoffs | How do comparable resource choices affect runtime and wait? | Explicit candidates, comparable history, and actual queue observations |
+| Scaling | How does controlled work change across worker configurations? | Measured repeat records or a reviewable scaling recipe |
+| Workflow | How do real dependencies and timing evidence shape a pipeline? | Native dependency recipe and measured timing intervals |
 
 Start at a particular view with `--tab research --research-view VIEW`, where
-`VIEW` is `experiment`, `passport`, `submit`, `arrays`, `evidence`, or `artifacts`.
+`VIEW` is `experiment`, `passport`, `submit`, `arrays`, `evidence`, `artifacts`,
+`predict`, `forecast`, `blockers`, `tradeoffs`, `scaling`, or `workflow`.
 The regular Jobs and History views remain the place to select a job.
+
+## Attach every Research view to its job
+
+Place each attempt under `PROJECT/runs/<run_id>` and publish its actual Slurm
+`job_id` in `run.json`. Make the job's scheduler WorkDir the project root or a
+directory beneath that standard attempt. A known project root registered with
+`:project PROJECT` also enables bounded discovery. Tower attaches an
+unambiguous exact match and refreshes declared sources in the background.
+Array task IDs and retry attempts remain distinct. Missing identity, ambiguous
+attempts, or incomplete discovery coverage require explicit selection.
+
+The [per-view source table](PROJECT_STANDARD.md#files-for-every-research-view)
+specifies concrete file locations and fields for all twelve views. Publish
+metrics in `runs/<run_id>/metrics.jsonl`, logs in the declared `logs.json`, and
+planning sources under that attempt's `reports/`. The copied reporter publishes
+and binds native sources without importing Tower:
+
+```bash
+python3 reporting.py report workflow .tower/definitions/workflow.json --run runs/my-run
+python3 reporting.py export runs/prior-run runs/my-run --reference runs/my-run \
+  --output runs/my-run/reports/planning.json
+```
+
+Selecting another job updates the report attachment without opening another
+page. Appends and atomic replacements appear on subsequent polling cycles.
+Discovery does not generate metrics, finalize outcomes, or execute a captured
+submission plan. Scientific fits and failure explanations retain their evidence
+limits. Use the [planning guide](WAVE_TWO.md) for the six analysis views.
 
 ## Try the complete workflow without a cluster
 

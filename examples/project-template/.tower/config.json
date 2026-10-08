@@ -1,5 +1,21 @@
 {
   "profiles": {
+    "desktop": {
+      "host": "",
+      "ssh_user": "",
+      "user": "",
+      "account": "",
+      "partitions": [],
+      "show_all_partitions": true,
+      "state_namespace": "desktop",
+      "gpu_sampling": false,
+      "weather": false,
+      "budget": false,
+      "history_days": 7,
+      "intervals": {"jobs": 2, "starts": 10, "live": 5, "nodes": 10,
+                    "partitions": 30, "finished": 10, "details": 5,
+                    "fin_details": 2, "account": 60}
+    },
     "carc": {
       "gpu_sampling": false,
       "weather": false,

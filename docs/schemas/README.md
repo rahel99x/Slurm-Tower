@@ -9,11 +9,12 @@ files or require a JSON Schema package.
 | File | Applies to | Current Tower reader |
 | --- | --- | --- |
 | [metrics.v1.schema.json](metrics.v1.schema.json) | Each object in `runs/<run_id>/metrics.jsonl` | Native incremental `MetricReader`; Experiment view |
-| [run.v1.schema.json](run.v1.schema.json) | `runs/<run_id>/run.json` | Project-owned descriptive manifest; explicit path binding is required |
+| [run.v1.schema.json](run.v1.schema.json) | `runs/<run_id>/run.json` | Bounded exact-job runtime discovery or explicit project/run selection |
 | [logs.v1.schema.json](logs.v1.schema.json) | `runs/<run_id>/logs.json` | Native grouped Logs catalog, bound by `logs.manifest_file` |
 | [summary.v1.schema.json](summary.v1.schema.json) | `runs/<run_id>/summary.json` | Flat fields consumed after aggregation into a planning bundle |
 | [output-contract.v1.schema.json](output-contract.v1.schema.json) | `.tower/contracts/outputs.v1.json` | Native artifact contract loader and bounded validation |
-| [planning.v1.schema.json](planning.v1.schema.json) | `reports/planning.json` | Native planning-file views and file-based analysis commands |
+| [planning.v1.schema.json](planning.v1.schema.json) | Project or per-run `reports/planning.json`, plus per-view sources | Native planning-file views, exact run bindings, and offline analysis commands |
+| [submission-plan.v1.schema.json](submission-plan.v1.schema.json) | `runs/<run_id>/reports/submit.json` | Intact native preflight shown as read-only Submit evidence |
 
 `planning.v1.schema.json` also includes native workflow and scaling recipe
 definitions as `$defs.workflowRecipe` and `$defs.scalingRecipe`. Standalone
@@ -25,12 +26,21 @@ carry no version or schema marker.
 The separate log index uses `tower.logs/v1`; inventory `paths.log_index` describes
 its location, while native `logs.manifest_file` binds it to the selected workdir.
 
-`run.json` and scientific `results` are project-owned metadata. Tower 2.3 does
-not scan for manifests, follow their paths, display arbitrary result objects, or
-generate aggregate reports automatically. A project reporter creates
-`reports/planning.json` from explicitly selected summaries; Tower reads that
-file through its existing planning commands and flags. Tower passports retain
-their native schema and should be created through Tower's passport commands.
+`run.json` and scientific `results` remain project-owned metadata. Tower reads
+bounded direct inventories beneath a known project root or standard selected
+job WorkDir. Only an unambiguous exact `job_id` match binds automatically;
+explicit selection remains available for local runs and repeated scheduler IDs.
+Optional `paths.planning` and `paths.predict` / `forecast` / `blockers` /
+`tradeoffs` / `scaling` / `workflow` bind confined run-relative native sources.
+The view-specific declaration takes precedence over the shared source.
+
+A project reporter creates aggregates from explicitly selected summaries;
+Tower does not choose a cohort or generate measurements. `paths.submit` binds
+an intact captured native preflight for display. Its `plan_id` is checked, and
+the attachment cannot authorize submission. Tower passports retain their native
+schema and must be created through Tower's provenance commands. See the
+[per-view reporting table](../PROJECT_STANDARD.md#files-for-every-research-view)
+for all twelve views and exact producer locations.
 
 ## Meaning of the shared fields
 

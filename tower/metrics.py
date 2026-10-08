@@ -246,9 +246,42 @@ class MetricReader:
             self._streams.move_to_end(path)
             return self._read_stream(path, stream)
 
+    def read_confined(self, path, binding) -> dict:
+        """Follow a declared run stream after revalidating its exact job identity.
+
+        Both metadata and incremental reads use one anchored regular descriptor.
+        Replacing any project/run parent with a symlink cannot redirect a read.
+        """
+        from .projects import bound_run_root, bound_relative
+        path = os.fspath(path)
+        if not isinstance(path, str) or not path:
+            raise ValueError("metric path must be a nonempty text path")
+        with self._lock:
+            stream = self._streams.get(path)
+            if stream is None:
+                stream = self._streams[path] = _Stream()
+                if len(self._streams) > self.max_streams:
+                    self._streams.popitem(last=False)
+            self._streams.move_to_end(path)
+            with bound_run_root(binding) as (_, root_fd, current):
+                relative = bound_relative(binding, path, current, key="metrics")
+                return self._read_stream(path, stream, root_fd=root_fd, relative=relative)
+
     @contextmanager
-    def _source(self, path):
+    def _source(self, path, *, root_fd=None, relative=None):
         """Pin local stat and reads to one nonblocking regular-file descriptor."""
+        if root_fd is not None:
+            from .artifacts import _open_local
+            fd, parent, _ = _open_local(root_fd, relative)
+            try:
+                current = os.fstat(fd)
+                if not stat.S_ISREG(current.st_mode):
+                    raise OSError(errno.EINVAL, "metric stream changed to a nonregular file before reading")
+                yield current.st_size, (current.st_dev, current.st_ino), lambda offset, length: os.pread(fd, length, offset)
+            finally:
+                os.close(fd)
+                os.close(parent)
+            return
         if type(self.files) is not LocalFiles:
             size, ident = self.files.stat(path)
             yield size, ident, lambda offset, length: self.files.read(path, offset, length)
@@ -266,9 +299,9 @@ class MetricReader:
         finally:
             os.close(fd)
 
-    def _read_stream(self, path, stream) -> dict:
+    def _read_stream(self, path, stream, *, root_fd=None, relative=None) -> dict:
         try:
-            with self._source(path) as (size, ident, read_bytes):
+            with self._source(path, root_fd=root_fd, relative=relative) as (size, ident, read_bytes):
                 return self._read_bytes(path, stream, size, ident, read_bytes)
         except OSError as exc:
             self._error(stream, f"cannot read metrics: {exc}")

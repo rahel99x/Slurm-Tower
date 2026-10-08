@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 from functools import lru_cache
 
-FEATURES = ("workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
+FEATURES = ("refresh_rate", "toolbar", "job_panels", "workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
             "table_ui", "table_tools", "activity_ui", "session_tools", "project_ui",
             "log_workbench", "log_tools", "analysis_ui", "execution_ui")
 
@@ -17,6 +17,14 @@ def modules():
 def initialize(app):
     for feature in modules():
         feature.initialize(app)
+
+
+def tick(app):
+    """Publish and request bounded feature work from the existing UI loop."""
+    for feature in modules():
+        callback = getattr(feature, "tick", None)
+        if callback:
+            callback(app)
 
 
 def restore(app, data):

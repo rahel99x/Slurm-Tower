@@ -32,6 +32,15 @@ my-project/
 │       ├── logs.json            grouped index of exact log locations
 │       ├── metrics.jsonl        live numeric measurements and progress
 │       ├── summary.json         final measurements and scientific results
+│       ├── reports/             optional native Research sources for this job
+│       │   ├── planning.json    shared source for the six planning views
+│       │   ├── predict.json     Resources source, if different from planning
+│       │   ├── forecast.json    actual scheduler prediction observations
+│       │   ├── blockers.json    actual scheduler snapshot and details
+│       │   ├── tradeoffs.json   explicit comparable resource candidates
+│       │   ├── scaling.json    controlled measurements or a scaling recipe
+│       │   ├── workflow.json   actual dependency recipe and timing evidence
+│       │   └── submit.json     captured read-only native submission preflight
 │       ├── outputs/             tables, models, checkpoints, other results
 │       ├── logs/
 │       │   ├── stdout.log
@@ -94,12 +103,14 @@ Launch the documented commands from the project root. Use an absolute run root
 when passing `--workdir`. An artifact contract names exact files, with no globs,
 `..`, absolute paths, or symlink traversal.
 
-Choose a run explicitly. In Tower 3.0, `:project /absolute/project` discovers
-bounded direct `runs/<run_id>/run.json` inventories, and selecting an attempt
-binds its declared reports and logs. It does not guess an active run or scan the
-rest of the project. `run_id` must match the directory and `attempt` must identify
-that execution attempt. Run this picker locally on CARC; SSH file backends cannot
-verify confined project discovery.
+`run_id` must match the attempt directory. `attempt` identifies its retry number.
+The actual `job_id` links that attempt to its selected scheduler job. Job names,
+file modification times, and the newest run directory do not establish identity.
+The next section describes bounded runtime attachment. Explicit
+`:project /absolute/project` and `:run select RUN_ID` remain available for
+local runs and manual selection. Run discovery locally on the Slurm host,
+including CARC or a native Fedora desktop. SSH file backends cannot verify
+confined project discovery.
 
 The existing explicit configuration workflow also works. Tower supports
 `{job_id}` substitution in configured metric and log-index paths; it does not
@@ -107,6 +118,159 @@ expand that token in an artifact workdir. For a project whose directory names ar
 job IDs, `runs/{job_id}/metrics.jsonl` can follow the selected job with the
 project root as the metric workdir. To validate that job's outputs, select its
 concrete run directory as the artifact workdir.
+
+## Automatic attachment and runtime updates
+
+Make the scheduler's actual WorkDir equal the project root, or a directory
+inside `PROJECT/runs/<run_id>`. Tower uses the selected job's cached controller
+or accounting WorkDir to identify that standard location. It also considers a
+project explicitly registered through `:project PROJECT`. It does not walk
+arbitrary ancestors or search home directories, scratch mounts, or other projects.
+
+Under a candidate root, publish this exact identity before emitting metrics:
+
+```json
+{
+  "schema": "tower.run/v1",
+  "run_id": "fit-a1-task7",
+  "experiment_id": "fit",
+  "attempt": 1,
+  "state": "RUNNING",
+  "job_id": "12345_7",
+  "paths": {
+    "metrics": "metrics.jsonl",
+    "summary": "summary.json",
+    "log_index": "logs.json",
+    "outputs": "outputs",
+    "passports": "passports",
+    "planning": "reports/planning.json",
+    "predict": "reports/predict.json",
+    "forecast": "reports/forecast.json",
+    "blockers": "reports/blockers.json",
+    "tradeoffs": "reports/tradeoffs.json",
+    "scaling": "reports/scaling.json",
+    "workflow": "reports/workflow.json",
+    "submit": "reports/submit.json"
+  }
+}
+```
+
+Each path is optional. Declare the sources your project actually publishes.
+A file can appear later; Tower reports its absence until it exists. The template
+declares standard shared-planning and preflight locations without creating fake reports.
+
+Tower attaches only an unambiguous exact `job_id` match. `12345_7` does not match
+the array parent `12345` or task `12345_8`. Missing job identity leaves a local
+project run available for manual selection. Multiple attempts with the same
+requeued job ID require explicit attempt selection; the newest directory is not
+assumed correct. Invalid or capped inventory coverage also prevents a guessed binding.
+
+Inventory discovery, report reads, and binding refresh use background work.
+Selecting another job updates its attachment without opening another page.
+Reports appended or atomically replaced during the session appear on subsequent
+Research polls. Newly published logs, report paths, and passports are rechecked.
+The current tab and line selection remain under the user's control.
+When job details have not supplied WorkDir, register the root explicitly or
+select the attempt; an unavailable scheduler path does not justify a filesystem scan.
+
+Discovery retains the project picker's bounds: 256 attempts, 4,096 directory
+entries, 64 KiB per inventory, and 8 MiB combined inventory bytes. Symlinks,
+devices, traversal, and unstable reads are rejected. Runtime refresh does not
+run project code, create aggregates, finalize application reports, or submit jobs.
+
+All six planning views prefer their corresponding `paths.<view>` declaration.
+Otherwise they use `paths.planning`, then an explicitly configured planning file.
+These are exact run-relative declarations; an explicitly declared missing source
+is reported missing rather than silently replaced by another job's report.
+Old version-1 inventories without these optional keys remain supported.
+
+## Files for every Research view
+
+Use `RUN = PROJECT/runs/<run_id>`. Paths below are recommended concrete locations,
+not recursive search rules. The inventory binds them to the job's exact identity.
+
+| Research view / CLI ID | Place the producer's source here | Declare or supply | Required evidence and update behavior |
+| --- | --- | --- | --- |
+| Experiment / `experiment` | `RUN/metrics.jsonl` | `paths.metrics` | Complete JSONL `t` and finite `metrics`; optional `step`, `phase`, `progress`. Appends update graphs, values, progress, and conditional ETA. |
+| Arrays / `arrays` | Each task's separate `RUN/run.json`, `metrics.jsonl`, and `summary.json` | Exact `job_id` such as `12345_7`; actual scheduler array records | The grid uses live/accounting task identities and states. No `arrays.json` reader exists; task reports attach when that exact task is selected. |
+| Evidence / `evidence` | `RUN/logs.json`, its exact log files, and `RUN/metrics.jsonl` | `paths.log_index`, optional `paths.stdout` / `stderr`, `paths.metrics` | Actual job/details observations and bounded cited log excerpts. Updated indexes and logs are reread; no separate diagnosis JSON is consumed. |
+| Artifacts / `artifacts` | `PROJECT/.tower/contracts/outputs.v1.json`, files under `RUN/outputs/` | Standard project contract and the selected run root | Required/optional exact output paths, formats, bounds, keys, rows, columns, or hashes. Atomic result publication updates validation; final outputs may be missing while running. |
+| Passport / `passport` | `RUN/passports/<native-content-id>.json` | `paths.passports`, or an explicitly selected passport | Genuine immutable Tower provenance records. One verified record can bind automatically; choose explicitly when multiple records exist. Do not synthesize a passport from `run.json`. |
+| Submit / `submit` | `RUN/reports/submit.json` | `paths.submit` | Intact `tower.submission-plan/v1` output from `tower run prepare`, including `plan_id`. Replacement updates read-only preflight display; it does not arm `:submit`. |
+| Resources / `predict` | `RUN/reports/predict.json` | `paths.predict`, otherwise `paths.planning` | Native `tower.planning` object with `history` and an explicit comparable `query`. Measured summaries, including failures, support resource intervals only when evidence permits. |
+| Forecast / `forecast` | `RUN/reports/forecast.json` | `paths.forecast`, otherwise `paths.planning` | Actual pending `jobs`, selected `job_id`, and optional real pre-start `observations` / historical outcomes. Updated source changes the analysis; recorded `now` keeps a historical snapshot frozen. |
+| Blockers / `blockers` | `RUN/reports/blockers.json` | `paths.blockers`, otherwise `paths.planning` | Actual `jobs`, `job_id`, and matching `details`, `partitions`, `nodes`, `share`, `health` when known. Omitted snapshot facts remain unknown. |
+| Tradeoffs / `tradeoffs` | `RUN/reports/tradeoffs.json` | `paths.tradeoffs`, otherwise `paths.planning` | Explicit `candidates`, comparable observed `history`, optional actual `queue_history`, and `coverage`. Unknown runtime or queue behavior stays unestimated. |
+| Scaling / `scaling` | `RUN/reports/scaling.json` | `paths.scaling`, otherwise `paths.planning` | `tower.planning` `scaling` records with actual worker/repeat controls, or a native `tower.scaling` recipe. Report replacement updates analysis or reviewable plans without execution. |
+| Workflow / `workflow` | `RUN/reports/workflow.json` | `paths.workflow`, otherwise `paths.planning` | Native `tower.workflow` recipe, or a planning bundle's `workflow`: node IDs, real dependencies, and measured timing intervals when known. Missing durations stay unknown; no automatic orchestration. |
+
+The following sections specify measurements, final summaries, contracts, and
+planning fields. [The planning guide](WAVE_TWO.md) covers native interpretation,
+confidence, limits, and offline commands for the last six views.
+
+### Publish a per-view source without a Tower dependency
+
+The copied reporter supplies one coordinator API:
+
+```python
+from reporting import publish_research
+
+# selected_bundle contains actual selected summaries and an explicit query.
+publish_research(run, "predict", selected_bundle)
+# actual_recipe contains your real dependency graph, not invented timings.
+publish_research(run, "workflow", actual_recipe)
+```
+
+`publish_research` writes `RUN/reports/<view>.json` atomically, then declares that
+exact location in `run.json.paths`. It supports `planning`, the six planning
+view IDs, and `submit`. Documents must be finite JSON objects below 1 MiB.
+It checks the native version/header, actual job identity when supplied, and an
+intact preflight's review digest. Native Tower readers perform the remaining
+scientific, chronology, topology, and coverage checks. This producer is not a
+replacement for schema validation in the project's CI.
+
+Publish an existing actual source through the same interface:
+
+```bash
+python3 reporting.py report forecast captured-forecast.json --run runs/my-run
+python3 reporting.py report workflow .tower/definitions/workflow.json --run runs/my-run
+```
+
+Forecast and blocker files contain native input observations, not the analyzed
+JSON output printed by `tower run forecast` or `tower run blockers`. Never label
+those analysis results as fresh scheduler observations.
+
+Create a per-run aggregate with explicit attempts:
+
+```bash
+python3 reporting.py export runs/trial-001 runs/trial-002 \
+  --reference runs/trial-002 --output runs/trial-002/reports/planning.json
+```
+
+The default `reports/planning.json` remains a project-level aggregate for
+explicit file commands. A confined inventory cannot point to `../../reports`.
+Publish the selected aggregate into the target attempt's `reports/` to bind it
+automatically. Repeat the export when the intended cohort changes; Tower reads
+the new document but does not choose or aggregate scientific cohorts for you.
+
+### Capture Submit evidence without submitting
+
+Use the actual local preparation command and publish its result through the reporter:
+
+```bash
+preflight_file=$(mktemp)
+tower run prepare jobs/run.sbatch --workdir "$PWD" > "$preflight_file"
+python3 reporting.py report submit "$preflight_file" --run runs/my-run
+rm "$preflight_file"
+```
+
+Review the command's exit status and output: a blocked native preflight is still
+useful evidence, while a non-JSON command error is refused by the reporter.
+The native marker is `tower.submission-plan/v1`; `plan_id` protects its exact
+review fields. Retain captured paths and arguments intact. Source relocation
+does not make a historical plan executable on the new machine. Use `:prepare`
+again for a current interactive submission review; discovered files never
+populate an executable plan or authorize a scheduler action.
 
 ## The files Tower consumes
 
@@ -116,17 +280,18 @@ concrete run directory as the artifact workdir.
 | `metrics.jsonl` | Application | Experiment graphs, latest values, progress, and conditional ETA |
 | `.tower/contracts/outputs.v1.json` | Project author | Artifacts checks exact declared result files |
 | `summary.json` | Application, then optionally scheduler reconciliation | Exported records become prediction/scaling evidence |
-| `reports/planning.json` | Explicit aggregation step | Resources, Tradeoffs, Scaling, and optional captured scheduler/workflow evidence |
+| `reports/planning.json` | Explicit aggregation step | Project-level offline analysis or a per-run shared planning source |
+| `runs/<run_id>/reports/<view>.json` | Project coordinator | Exact job-bound source for one planning view or captured read-only Submit evidence |
 | Recipe JSON | Project author | Scaling/workflow analysis and script preflight |
 | Passport JSON | Tower's provenance API | Passport view and immutable evidence comparisons |
 | `logs.json` | Application's run coordinator | Grouped Logs/Evidence catalog; bound through the selected inventory or explicit `logs.manifest_file` |
 | Job stdout/stderr | Application and batch launcher | Logs uses paths reported by Slurm or retained from actual controller evidence |
-| `run.json` | Application | Project/run picker validates identity and binds declared report paths; contracts can also check its presence/keys |
+| `run.json` | Application | Runtime discovery and project picker validate identity and bind declared reports; contracts can also check its presence/keys |
 
-Tower reads and validates `run.json` through the explicit project picker, reads metrics
-directly, checks declared files through contracts, and analyzes `summary.json` after
-they are placed in a supported planning bundle. The template supplies that
-explicit aggregation step.
+Tower validates `run.json` during bounded discovery or explicit selection,
+reads metrics directly, and checks declared files through contracts. It analyzes
+`summary.json` records after explicit placement in a supported planning bundle.
+The template supplies that aggregation step; discovery does not manufacture it.
 
 ## Log locations: `logs.json`
 
@@ -523,7 +688,7 @@ runtime estimate. Use actual submission/start events and issued predictions.
 
 ## Open and inspect a project
 
-For Tower 3.0's integrated workbench, launch locally on CARC, then enter these
+For the integrated workbench, launch locally on the Slurm host, then enter these
 commands after `:`:
 
 ```text

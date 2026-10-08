@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Tower project-owned run manifest v1",
-  "description": "Project execution-attempt inventory. Tower 3.0's explicit project/run picker reads bounded direct runs/<run_id>/run.json inventories and binds the selected attempt's declared reports; it does not globally discover or guess an active run. Existing explicit flags/configuration remain supported.",
+  "description": "Project execution-attempt inventory. Bounded local discovery attaches only an unambiguous exact scheduler job_id match from a known project root or standard selected job WorkDir. Explicit project/run selection and flags remain supported.",
   "type": "object",
   "required": [
     "schema",
@@ -107,10 +107,66 @@
           "minLength": 1,
           "maxLength": 4096,
           "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
-          "description": "Exact relative log index path, normally logs.json. Tower reads its tower.logs/v1 entries when this execution attempt is explicitly selected through the project/run picker, or when logs.manifest_file is explicitly configured."
+          "description": "Exact relative log index path, normally logs.json. Tower reads tower.logs/v1 entries for an explicitly selected attempt or an unambiguous exact job-bound discovered run; logs.manifest_file remains supported."
+        },
+        "planning": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative native planning source used as fallback for the six planning views."
+        },
+        "predict": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative native source for the predict Research view; takes precedence over paths.planning."
+        },
+        "forecast": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative native source for the forecast Research view; takes precedence over paths.planning."
+        },
+        "blockers": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative native source for the blockers Research view; takes precedence over paths.planning."
+        },
+        "tradeoffs": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative native source for the tradeoffs Research view; takes precedence over paths.planning."
+        },
+        "scaling": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative native source for the scaling Research view; takes precedence over paths.planning."
+        },
+        "workflow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative native source for the workflow Research view; takes precedence over paths.planning."
+        },
+        "submit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$",
+          "description": "Exact run-relative read-only native tower.submission-plan/v1 report; no submission authorization is inferred."
         }
       },
-      "description": "All paths resolve relative to this run directory. Defaults in the guide are metrics.jsonl, summary.json, logs.json (log_index), outputs, logs, passports. No recursive or glob discovery is implied."
+      "description": "Every path resolves relative to this attempt directory. Optional reports normally live under reports/. Existing version-1 inventories remain valid. Confined exact paths never imply recursive or glob discovery."
     },
     "provenance": {
       "type": "object",

@@ -267,7 +267,9 @@ def geometry(app, width: int, height: int, *, has_details: bool = True) -> dict[
         return {}
     if not has_details:
         return {"main": Rect(0, 0, width, height)}
-    if state.maximized or state.density == "focused" or height < 8 or width < 48:
+    native_jobs = (getattr(app, "tab", "") == "jobs" and
+                   isinstance(getattr(app, "job_panel_state", None), dict))
+    if state.maximized or state.density == "focused" or height < 8 or (width < 48 and not native_jobs):
         return {state.focus: Rect(0, 0, width, height)}
     if width >= 110:
         main_width = max(24, min(width - 25, (width - 1) * state.ratio // 100))
@@ -424,6 +426,8 @@ def _preserve_metadata(fitted, original) -> None:
 
 def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = False, groups=None):
     state = initialize(app)
+    native_jobs = (getattr(app, "tab", "") == "jobs" and
+                   isinstance(getattr(app, "job_panel_state", None), dict))
     width, height = max(0, width), max(0, height)
     groups = partition(body, hits, getattr(app, "tab", "jobs")) if groups is None else groups
     has_details = bool(groups["details"]["rows"])
@@ -438,16 +442,36 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
     for panel, rect in rects.items():
         source, source_hits = groups[panel]["rows"], groups[panel]["hits"]
         key = _key(app, panel)
-        padding = 1 if state.density == "comfortable" and rect.width >= 8 and rect.height >= 5 else 0
+        padding = 1 if (state.density == "comfortable" and rect.width >= 8 and rect.height >= 5
+                        and not (native_jobs and panel == "main" and rect.height < 7)) else 0
         source, source_hits = _reflow(source, source_hits, max(0, rect.width - padding * 2))
         # Column headers are buttons, not selectable data rows. Header-only
         # tables must keep their normal panel-scrolling controls.
-        drill_buttons = {"sort_header", "node_row", "node_cell", "partition_row", "user_drill"}
+        drill_buttons = {"sort_header", "node_row", "node_cell", "partition_row", "user_drill", "job_panel_tab", "job_panel_file"}
         data_hits = [(y, kind, value) for y, kind, value in source_hits if kind not in drill_buttons]
         state.interactive_panels[key] = bool(data_hits)
         page = max(0, rect.height - 1 - padding * 2)
         sticky = []
         sticky_hits = []
+        if panel == "details" and page >= 1:
+            # Details mode buttons remain reachable while long inspections or
+            # evidence scroll. Their horizontal hit bounds survive resizing.
+            indices = sorted({y for y, kind, _ in source_hits if kind == "job_panel_tab"})
+            indices = indices[:max(1, min(4, page))]
+            if indices:
+                sticky = [source[index] for index in indices]
+                sticky_map = {index: position for position, index in enumerate(indices)}
+                sticky_hits = [(sticky_map[y], kind, value) for y, kind, value in source_hits
+                               if kind == "job_panel_tab" and y in sticky_map]
+                removed = set(indices)
+                remap, remaining = {}, []
+                for index, row in enumerate(source):
+                    if index not in removed:
+                        remap[index] = len(remaining)
+                        remaining.append(row)
+                source = remaining
+                source_hits = [(remap[y], kind, value) for y, kind, value in source_hits if y in remap]
+                page -= len(sticky)
         if panel == "main" and source_hits and page >= 2:
             headers = [y for y, kind, _ in source_hits if kind == "sort_header"]
             first = min(y for y, _, _ in data_hits) if data_hits else min(headers) + 1 if headers else 0
@@ -508,7 +532,7 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                 if left >= right:
                     return
                 value = (tab, column, rect.x + padding + left, rect.x + padding + right)
-            elif kind == "node_cell":
+            elif kind in ("node_cell", "job_panel_tab", "job_panel_file"):
                 name, left, right = value
                 right = min(right, max(0, rect.width - padding * 2))
                 if left >= right:
@@ -535,6 +559,10 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         canvas[y] = L.clip_row(row, width)
     # A scalar row-only hit cannot describe two selectable items in side-by-side
     # columns. Keep interactive table hits in Main; Details is scrollable text.
+    if getattr(app, "tab", "") == "jobs":
+        rect = rects.get("details")
+        app.job_panel_rect = (Rect(rect.x, rect.y + getattr(app, "body_origin", 0), rect.width, rect.height)
+                              if rect else None)
     return canvas, output_hits
 
 
@@ -548,8 +576,16 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         # A larger source canvas would rasterize charts outside the viewport.
         body, hits = default_renderer(width, height)
         return [_style_row(row, width) for row in body], hits
-    if height is None or not enabled(app) or getattr(app, "tab", "") == "log":
+    native_jobs = (getattr(app, "tab", "") == "jobs" and height is not None and
+                   isinstance(getattr(app, "job_panel_state", None), dict))
+    if height is None or (not enabled(app) and not native_jobs) or getattr(app, "tab", "") == "log":
         return default_renderer(width, height)
+    if native_jobs:
+        # The default Jobs page uses its Details column without requiring a
+        # density preference. Narrow screens stack the same independent panes.
+        rects = geometry(app, width, height, has_details=True)
+        detail_rect = rects.get("details")
+        app.job_panel_target_height = max(1, detail_rect.height - 2) if detail_rect else max(1, height - 2)
     # Native tab renderers already limit their work to their requested height.
     # A larger bounded source keeps lower sections reachable rather than clipped.
     source_height = max(height, MAX_SOURCE_ROWS)
@@ -561,7 +597,8 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
     # away the right half of a table that was composed for a whole terminal.
     by_width = {width: groups}
     for panel, rect in rects.items():
-        padding = 1 if initialize(app).density == "comfortable" and rect.width >= 8 and rect.height >= 5 else 0
+        padding = 1 if (initialize(app).density == "comfortable" and rect.width >= 8 and rect.height >= 5
+                        and not (native_jobs and panel == "main" and rect.height < 7)) else 0
         usable_width = max(0, rect.width - padding * 2)
         if usable_width not in by_width:
             fitted_body, fitted_hits = default_renderer(usable_width, source_height)
@@ -569,6 +606,9 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         groups[panel] = by_width[usable_width][panel]
         _preserve_titles(groups[panel], originals[panel])
         _preserve_metadata(groups[panel], originals[panel])
+        if native_jobs and panel == "details" and groups[panel]["rows"] and _section_title(groups[panel]["rows"][0]) == "selected":
+            groups[panel] = {"rows": groups[panel]["rows"][1:],
+                             "hits": [(y - 1, kind, key) for y, kind, key in groups[panel]["hits"] if y > 0]}
     return transform_body(app, body, hits, width, height, ascii_=getattr(views.g, "ascii", False), groups=groups)
 
 

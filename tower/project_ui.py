@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import os
+import copy
+import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from . import layout as L, projects, artifact_pages
 from .log_presentation import json_page
@@ -19,6 +22,9 @@ def initialize(app):
                 "collapsed": [], "tree": None, "preview": None, "preview_scroll": 0, "restore_run_id": "", "notices_open": False, "notices_scroll": 0,
                 "preview_node": None, "preview_pages": [(0, 0)], "preview_page": 0, "preview_columns": None,
                 "preview_sort": None, "preview_column": 0, "preview_collapsed": [], "preview_format": None}
+    defaults.update(registered_root="", binding_origin="", auto_generation=0, auto_pending=False,
+                    auto_last=0.0, auto_target=None, auto_roots=(), auto_suppressed=None,
+                    auto_status="idle", auto_summary="")
     for key, value in defaults.items():
         state.setdefault(key, value)
     return state
@@ -31,6 +37,7 @@ def restore(app, data):
     root, run_id = data.get("project_root", ""), data.get("run_id", "")
     if isinstance(root, str) and 0 < len(root) <= 4096 and all(ch.isprintable() for ch in root):
         state["root"] = root
+        state["registered_root"] = root
         state["summary"] = "Saved project; :runs reloads and revalidates its inventories"
     if isinstance(run_id, str) and projects._IDENT.fullmatch(run_id):
         state["restore_run_id"] = run_id
@@ -45,6 +52,23 @@ def save(app):
 def selected_binding(app):
     value = initialize(app).get("binding")
     return value if isinstance(value, dict) else None
+
+
+def status_row(app, width, ascii_=False):
+    """Pure cached attachment feedback for Research headers and Jobs panels."""
+    state = initialize(app)
+    binding = state.get("binding")
+    if binding:
+        sources = sum(bool(binding.get(key)) for key in ("metrics_file", "contract", "passport", "planning_file", "submit_file"))
+        sources += len(binding.get("planning_files", {}))
+        text = (f" {'Auto-linked' if state.get('binding_origin') == 'automatic' else 'Run'} {binding['run_id']}"
+                f" | job {binding.get('job_id') or 'not submitted'} | {sources} declared reports | {len(state.get('logs', []))} logs")
+        style = "cyan"
+    elif state.get("auto_status") in ("ambiguous", "incomplete", "changed", "error", "unavailable"):
+        text, style = " Reports: " + state.get("auto_summary", ""), "yellow"
+    else:
+        return []
+    return [(L.cut(clean(text, ascii_), max(0, width), ascii_), style)]
 
 
 def log_entries(app):
@@ -104,18 +128,24 @@ def cycle_log_entry(app):
     return chosen
 
 
-def clear_binding(app):
+def clear_binding(app, *, suppress_auto=False):
     """Leave the chosen run without losing the project inventory or manual paths."""
     state = initialize(app)
+    if suppress_auto:
+        state["auto_suppressed"] = _target_job(app)
+    state["auto_generation"] += 1
+    state["auto_pending"] = False
     backup = state.pop("binding_backup", None)
     if backup is not None and app.research is not None:
-        app.research.configure(**backup["settings"])
+        original = dict(backup.get("settings_extra", {}), **backup["settings"])
+        app.research.settings = copy.deepcopy(original)
+        app.research.configure()
         app.research.passport, app.research.passport_diff = backup["passport_record"], backup["passport_diff"]
         app.cfg["logs"]["manifest_file"] = backup["log_manifest"]
     if state.get("binding") or backup is not None:
         from .log_tools import before_source_change
         before_source_change(app)
-        state.update(binding=None, logs=[], run_warnings=[], tree=None, preview=None, restore_run_id="")
+        state.update(binding=None, binding_origin="", logs=[], run_warnings=[], tree=None, preview=None, restore_run_id="")
         app.research_job_id, app.log_job, app.log_record = None, None, None
         if app.research is not None and backup is None:
             app.research.passport, app.research.passport_diff = None, None
@@ -137,13 +167,15 @@ def command_names():
 def _hub(app):
     if app.research is None:
         from .research import ResearchHub
-        app.research = ResearchHub(app.cfg, files=getattr(app, "files", None))
+        files = getattr(app, "files", None) or getattr(getattr(app, "logs", None), "files", None)
+        app.research = ResearchHub(app.cfg, files=files)
     return app.research
 
 
 def _task(app, title, worker, complete, failed=None):
     state = initialize(app)
     hub = _hub(app)
+    cancel_automatic(app)
     if state["busy"]:
         app.fail("A project read is already running; wait for its result")
         return False
@@ -170,14 +202,34 @@ def _task(app, title, worker, complete, failed=None):
     return True
 
 
+def cancel_automatic(app):
+    """Give an explicit project/research command priority without blocking."""
+    state = initialize(app)
+    hub = getattr(app, "research", None)
+    if state.get("auto_pending"):
+        pending = getattr(hub, "pending", None)
+        if pending and pending[1] is state.get("auto_callback"):
+            if hasattr(hub, "cancel_task"):
+                hub.cancel_task(pending[1])
+            else:
+                hub.pending = None
+        state["auto_generation"] += 1
+        state["auto_pending"] = False
+        state["auto_last"] = time.monotonic()
+
+
 def _refresh_runs(app, root):
     state = initialize(app)
     hub = _hub(app)
+    state["registered_root"] = os.path.abspath(os.path.expanduser(root))
+    state["auto_generation"] += 1
+    state["auto_last"] = 0.0
 
     def complete(value):
         previous = state.get("binding") or {}
         same_root = value["root"] == state.get("root")
         state.update(root=value["root"], runs=value["runs"], warnings=value["warnings"], status=value["status"], summary=value["summary"], limited=value["limited"])
+        state["auto_last"] = time.monotonic()
         if not same_root:
             if previous:
                 clear_binding(app)
@@ -189,26 +241,54 @@ def _refresh_runs(app, root):
     return _task(app, "Read project inventories", lambda: projects.discover_project(root, files=hub.files), complete)
 
 
-def _apply_run(app, value):
+def _apply_run(app, value, *, automatic=False, refresh=False):
     from .log_tools import before_source_change
-    before_source_change(app)
     state = initialize(app)
     binding = value["binding"]
+    previous = state.get("binding") or {}
+    current_entry = resolve_log_entry(app) if previous else None
+    source_changed = (any(previous.get(key) != binding.get(key) for key in
+                          ("project_root", "run_id", "job_id", "metrics_file", "contract", "run_root", "passport",
+                           "planning_file", "planning_files", "submit_file", "log_manifest", "stdout", "stderr"))
+                      or state.get("logs", []) != value["logs"])
+    identity_changed = any(previous.get(key) != binding.get(key) for key in ("project_root", "run_id", "job_id"))
+    new_log_paths = {entry["path"] for entry in value["logs"]}
+    reset_logs = (not refresh or identity_changed
+                  or bool(current_entry and current_entry.get("path") not in new_log_paths))
+    if reset_logs:
+        before_source_change(app)
     if "binding_backup" not in state:
         hub = _hub(app)
-        state["binding_backup"] = {"settings": {key: hub.settings.get(key, "") for key in ("metrics_file", "contract", "workdir", "passport")},
+        keep = {key: hub.settings.get(key, "") for key in ("metrics_file", "contract", "workdir", "passport")}
+        keep.update({key: hub.settings[key] for key in ("planning_file", "planning_files", "planning_overrides", "submit_file")
+                     if hub.settings.get(key)})
+        state["binding_backup"] = {"settings": copy.deepcopy(keep),
+                                   "settings_extra": copy.deepcopy({key: value for key, value in hub.settings.items() if key not in keep}),
                                    "log_manifest": app.cfg["logs"].get("manifest_file", ""), "passport_record": hub.passport, "passport_diff": hub.passport_diff}
-    state.update(binding=binding, logs=value["logs"], run_warnings=value["warnings"], restore_run_id=binding["run_id"], tree=None, preview=None,
-                 summary=f"Selected {binding['run_id']} / attempt {binding['attempt']} / {binding['state']}")
-    _hub(app).configure(metrics_file=binding["metrics_file"], contract=binding["contract"], workdir=binding["run_root"], passport=binding["passport"])
+    state.update(binding=binding, logs=value["logs"], run_warnings=value["warnings"], restore_run_id=binding["run_id"],
+                 summary=f"{'Linked' if automatic else 'Selected'} {binding['run_id']} / attempt {binding['attempt']} / {binding['state']}")
+    if source_changed or not refresh:
+        state.update(tree=None, preview=None)
+    if not refresh:
+        state["binding_origin"] = "automatic" if automatic else "manual"
+        state["auto_last"] = time.monotonic()
+    hub = _hub(app)
+    settings = {"metrics_file": binding["metrics_file"], "contract": binding["contract"], "workdir": binding["run_root"], "passport": binding["passport"],
+                "planning_file": binding.get("planning_file", ""), "planning_files": copy.deepcopy(binding.get("planning_files", {})),
+                "submit_file": binding.get("submit_file", ""), "planning_overrides": {}}
+    if any(hub.settings.get(key) != value for key, value in settings.items()) or hub.passport != value.get("passport_record"):
+        hub.configure(**settings)
     # A prior run's in-memory passport must never appear under the new identity.
     app.research.passport = value.get("passport_record")
     app.research.passport_diff = None
     app.cfg["logs"]["manifest_file"] = binding["log_manifest"]
-    app.research_job_id = binding["job_id"]
-    app.selected_id = binding["job_id"]
-    app.log_job = binding["job_id"]
-    app.log_record = None
+    if not automatic and not refresh:
+        app.research_job_id = binding["job_id"]
+        app.selected_id = binding["job_id"]
+        app.log_job = binding["job_id"]
+        app.log_record = None
+    if refresh and not reset_logs:
+        return
     app.logs.entry = None
     app.logs.entries = []
     app.logs.browser = False
@@ -218,9 +298,10 @@ def _apply_run(app, value):
     app.logs._buffer_token = None
     app.logs.which, app.logs.file_index = "out", 0
     app.log_selection_expected = False
-    app.tab, app.research_view, app.mode = "research", "experiment" if binding["metrics_file"] else "artifacts", "main"
-    app.research_scroll = 0
-    app.say(state["summary"] + (f"; {len(value['warnings'])} binding notices (:runs)" if value["warnings"] else ""))
+    if not automatic and not refresh:
+        app.tab, app.research_view, app.mode = "research", "experiment" if binding["metrics_file"] else "artifacts", "main"
+        app.research_scroll = 0
+        app.say(state["summary"] + (f"; {len(value['warnings'])} binding notices (:runs)" if value["warnings"] else ""))
 
 
 def _select(app, run_id):
@@ -230,6 +311,147 @@ def _select(app, run_id):
     root = state["root"]
     hub = _hub(app)
     return _task(app, "Bind run " + clean(run_id), lambda: projects.select_run(root, run_id, files=hub.files), lambda value: _apply_run(app, value))
+
+
+def _target_job(app):
+    if getattr(app, "tab", "") in ("jobs", "history"):
+        return getattr(app, "selected_id", None)
+    if getattr(app, "tab", "") in ("log", "logs") and getattr(app, "log_job", None):
+        return app.log_job
+    return getattr(app, "research_job_id", None) or getattr(app, "selected_id", None)
+
+
+def tick(app, snap=None, *, force=False):
+    """Schedule bounded automatic project reads; this hook performs no file IO.
+
+    Call once per UI iteration after selection changes. Completion is published
+    by ResearchHub.poll_task on the UI thread. A selected manual run wins until
+    the user selects a different job; a manual file attachment suppresses
+    automatic binding for that job until selection changes.
+    """
+    state = initialize(app)
+    snap = app.store.snapshot() if snap is None else snap
+    target = _target_job(app)
+    binding = state.get("binding")
+    if binding and target != binding.get("job_id"):
+        # A job change must immediately restore manual paths, even when a slow
+        # prior worker has not returned. Its stale callback cannot reattach.
+        clear_binding(app)
+        if getattr(app, "tab", "") not in ("jobs", "history", "log", "logs"):
+            app.research_job_id = target
+        binding = None
+    if state["auto_suppressed"] is not None:
+        if state["auto_suppressed"] == target:
+            return False
+        state["auto_suppressed"] = None
+    jobs = list(snap.get("jobs", [])) + list(snap.get("finished", [])) + list(snap.get("departed_jobs", {}).values())
+    job = next((job for job in jobs if job.id == target), None)
+    details = snap.get("details", {}).get(target, {}) if target else {}
+    workdir = details.get("WorkDir") or getattr(job, "workdir", "")
+    registered = state.get("registered_root") or (state.get("root") if state.get("binding_origin") == "manual" else "")
+    roots = tuple(projects.job_project_roots(workdir, registered))
+    if binding and state.get("binding_origin") == "manual":
+        roots = (binding["project_root"],)
+    intent = (target, roots)
+    if intent != (state["auto_target"], state["auto_roots"]):
+        state["auto_generation"] += 1
+        state.update(auto_target=target, auto_roots=roots, auto_pending=False, auto_last=0.0)
+    if not roots or state["busy"] or state["auto_pending"]:
+        return False
+    hub = _hub(app)
+    if bool(getattr(hub.files, "remote", False)) or type(hub.files) is not projects.LocalFiles:
+        state.update(auto_status="unavailable", auto_summary="Automatic project binding requires Tower on the machine that owns the project files")
+        return False
+    from .refresh_rate import file_interval
+    interval = file_interval(getattr(hub, "interval", 5.0), getattr(hub, "polling_multiplier", 1), remote=False)
+    now = time.monotonic()
+    if not force and state["auto_last"] and now - state["auto_last"] < interval:
+        return False
+    # Share the existing single research reader without queuing behind a render.
+    future = getattr(hub, "future", None)
+    if getattr(hub, "pending", None) or future is not None and not future.done():
+        return False
+    token, project_token = state["auto_generation"], state["generation"]
+    chosen = copy.deepcopy(binding) if binding else None
+    manual = bool(chosen and state.get("binding_origin") == "manual")
+    files = hub.files
+
+    def worker():
+        if manual:
+            found = projects.discover_project(chosen["project_root"], files=files)
+            selected = projects.select_run(chosen["project_root"], chosen["run_id"], files=files)
+            if selected["binding"].get("job_id") != chosen.get("job_id"):
+                return {"status": "changed", "summary": "Selected run changed job identity; its old sources were detached", "selected": None, "projects": [found]}
+            # Preserve an explicitly chosen passport when multiple records exist.
+            if chosen.get("passport") and not selected["binding"].get("passport"):
+                try:
+                    if chosen.get("passport_explicit"):
+                        selected["binding"]["passport_explicit"] = True
+                    passport = projects.read_bound_passport(selected["binding"], chosen["passport"])
+                    selected["binding"]["passport"] = chosen["passport"]
+                    selected["passport_record"] = passport
+                except (OSError, ValueError):
+                    pass
+            return {"status": "ready", "summary": found["summary"], "selected": selected, "projects": [found]}
+        if target is None:
+            found = projects.discover_project(roots[0], files=files)
+            return {"status": "ready", "summary": found["summary"], "selected": None, "projects": [found]}
+        return projects.discover_job(list(roots), target, files=files)
+
+    def complete(value):
+        if token != state["auto_generation"] or project_token != state["generation"] or _target_job(app) != target:
+            return
+        state["auto_pending"] = False
+        state["auto_last"] = time.monotonic()
+        if isinstance(value, Exception):
+            state.update(auto_status="error", auto_summary="Project refresh: " + clean(value))
+            if selected_binding(app):
+                clear_binding(app)
+            return
+        state.update(auto_status=value["status"], auto_summary=value["summary"])
+        selected = value.get("selected")
+        found = next((project for project in value.get("projects", []) if selected and project["root"] == selected["binding"]["project_root"]), None)
+        if found is None:
+            found = next((project for project in value.get("projects", []) if project["root"] == state.get("root")), None)
+        if found is None and value.get("projects"):
+            found = value["projects"][0]
+        if found:
+            wanted = (state.get("binding") or {}).get("run_id") or state.get("restore_run_id")
+            cursor_id = state["runs"][state["run_cursor"]]["run_id"] if 0 <= state["run_cursor"] < len(state["runs"]) else wanted
+            state.update(root=found["root"], runs=found["runs"], warnings=found["warnings"], limited=found["limited"], status=found["status"])
+            state["run_cursor"] = next((index for index, run in enumerate(found["runs"]) if run["run_id"] == cursor_id), 0)
+        if selected:
+            _apply_run(app, selected, automatic=not manual, refresh=bool(state.get("binding")))
+        elif state.get("binding"):
+            clear_binding(app)
+
+    if not hub.start_task(worker, complete):
+        return False
+    state["auto_callback"] = complete
+    state["auto_pending"] = True
+    state["auto_last"] = now
+    return True
+
+
+def settle(app, snap=None, *, timeout=90):
+    """Offline --once helper: wait for one scheduled read and publish it."""
+    hub = _hub(app)
+    hub.poll_task()
+    tick(app, snap, force=True)
+    pending = getattr(hub, "pending", None)
+    if pending and hasattr(pending[0], "result"):
+        try:
+            pending[0].result(timeout=timeout)
+        except FutureTimeoutError:
+            cancel_automatic(app)
+            clear_binding(app)
+            initialize(app).update(auto_status="error", auto_summary="Project discovery timed out; select the run after its reader finishes")
+        except Exception:
+            # The completion callback publishes a bounded error and restores
+            # prior paths; an unavailable report must not crash --once.
+            pass
+        hub.poll_task()
+    return selected_binding(app)
 
 
 def _outputs(app):
@@ -399,7 +621,7 @@ def run_command(app, args):
             _refresh_runs(app, state["root"])
         elif command == "run":
             if rest == ["clear"]:
-                clear_binding(app)
+                clear_binding(app, suppress_auto=True)
                 app.mode = "main"
                 app.say("Run binding cleared; original research and log paths restored")
             elif len(rest) == 2 and rest[0] == "select":
@@ -413,6 +635,7 @@ def run_command(app, args):
 
                 def complete(passport):
                     binding["passport"] = os.path.join(binding["run_root"], path)
+                    binding["passport_explicit"] = True
                     hub.passport, hub.passport_diff = passport, None
                     hub.configure(passport=binding["passport"])
                     app.tab, app.research_view, app.mode = "research", "passport", "main"

@@ -77,6 +77,24 @@ the existing snapshot and sample history without increasing Slurm polling.
 
 ## Workbench navigation and layout
 
+The first terminal row contains File, Edit, View, Help, the quit `x`, and the update slider.
+F10 opens or closes a menu.
+Left/Right changes menus; Up/Down selects a choice; Enter activates it; Esc dismisses it.
+Parameterized choices open an editable command prompt.
+Menus retain the underlying screen and existing job-action reviews.
+Use `:menu [File|Edit|View|Help]` or `:about` for command entry.
+See [Toolbar menus](guides/live-workbench.md#use-the-terminal-toolbar) for every choice and its operating context.
+
+Jobs Details provides Inspector, Logs, Investigate, and Off buttons.
+Each button reads the exact selected active or recent job.
+Click a button, then use arrow keys to activate another button.
+Enter or Tab toggles focus between the buttons and content.
+Esc returns input to the job rows.
+Use `:jobpanel focus` for keyboard entry.
+Inspector, logs, and investigation evidence update from background snapshots during the session.
+The full Logs page retains complete-file operations.
+See [Inline inspection](guides/live-workbench.md#inspect-a-job-inside-jobs) for every panel control.
+
 `Ctrl-W` or F6 focuses Main/Details panels; arrows/page keys scroll a focused
 Details panel and `z` maximizes it on non-Logs pages. `:maximize` supplies the
 layout action on any page. `:density comfortable|compact|focused` changes
@@ -135,6 +153,11 @@ and `workflow`. `--planning-file PATH` attaches explicit local observations or
 a recipe. `predict`, `forecast` and `blockers` use the selected snapshot job, or
 read an explicit bundle with `--file PATH`; the latter runs without contacting
 Slurm. `tradeoffs`, `scaling` and `workflow` use explicit local files.
+Standard project runs can declare these files under their own `reports/` directory.
+The exact `run.json` job ID connects the selected job to its report paths.
+Tower rechecks those inventories and declared sources in the background.
+Manual selection resolves duplicate attempts; incomplete discovery does not choose an arbitrary run.
+See the [Research source map](PROJECT_STANDARD.md#files-for-every-research-view) for all twelve workspaces.
 Planning preparation is separate from confirmed submission. Prediction ranges
 require matching evidence, queue forecasts require recorded calibration, and
 scaling spread describes measured repeats rather than future-run confidence.
@@ -198,6 +221,7 @@ without motion or pulses. One-frame reports are static as well.
 | `Ctrl-W` / F6, `z` | focus Main/Details; maximize the focused panel (`:maximize` supplies this action on Logs) |
 | `Ctrl-B` / Alt-Left | Back to the previous location, selected identity, filters, and retained scroll context |
 | `Ctrl-P`, `Ctrl-A` | searchable Research workspace picker; retained activity/task results |
+| F10 | File, Edit, View, and Help menus; Left/Right changes menus, Up/Down selects, Enter activates, Esc returns |
 | `E` `C` `J` | export the tab as text; its table as CSV; the marked or selected jobs with their recorded series as JSON |
 | `:` | the command palette (Tab completes): `cancel 123 456`, `hold marked`, `filter rb2`, `sort name`, `days 7`, `tab history`, `view timeline`, `export csv`, `copy 5 12`, `gpu off`, `source sinfo off`, `theme mono`, `log 123`, `profile carc`, `eval n_pending`, and every plugin command |
 | `T` | cycle the theme: default, dark, light, terminal, mono, high contrast, cb (colour-blind safe: blue / orange / magenta for green / red / yellow), reader (no colour, no glyphs: plain text for screen readers and dumb terminals) |
@@ -473,6 +497,18 @@ a failing source backs off (doubling up to five minutes) without touching the ot
 header and on the Sources tab.  Nothing in the screen thread ever waits on Slurm.  A job that leaves the queue shows
 within one `jobs` round.
 
+The intervals above are unmodified defaults.
+Profiles can set different base intervals.
+The top-right update slider and `:rate N` request a multiplier from 1x to 50x.
+The effective interval is the base interval divided by the multiplier, subject to source limits.
+Ordinary sources retain a 0.5-second minimum.
+GPU sampling retains a 5-second minimum; weather and budget retain 30-second minimums.
+Local and remote file readers retain 0.25-second and 1.5-second minimums respectively.
+An existing explicit base interval below a minimum remains unchanged by that minimum.
+At 1x, Tower uses each base interval exactly.
+Failure backoff, source timeouts, and worker limits remain in effect.
+See [Update rate](guides/live-workbench.md#set-the-update-rate) for controls and persistence.
+
 ## Configuration
 
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
@@ -511,6 +547,13 @@ Set `show_all_partitions = true` to include every reported partition in Cluster.
 The default is `false`, which retains the existing relevant-partition display.
 The desktop profile enables this option to show idle CPU-only partitions.
 A nonempty `partitions` list still restricts the displayed partition names.
+
+Set `polling_multiplier` to a whole number from 1 to 50.
+The default is `1`.
+Use `:rate N` or the update slider to change the active preference.
+The saved multiplier uses the same scoped UI state as other preferences.
+A valid saved multiplier overrides the configured launch default.
+An explicit `--rate N` startup argument overrides the saved multiplier.
 
 ## The twenty features at a glance
 

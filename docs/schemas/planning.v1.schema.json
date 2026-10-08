@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Tower native planning bundle v1",
-  "description": "Explicit project-root report input for --planning-file and file-based predict/forecast/blockers/tradeoffs/scaling/workflow commands. Native consumers inspect only fields relevant to their selected view. This format does not auto-discover run directories.",
+  "description": "Native source for explicit --planning-file, file-based analysis commands, or run.json paths.planning / per-view bindings. Publishers select actual measured histories, recipes and scheduler observations; attaching a file does not generate observations.",
   "type": "object",
   "required": [
     "version",

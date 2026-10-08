@@ -204,12 +204,19 @@ class App:
         if self.sampler:
             inspector = self.mode == "analysis" and getattr(self, "analysis_state", {}).get("modal") == "inspect"
             detail_mode = self.mode == "details" or inspector
-            jid = self.detail_id if detail_mode else (self.log_job or self.selected_id) if self.tab == "log" else self.selected_id if self.tab == "jobs" and self.selected_job() else None
+            jid = (self.detail_id if detail_mode else
+                   (self.log_job or self.selected_id) if self.tab == "log" else
+                   (self.research_job_id or self.selected_id) if self.tab == "research" else
+                   self.selected_id if self.tab in ("jobs", "history") else None)
             self.sampler.select(jid)
             self.sampler.gpu_sampling = self.gpu
             self.sampler.marks = set(self.marks)
-            self.sampler.select_fin(self.detail_id if (detail_mode and self.detail_id and not self.store.job(self.detail_id)) else None)
+            fin_target = self.detail_id if detail_mode else (
+                self.selected_id if self.tab == "jobs" and self.mode == "main"
+                and getattr(self, "job_panel_state", {}).get("mode") != "off" else None)
+            self.sampler.select_fin(fin_target if fin_target and not self.store.job(fin_target) else None)
             self.sampler.select_trace(self.analytics_job if (self.tab == "analytics" and self.analytics_view == "job") else None)
+        workbench.tick(self)
 
     @property
     def animations_enabled(self):
@@ -533,6 +540,11 @@ class App:
             self.quit = True
             return
         self.sync_selection()
+        toolbar_state = getattr(self, "toolbar_state", {})
+        if key == "f10" or toolbar_state.get("menu") is not None or toolbar_state.get("panel") or toolbar_state.get("focus") == "rate":
+            from .toolbar import handle_key as toolbar_key
+            if toolbar_key(self, key):
+                return
         palette_contexts = {"analysis", "session_alerts", "terminal_diagnostics", "log_tools_page", "log_tools_results", "log_tools_marks",
                             "project_preview", "export_preview", "locations_picker", "value_peek", "field_explanation", "layout", "columns"}
         list_context = (self.mode == "session_inbox" and not self.session_tools_state.get("filtering")
@@ -1646,9 +1658,9 @@ class App:
     def click(self, y: int, x: int, hits: Sequence, button: str = "left", shift: bool = False) -> None:
         """A mouse click: on the tab bar switches tabs, on a row selects it; a right or shift click extends the
         line selection from the last click to this row."""
+        self.last_hits = list(hits)
         if workbench.handle_mouse(self, y, x, button, shift):
             return
-        self.last_hits = list(hits)
         from .table_tools import handle_click_hit
         if handle_click_hit(self, y, x, hits, button=button, shift=shift):
             return
