@@ -18,7 +18,7 @@ Use those guides with the metric and architecture definitions in this reference.
 ```bash
 tower                        # interactive (curses); q quits, ? lists the keys
 tower --fake                 # a simulated cluster: try it anywhere, no Slurm needed
-tower --unicode              # explicitly prefer block and braille visuals
+tower --unicode              # explicitly prefer Unicode block graphics and symbols
 tower --ascii --no-color     # portable fallback for a limited terminal
 tower --watch --bell         # the animated non-interactive screen (Ctrl-C exits)
 tower --once --tab history   # one frame of text, e.g. to paste into a chat
@@ -44,8 +44,8 @@ the same arguments.
 
 The dashboard uses solid Unicode blocks for resource bars, distributions, and
 timelines. Fractional blocks preserve values at one eighth of a character's width.
-Filled area charts use gradient blocks; braille telemetry curves use two by four
-dots per character for finer detail. Measured resource heatmaps use opaque cells,
+Filled area charts use gradient blocks; telemetry curves use connected opaque
+quadrants with two by two subcells per character. Measured resource heatmaps use opaque cells,
 an explicit scale, and numeric readings. Composition strips carry a legend with
 the underlying counts or allocation values.
 `--unicode` explicitly selects the Unicode preference; `--ascii` selects portable
@@ -62,14 +62,38 @@ when `COLORTERM` is `truecolor` or `24bit`, or `$TERM` names a direct-color term
 otherwise it selects 256 or basic colors. Labels, axis values, and state names convey
 the metrics without relying on color alone. `--no-color` and a nonempty
 `NO_COLOR` environment variable suppress colors. `T` or `:theme NAME` selects
-`default`, `dark`, `light`, `terminal`, `mono`, `high`, `cb`, or `reader`:
+`default`, `dark`, `light`, `terminal`, `mono`, `high`, `cb`, `reader`,
+`darcula`, `modnokai`, or `gruvbox-dark`:
 `dark` and `light` provide matching surfaces and readable semantic colors;
 `terminal` retains the terminal's background. `mono` retains the graphics without
 colors; `cb` uses the color-blind palette; `reader` forces plain ASCII text.
+`monokai` is an alias for `modnokai`; `gruvbox` is an alias for `gruvbox-dark`.
+Quoted `"Gruvbox Dark"` and `gruvbox_dark` normalize to `gruvbox-dark`.
+Runtime changes repaint the canvas, blank cells, text, menus, information strips,
+and chart colours with the active palette. Terminal, mono, and reader keep the
+terminal's default background. Colour capacity determines the available approximation.
 
 Charts use collected measurements. Unavailable metrics and gaps remain unknown,
 and time-series detail grows as samples arrive. ASCII `--report` exports remain
 portable plain text regardless of the live dashboard's glyph preference.
+
+Visible metric plots have a cyan dotted pointer crosshair and rectangular XY zoom.
+Press and drag inside the plot, then release inside it, to apply both axis bounds.
+The rectangle must span two columns and one row; labels and buttons are outside capture.
+Use `u` or `0` while pointing at the graph to undo or reset, or use
+`:chartzoom undo|reset` for the last selected or zoomed graph.
+The inspector provides `:chart undo|reset` and corresponding buttons.
+Zoom belongs to the exact metric/source/job/attempt and remains session display state.
+Esc, an outside release, changed source or geometry, menu/dialog/startup, or a
+15-second missing-release timeout cancels an unfinished preview.
+See [Graph interaction](guides/charts.md#zoom-a-rectangular-area) for controls and bounds.
+
+F8 navigation uses the current painted viewport. In Jobs and Recents, focused
+real rows select their exact job for Details. Up and Down scroll or load another
+row at the viewport edge; Right reaches visible Details controls, including
+stacked layouts. Sorting, filtering, and scrolling publish fresh row geometry
+before activation. Focus movement does not activate Quick Advisor or another
+Details button. See [Button navigation](guides/pointer-navigation.md#select-controls-with-the-keyboard).
 
 Roomier terminals reveal resource cards, node heatmaps, and additional charts;
 compact terminals retain the essential tables and labels. These visuals reuse
@@ -82,6 +106,15 @@ The command without an argument reports the enabled preference.
 Preview leaves that preference unchanged.
 The reader theme and `animations = false` skip the welcome.
 One-frame, JSON, scripted, and ANSI watch output also skip it.
+
+Running metric plots can show a per-metric Live toggle and a logarithmic display-window slider.
+The slider spans five seconds at the left to one millisecond at the right.
+Live displays the interval ending at the dashboard's current time, using retained observations.
+It does not change Slurm sampling or synthesize values for a short interval.
+The Live clock requests at most ten scheduled display refreshes per second; input and animations can request other refreshes.
+A valid rectangular zoom turns Live off; cancellation resumes it.
+Completed jobs cannot enable Live.
+See [Live metric windows](guides/charts.md#follow-a-running-metric) for mouse, keyboard, and temporary-token commands.
 
 ## Workbench navigation and layout
 
@@ -249,7 +282,7 @@ scaling spread describes measured repeats rather than future-run confidence.
 | **Jobs** | your running jobs (by start) then pending ones (by priority): partition, state, nodes, CPUs, GPUs, elapsed against the limit, time left or time waited, CPU rate, CPU efficiency so far, memory against the request, GPU utilisation, flags, and the reason / projected start / priority of pending jobs. Below the table: the selected job (bars and sparklines for time, CPU, memory and each GPU with its mean since the dashboard started, the node's load, a tail of its stdout; for a pending job its dependency with the names of the jobs it waits for), the recently finished jobs, the last events. |
 | **Cluster** | the partitions (availability, limit, nodes and CPUs allocated / idle / other, your running and pending jobs there, GPUs free per type with drained ones subtracted), GPUs cluster-wide with each node counted once, fair share, your account's overall load (everyone's jobs); **queue weather**: the pending jobs, CPUs and GPUs (per type) waiting ahead of a new job in each partition, idle nodes and free GPUs, and what `sbatch --test-only` projects for a few typical jobs (one per GPU type of each GPU partition and one per partition with your jobs, or the `weather_probes` of the config): "a job of 8 cpus, 32G, gpu:a100:1, 01:00:00 would start in 1h09m (07:32) on a01-06"; **allocation**: the account's core-hours and gpu-hours this month against the association's limits (`sreport`, `sacctmgr GrpTRESMins`), the burn rate of the last 7 days, the month-end projection and the days left at that rate, the top users (also `allocation cpu 38% gpu 41%` in the header). |
 | **History** | sacct over the last N days (default 2): state, elapsed, CPU and memory efficiency (what `seff` reports), peak memory, exit code, nodes; a summary line with the counts per state, core-hours and gpu-hours; sortable and filterable. |
-| **Analytics** | five views (`←`/`→`): **job series**, full-width charts of a job's CPU rate, memory against the request and every GPU's utilisation over time, from samples the dashboard records to `state/series/<job>.jsonl` (so they survive restarts and outlive the job; `↑`/`↓` move between jobs, Enter on a history row opens its series); **history**, jobs per day stacked by outcome with core-hours and gpu-hours, core-hours per partition, the queue-wait and CPU-efficiency distributions; **timeline**, a Gantt chart of every job in the window with its queue wait and run. `=`/`_` widen or narrow the window (1, 2, 7, 14, 30 days; sacct refreshes); **advisor**, what every job name in the window should have asked for (see below); **compare**, the marked jobs (or `:compare 123 456`) side by side: a table (elapsed, cores, CPU mean and max, peak memory and its share of the request, GPU mean, core-hours) and, per metric, one chart per job aligned on its first sample. |
+| **Analytics** | five views (`←`/`→`): **job series**, full-width charts of a job's CPU rate, memory against the request and up to four observed session devices and four trace indices with utilisation and observed busy mean over time, from samples the dashboard records to `state/series/<job>.jsonl` (so they survive restarts and outlive the job; `↑`/`↓` and Home/End move between jobs; in the compact native layout, wheel and Page Up/Down scroll the metric document beneath its sticky heading; Enter on a history row opens its series); **history**, jobs per day stacked by outcome with core-hours and gpu-hours, core-hours per partition, the queue-wait and CPU-efficiency distributions; **timeline**, a Gantt chart of every job in the window with its queue wait and run. `=`/`_` widen or narrow the window (1, 2, 7, 14, 30 days; sacct refreshes); **advisor**, what every job name in the window should have asked for (see below); **compare**, the marked jobs (or `:compare 123 456`) side by side: a table (elapsed, cores, CPU mean and max, peak memory and its share of the request, GPU mean, core-hours) and, per metric, one chart per job aligned on its first sample. |
 | **Nodes** | two views (`←`/`→`): **my nodes**, the nodes running your jobs: state, allocated CPUs, load, memory in use, GRES and GRES in use, GPU utilisation with a sparkline per GPU; **cluster map**, every node of every partition (or of the configured `partitions`) as a cell: a state glyph (idle, mixed, allocated, down or drained), cores allocated / total, GPUs in use / total, the nodes running your jobs marked, with per-partition totals. |
 | **Deps** | the dependency chains among your jobs (the `Dependency` field of squeue: `afterok`, `afterany`, `afternotok`, `after`, `aftercorr`, `singleton`), as trees from each root with every job's state; prerequisites that already finished are named from the history. The cursor selects a job; `c` cancels it **and everything that waits for it** (the confirmation lists the chain), `h` holds or releases the chain, `Space` marks, `Enter` opens its details. The selected panel on the Jobs tab says what a pending job still waits for and how many jobs wait for it. |
 | **Group** | everyone in your account: a bar per user (running jobs, CPUs, GPUs, nodes, pending) and the table of all their jobs (sortable by user, state, name, id, time, priority; filterable; `C` exports it; `i` opens a job's details). |
@@ -307,7 +340,7 @@ without motion or pulses. One-frame reports are static as well.
 | F8 | Toggle directional focus for visible buttons and links; arrows select, Enter/Space activates, Esc returns to content |
 | `E` `C` `J` | export the tab as text; its table as CSV; the marked or selected jobs with their recorded series as JSON |
 | `:` | the command palette (Tab completes): `cancel 123 456`, `hold marked`, `filter rb2`, `sort name`, `days 7`, `tab history`, `view timeline`, `export csv`, `copy 5 12`, `gpu off`, `source sinfo off`, `theme mono`, `log 123`, `profile carc`, `eval n_pending`, and every plugin command |
-| `T` | cycle the theme: default, dark, light, terminal, mono, high contrast, cb (colour-blind safe: blue / orange / magenta for green / red / yellow), reader (no colour, no glyphs: plain text for screen readers and dumb terminals) |
+| `T` | cycle the theme: default, mono, high contrast, cb (colour-blind safe: blue / orange / magenta for green / red / yellow), reader (plain text), dark, light, terminal, darcula, modnokai, gruvbox-dark |
 | `?` `q` | help; quit (Esc closes an overlay, cancels a selection, clears the filter or the marks) |
 
 The mouse works too: a click selects a row or switches tabs, a double-click opens the details (Jobs) or the series
@@ -346,17 +379,19 @@ Automatic launch grouping is enabled by default; new groups start open.
 It recognizes arrays, heterogeneous components, scoped explicit launch tags or scheduler markers, and conservative ordinary submission bursts.
 A likely burst requires consecutive numeric IDs, at most ten anchored seconds, matching nonempty owner, account, WorkDir and exact Command, plus the same name or at least three numbered-name variants.
 Missing provenance and names alone do not establish a group.
-Click a fold symbol or use Left/Right on a selected group with page focus.
+Click a fold symbol or use Left/Right on a selected group during ordinary job-row navigation.
+With directional button focus active, Right from a Jobs row enters Details instead.
 `:jobgroups [on|off]` toggles grouping; `:jobgroup toggle|open|close GROUP_ID` controls one known group.
 Fold preferences span the job views and their history browsers.
 A closed group keeps a real representative record and exact action ID.
 Hidden members are not automatically marked or added to cancellation.
 See [Launch deduction](guides/adaptive-workspaces.md#fold-related-launches) for evidence, lifecycle updates, and tag examples.
 
-Jobs has a six-cell progress field and the sort identifier `progress`.
-The solid fractional block and percentage use the exact job's published application progress.
+Jobs has a six-cell progress field before JOBID and the sort identifier `progress`.
+Its marking and fold gutter remains separate to the left.
+The `▸` marker, percentage, and right-side fractional block use the exact job's published application progress.
 ASCII uses a `p` prefix.
-Without application progress, `t` distinguishes elapsed/time-limit usage from completed work.
+Without application progress, `◷` in Unicode or `t` in ASCII distinguishes elapsed/time-limit usage from completed work.
 Pending jobs show `wait`; unavailable progress and limits show `--`.
 Sources include the standard metric-stream `progress.completed`/`progress.total`, or valid `progress_fraction`, `progress_pct`, and `completed_steps`/`total_steps` numeric metrics.
 These values update from job-bound, current published results without renderer I/O.
@@ -704,6 +739,12 @@ improvements in Tower 3.0 have their own [workbench map](WORKBENCH.md#the-twenty
 
 ## The GPU trace
 
+Job Series shows recorded GPU utilisation and its observed busy mean when telemetry is available.
+The mean uses valid retained device observations and excludes missing or invalid readings.
+It is a GPU activity proxy, not FLOP efficiency, throughput, or an allocation-use ratio.
+Session devices use node/index identities; an index-only job trace cannot identify an allocation's node or devices.
+See [GPU graph interpretation](guides/charts.md#read-gpu-utilisation-and-busy-mean) for source scope and stable graph IDs.
+
 The panel, the charts and the advisor read a CSV the job writes itself, `<WorkDir>/logs/gpu-util-<jobid>.csv`, with
 one line per GPU per minute: `timestamp, index, utilization.gpu, memory.used`.  Add this to a GPU job script, before
 the work starts:
@@ -741,7 +782,10 @@ tower/
   toolbar.py     persistent mouse menus, editable command entry, and captured update-slider dragging
   controller.py  the application state and every key, mouse click and confirmation; no curses, so tests drive it;
                  the line selection, the command palette, exports and the clipboard
-  charts.py      vertical bar charts with axes (eight sub-levels per row), horizontal bars, histograms, Gantt rows
+  charts.py      connected quadrant curves, eight-level area bars, axes, histograms, heatmaps, and Gantt rows
+  chart_interaction.py final plot geometry, cyan crosshairs, exact-source XY zoom, cancellation, undo, and reset
+  metric_live.py per-running-metric logarithmic display windows and captured mouse or keyboard sliders
+  analytics_document.py bounded native Job Series document scrolling and visible metric cards
   logs.py        bounded incremental log buffers, logical keyboard cursors, raw line ranges, and selection
   log_catalog.py bounded grouped file discovery and explicit tower.logs/v1 manifests on the selected backend
   log_copy.py    background exact-byte full-file snapshots and selected ranges, private exports, clipboard handoff

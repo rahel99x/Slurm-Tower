@@ -177,15 +177,17 @@ def style_attr(style: str, theme: str, base: dict, colors: dict, bold: int) -> i
 
 
 class CursesPalette:
-    """Lazy, bounded colour pairs; an initialized pair is never repurposed.
+    """Lazy, bounded colour pairs; a theme's initialized pairs stay stable.
 
     Reusing pair numbers for new gradients changes already painted cells. When
     a small terminal exhausts its pair table, approximate with the nearest
     existing pair instead. Styles and quantised colours are cached across frames.
+    A theme change reseeds a new instance and invalidates the complete screen.
     """
 
-    def __init__(self, curses, enabled: bool = True):
+    def __init__(self, curses, enabled: bool = True, theme: str = "default"):
         self.curses = curses
+        self.theme = P.canonical_theme(theme)
         self.enabled = enabled and not P.colors_disabled() and curses.has_colors()
         self.background = -1
         self.count = self.limit = 0
@@ -206,9 +208,18 @@ class CursesPalette:
                 self.enabled = False
                 return
             # Reserve essential text and selection tones before gradient charts.
-            for style in ("white", "sel", "cyan", "green", "yellow", "red", "magenta", "blue"):
-                parsed = P.resolve(style)
+            for style in ("white", "sel", "cursor", "cyan", "green", "yellow", "red", "magenta", "blue"):
+                parsed = P.resolve(P.cell_style(style, self.theme), self.theme)
                 self._pair(self._index(parsed.foreground), self._index(parsed.background, background=True))
+            if self.limit >= 15:
+                # Preserve opaque menus, info bars and slider surfaces before
+                # charts can saturate a small terminal's remaining pair table.
+                for style in ("text+bg:surface", "text+bg:surface-raised",
+                              "accent+bg:surface-raised", "muted+bg:surface",
+                              "border+bg:surface", "accent+bg:surface-sunken",
+                              "track+bg:surface-sunken"):
+                    parsed = P.resolve(P.cell_style(style, self.theme), self.theme)
+                    self._pair(self._index(parsed.foreground), self._index(parsed.background, background=True))
             if not self.pairs:
                 self.enabled = False
         except curses.error:
@@ -218,14 +229,14 @@ class CursesPalette:
         if color is None:
             if background or self.background == -1:
                 return self.background
-            color = P.rgb(P.PALETTE["white"])
+            color = P.rgb(P.theme_tokens(self.theme)["white"])
         if self.count >= (1 << 24):
             return (color[0] << 16) | (color[1] << 8) | color[2]
-        return P.color_index(color, self.count)
+        return P.color_index(color, self.count, background=background)
 
     def _rgb(self, index, default):
         if index < 0:
-            return P.rgb(P.PALETTE[default])
+            return P.rgb(P.theme_tokens(self.theme)[default])
         if self.count >= (1 << 24):
             return ((index >> 16) & 255, (index >> 8) & 255, index & 255)
         return P.INDEXED[index]
@@ -274,8 +285,13 @@ class CursesPalette:
             result |= flags[flag]
         if self.enabled and (parsed.foreground is not None or parsed.background is not None):
             result |= self._pair(self._index(parsed.foreground), self._index(parsed.background, background=True))
-            if "sel" in style.split("+") and self.limit < 2:
-                result |= c.A_REVERSE
+            if "sel" in style.split("+"):
+                canvas = P.resolve(P.cell_style("", theme), theme)
+                indistinct = (parsed.background is not None and canvas.background is not None and
+                               self._index(parsed.background, background=True) ==
+                               self._index(canvas.background, background=True))
+                if self.limit < 2 or indistinct:
+                    result |= c.A_REVERSE
         # Keep plugin-generated styles from growing memory indefinitely.
         if len(self.attributes) >= 4096:
             self.attributes.clear()
@@ -446,16 +462,33 @@ def _apply_input(app, event, hits, curses):
     note_input(app, "wheel" if button.startswith("wheel-") else button)
     from .startup import handle_mouse as startup_mouse
     startup_mouse(app, my, mx, button=button, shift=shift)
-    # Hover is independent of toolbar capture. Every final pointer position is
-    # published, even when a global control consumes the gesture.
+    # Every final pointer position survives global capture. Wheels change the
+    # document or menu and publish fresh hover geometry immediately afterward;
+    # avoid resolving the displaced graph for every report in a wheel burst.
+    wheel = button in ("wheel-up", "wheel-down")
     if isinstance(getattr(app, "interaction_state", None), dict):
-        from .interaction import handle_mouse as interaction_mouse
-        interaction_mouse(app, my, mx, button="motion", shift=shift)
+        if wheel:
+            app.interaction_state["pointer"] = (my, mx)
+        else:
+            from .interaction import handle_mouse as interaction_mouse
+            interaction_mouse(app, my, mx, button="motion", shift=shift)
+    from .chart_interaction import hover as chart_hover, cancel as cancel_chart
+    charts = getattr(app, "chart_interaction_state", None)
+    if wheel and isinstance(charts, dict):
+        charts["pointer"] = (my, mx)
+    else:
+        chart_hover(app, my, mx)
     if isinstance(getattr(app, "toolbar_state", None), dict) and toolbar_mouse(app, my, mx, button=button, shift=shift):
+        cancel_chart(app)
+        from .metric_live import cancel as cancel_live
+        cancel_live(app)
         return
     if button in ("wheel-up", "wheel-down"):
         from .pane_drag import blur
         blur(app)
+        cancel_chart(app)
+        from .metric_live import cancel as cancel_live
+        cancel_live(app)
         # A wheel gesture belongs to content, even after clicking a button.
         # Keyboard focus must not turn its direction into button traversal.
         focus = getattr(app, "interaction_state", None)
@@ -464,7 +497,9 @@ def _apply_input(app, event, hits, curses):
     if button in ("motion", "drag", "release"):
         from .job_selection import active as selection_active
         if (selection_active(app) or getattr(app, "pane_drag_state", {}).get("capture") or
-                getattr(app, "history_browser_state", {}).get("drag")):
+                getattr(app, "history_browser_state", {}).get("drag") or
+                getattr(app, "chart_interaction_state", {}).get("capture") or
+                getattr(app, "metric_live_state", {}).get("capture")):
             app.click(my, mx, hits, button=button, shift=shift)
         elif app.mode == "terminal_probe":
             app.click(my, mx, hits, button=button, shift=shift)
@@ -474,12 +509,22 @@ def _apply_input(app, event, hits, curses):
         from .recent_history import handle_mouse as recent_mouse
         if history_mouse(app, my, mx, button=button, shift=shift) or recent_mouse(app, my, mx, button=button, shift=shift):
             return
+        from .analytics_document import handle_mouse as series_mouse
+        if series_mouse(app, my, mx, button=button, shift=shift):
+            return
         if app.tab == "deps" and getattr(app, "history_browser_state", {}).get("views", {}).get("deps", {}).get("explicit"):
             app.move("up" if button == "wheel-up" else "down")
             return
-        from .job_panels import contains as in_job_panel
+        from .job_panels import contains as in_job_panel, handle_mouse as panel_mouse
         if in_job_panel(app, my, mx):
-            app.click(my, mx, hits, button=button, shift=shift)
+            if app.mode == "main":
+                # Toolbar, browser, chart capture and pane ownership were
+                # already handled above. Route to the published Details pane
+                # once, retaining its sticky header and content wheel rules.
+                app.last_hits = hits
+                panel_mouse(app, my, mx, button=button, shift=shift)
+            else:
+                app.click(my, mx, hits, button=button, shift=shift)
             return
     if app.mode == "terminal_probe":
         app.click(my, mx, hits, button=button, shift=shift)
@@ -524,6 +569,7 @@ def _consume_input_batch(app, stdscr, curses, hits, first, *, effects=None):
     deadline = time.monotonic() + (POINTER_BATCH_SECONDS if pointer else INPUT_BATCH_SECONDS)
     count = 0
     motion = None
+    from .interaction import needs_frame
 
     def apply(value):
         if effects is not None:
@@ -549,11 +595,11 @@ def _consume_input_batch(app, stdscr, curses, hits, first, *, effects=None):
             if motion is not None:
                 apply(motion)
                 motion = None
-                if app.quit or _navigation_context(app) != context:
+                if app.quit or _navigation_context(app) != context or needs_frame(app):
                     return event
             apply(event)
         count += 1
-        if (not batchable or app.quit or _navigation_context(app) != context or
+        if (not batchable or app.quit or _navigation_context(app) != context or needs_frame(app) or
                 count >= limit or time.monotonic() >= deadline):
             if motion is not None:
                 apply(motion)
@@ -589,6 +635,15 @@ class _InputEffects:
                       getattr(curses, "BUTTON4_PRESSED", 0) |
                       getattr(curses, "BUTTON5_PRESSED", 0))
         hover = name == "mouse" and bool(state & getattr(curses, "REPORT_MOUSE_POSITION", 0)) and not state & deliberate
+        chart = getattr(app, "chart_interaction_state", {}) or {}
+        live = getattr(app, "metric_live_state", {}) or {}
+        if ((chart.get("capture") or live.get("capture")) and state & getattr(curses, "REPORT_MOUSE_POSITION", 0) and
+                not state & (getattr(curses, "BUTTON1_RELEASED", 0) |
+                             getattr(curses, "BUTTON4_PRESSED", 0) |
+                             getattr(curses, "BUTTON5_PRESSED", 0))):
+            # Pointer feedback uses the published raster. Live slider motion
+            # redraws its control immediately; its curve keeps a 10 Hz limit.
+            return
         toolbar = getattr(app, "toolbar_state", {}) or {}
         selection = getattr(app, "job_selection_state", {}) or {}
         # Some terminal drivers omit the held-button bit on position reports.
@@ -631,7 +686,7 @@ class _DifferentialPainter:
             # Filling the base clears a previous menu/longer line without
             # erasing untouched rows or relying on terminal erase attributes.
             _, base = layer[0]
-            self.paint(y, 0, L.fill_row(base, width, ""), width, height)
+            self.paint(y, 0, L.fill_row(base, width, "text+bg:canvas"), width, height)
             for x, row in layer[1:]:
                 self.paint(y, x, row, width, height)
         self.previous, self.geometry = current, (width, height)
@@ -658,12 +713,17 @@ class _FrameCache:
         self.bar = []
         self.geometry = None
         self.next_maintenance = self.next_animation = 0.0
+        self.next_live = float("inf")
+        self.live_revision = 0
         self.toolbar_token = None
 
     def due(self, app, width, height, now=None):
         now = time.monotonic() if now is None else now
-        return (self.dirty or self.geometry != (width, height) or
-                now >= self.next_maintenance or now >= self.next_animation)
+        from .interaction import needs_frame
+        from . import metric_live
+        live_changed = metric_live.document_revision(app) != self.live_revision and not metric_live.active(app)
+        return (self.dirty or live_changed or needs_frame(app) or self.geometry != (width, height) or
+                now >= self.next_maintenance or now >= self.next_animation or now >= self.next_live)
 
     def rebuild(self, app, views, store, actions, width, height):
         from . import startup, toolbar
@@ -687,7 +747,11 @@ class _FrameCache:
             self.content, self.toolbar = overlays, []
         self.bar = toolbar.render_bar(views, app, width) if height > 0 else []
         app.last_hits = hits
-        publish(app, self.rows, hits, width, height, overlays=welcome + overlays)
+        from .chart_interaction import publish as publish_charts
+        from . import metric_live
+        publish_charts(app, width, height)
+        publish(app, self.rows, hits, width, height, overlays=welcome + overlays,
+                extra_controls=metric_live.descriptors(app))
         self.snapshot, self.geometry = snap, (width, height)
         self.toolbar_token = _toolbar_feedback_token(app)
         now = time.monotonic()
@@ -697,6 +761,9 @@ class _FrameCache:
             idle = min(idle, int(startup.FRAME_INTERVAL * 1000))
         interval = timeout_ms(app, idle)
         self.next_animation = now + interval / 1000 if interval < 200 else float("inf")
+        live_interval = metric_live.document_interval(app)
+        self.next_live = now + live_interval if live_interval is not None else float("inf")
+        self.live_revision = metric_live.document_revision(app)
         self.dirty = False
 
     def feedback(self, app, views):
@@ -709,17 +776,26 @@ class _FrameCache:
             # overlay. The underlying chart/report remains the same document.
             self.toolbar = toolbar.overlay(views, self.snapshot, app, width, height) or []
             self.bar = toolbar.render_bar(views, app, width) if height > 0 else []
+            from .chart_interaction import publish as publish_charts
+            from . import metric_live
+            publish_charts(app, width, height)
             publish(app, self.rows, self.hits, width, height,
-                    overlays=self.welcome + self.content + self.toolbar)
+                    overlays=self.welcome + self.content + self.toolbar,
+                    extra_controls=metric_live.descriptors(app))
             self.toolbar_token = _toolbar_feedback_token(app)
         rows = decorate(app, self.rows)
         overlays = self.welcome + decorate_overlays(app, self.content + self.toolbar)
+        from .chart_interaction import feedback as chart_feedback
+        overlays += chart_feedback(app, ascii_=bool(getattr(getattr(views, "g", None), "ascii", False)))
+        from .metric_live import feedback as live_feedback
+        glyphs = getattr(views, "g", None) or L.Glyphs(bool(getattr(app, "ascii", False)))
+        overlays += live_feedback(app, glyphs)
         bar = decorate(app, [self.bar])[0] if height > 0 else None
         return rows, overlays, bar
 
     def wait_ms(self, now=None):
         now = time.monotonic() if now is None else now
-        return max(1, min(200, round(1000 * (min(self.next_maintenance, self.next_animation) - now))))
+        return max(1, min(200, round(1000 * (min(self.next_maintenance, self.next_animation, self.next_live) - now))))
 
 
 def _mouse_reporting(enabled):
@@ -760,7 +836,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
         except curses.error:
             pass
         _mouse_reporting(mouse_enabled)
-        palette = CursesPalette(curses, cfg["color"])
+        palette = CursesPalette(curses, cfg["color"], app.theme)
         settings_generation = getattr(app, "terminal_settings_generation", 0)
         painted_theme = app.theme
 
@@ -771,7 +847,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
                     break
                 text = L.cut(text, width - x, True) if L.vlen(text) > width - x else text
                 try:
-                    stdscr.addstr(y, x, text, palette.attr(style, app.theme))
+                    stdscr.addstr(y, x, text, palette.attr(P.cell_style(style, app.theme), app.theme))
                 except curses.error:
                     pass
                 x += L.vlen(text)
@@ -787,11 +863,14 @@ def run_curses(app, views, sampler, store, actions, cfg):
         while not app.quit:
             if painted_theme != app.theme:
                 painted_theme = app.theme
+                # The whole screen is invalidated before pairs are reseeded.
+                # New theme tones must not approximate saturated old gradients.
+                palette = CursesPalette(curses, cfg["color"], app.theme)
                 cache.dirty = True
                 painter.invalidate()
             current_settings = getattr(app, "terminal_settings_generation", 0)
             if settings_generation != current_settings:
-                palette = CursesPalette(curses, cfg["color"])
+                palette = CursesPalette(curses, cfg["color"], app.theme)
                 settings_generation = current_settings
                 cache.dirty = True
                 painter.invalidate()
@@ -883,7 +962,7 @@ def run_watch(app, views, sampler, store, actions, cfg, interval: float, color: 
             started = sum(1 for e in snap["events"] if e.get("kind") == "started" and not e.get("old"))
             bell = "\a" if app.bell and started > rung else ""
             rung = started
-            frame = L.to_text(rows, width, color, theme=app.theme).split("\n")
+            frame = L.to_text(rows, width, color, theme=app.theme, canvas=True).split("\n")
             if interactive:
                 if previous_size is not None and previous_size != (width, height):
                     sys.stdout.write("\033[2J")
@@ -915,7 +994,7 @@ def once_text(app, views, store, actions, width: int, color: bool, tab: Optional
     app.tick()
     snap = store.snapshot()
     rows, _ = views.compose(snap, app, width, None, actions)
-    return L.to_text(rows, width, color, theme=app.theme)
+    return L.to_text(rows, width, color, theme=app.theme, canvas=True)
 
 
 def once_json(store) -> str:

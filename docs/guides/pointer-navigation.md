@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Live workbench](live-workbench.md)
 
-Use this guide for Tower 4.4.0's mouse feedback, button navigation, scrolling, and startup display.
+Use this guide for Tower 4.5.0's mouse feedback, button navigation, scrolling, and startup display.
 All controls remain inside the terminal.
 
 ## Check terminal mouse support
@@ -41,7 +41,8 @@ They update when the page, layout, menu, or terminal size changes.
 4. Press Esc to return arrow keys to the page content.
 
 **Expected result:** A visible focus indicator identifies the control that Enter will activate.
-Arrow movement does not execute the focused control.
+Arrow movement does not activate a button or link.
+In Jobs and Recents, focusing a real job row also selects that exact job for Details.
 Home and End select the first and last visible controls.
 Tab and Shift-Tab traverse the visible controls in order while button focus is active.
 
@@ -56,6 +57,14 @@ Scroll the content or use its page controls to reach further items.
 The same activation rules apply to mouse clicks and keyboard activation.
 Job-changing controls still require their normal review.
 
+In Jobs, hover a Queue or Recents row and press F8 to begin at that real job.
+Up and Down follow rows in the current table.
+At a viewport edge, they scroll or load the next available row and refresh the visible controls.
+Right moves from a job row into visible Details controls; Left returns toward Main.
+This pane crossing also works when Details is stacked below Main.
+Scrolling, sorting, filtering, and resizing update the graph before another action can use the old row positions.
+Moving focus into Quick Advisor does not start its calculation; activate that button to request it.
+
 Click a column-editor checkbox to show or hide its optional column.
 Required identity and state columns stay visible.
 Use the editor's width and order controls to adjust those required fields.
@@ -64,6 +73,17 @@ Click a Chart Events or Timeline row to open its exact painted job or log citati
 Use `:timeline open EVENT_NUMBER` for the numbered current timeline event.
 Event numbers start at one.
 The existing `:timeline seek EVENT_NUMBER` command remains the replay-seeking operation.
+
+## Point at and zoom a graph
+
+Move the pointer inside a metric plot to show its cyan dotted crosshair.
+Press the left button, drag to the opposite corner of an area, and release inside the plot to zoom both axes.
+The dotted rectangle previews the selected area.
+Use `u` or `0` while pointing at the same graph to undo or reset rectangular zoom.
+Esc before release discards the preview.
+An outside release or changed job, page, plot bounds, layout, menu, or terminal size also cancels it.
+The operation changes display bounds and preserves measured values.
+See [Graph interaction](charts.md#zoom-a-rectangular-area) for keyboard commands, source scope, logarithmic axes, and limits.
 
 ## Adjust the update slider by dragging
 
@@ -137,6 +157,12 @@ Use Space to mark individual jobs when those events are unavailable.
 
 ## Scroll without delayed input
 
+In compact native Analytics Job series, point at the metric content to scroll its document.
+Point at Job history to scroll the history browser.
+Page Up/Down scroll the metric document; ordinary Up/Down and Home/End change the job.
+Use `:series-scroll home` or `:series-scroll end` for the document endpoints.
+A slider or directional button focus uses its own keys while active.
+
 Mouse-wheel scrolling moves the viewport toward the latest requested position.
 Successive wheel events update that target.
 Tower does not replay a long queue of old scroll movements after reaching an edge.
@@ -156,6 +182,27 @@ Normal UI state retains the preference for the current profile and connection.
 The reader theme and `animations = false` use immediate viewport movement.
 These settings preserve mouse-wheel scrolling.
 Static operation is useful when a terminal connection has limited display throughput.
+
+## Change the terminal palette
+
+Press `T` to cycle the available themes, or enter `:theme NAME` for an exact choice.
+The active palette updates the canvas, text, menus, information strips, and charts during the session.
+Blank areas use the same canvas as the page.
+Theme changes preserve the selected job and measured values.
+
+| Theme | Palette |
+| --- | --- |
+| `darcula` | Grey canvas with blue and warm accents |
+| `modnokai` | Dark olive canvas with vivid accents; `monokai` is an alias |
+| `gruvbox-dark` | Dark neutral canvas with warm accents; `gruvbox` is an alias |
+| `dark`, `light` | Explicit dark or light canvas and matching text |
+| `terminal` | The terminal's own background |
+| `mono`, `reader` | Colour-free output on the terminal's background |
+
+Use `high` for high contrast or `cb` for the colour-blind palette.
+The reader theme also uses plain ASCII text and static notices.
+`--no-color` and `NO_COLOR` suppress colour even when a named theme is selected.
+The terminal's colour capacity determines the available approximation.
 
 ## Control the startup display
 

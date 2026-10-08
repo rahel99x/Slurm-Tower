@@ -6,6 +6,7 @@ files are read through the existing background worker, never while drawing.
 from __future__ import annotations
 
 from collections import OrderedDict, defaultdict
+from bisect import bisect_left, bisect_right
 from contextlib import nullcontext
 from itertools import islice
 import math
@@ -13,7 +14,7 @@ import os
 import statistics
 import time
 
-from . import charts, chart_tools, clock, layout as L
+from . import charts, chart_tools, chart_interaction, clock, layout as L
 from .model import human, secs, short_duration, stamp
 from .research import clean
 
@@ -202,16 +203,27 @@ def _chart_frame_series(app):
 
 def _viewport_key(state, name, points):
     return (state.get("chart_job"), name, id(points), len(points),
-            state.get("zoom", 1), state.get("pan", 0), state.get("window"))
+            state.get("zoom", 1), state.get("pan", 0), state.get("window"), state.get("chart_box"),
+            state.get("chart_live_window"))
 
 
 def _chart_visible_points(app, series, name):
     state = initialize(app)
     points = series.get(name, [])
+    source = state.get("chart_frame", {}).get("source", "Tower session resource samples")
+    identity = chart_key(app, name, source, job=state.get("chart_frame", {}).get("record"))
+    box = chart_interaction.bounds(app, identity,
+                                   scale="log" if state["axes"].get(name, {}).get("mode") == "log" else "linear")
+    from . import metric_live
+    live_window = metric_live.window(app, identity)
+    state["chart_box"] = (box["x"], box["y"]) if box else None
+    state["chart_live_window"] = live_window
     cached = state.get("chart_visible", {})
     if cached.get("key") == _viewport_key(state, name, points):
         return cached["points"]
-    visible, _ = viewport(points, state)
+    normalized = _points(points)
+    times = box["x"] if box else live_window
+    visible = [point for point in normalized if times[0] <= point["t"] <= times[1]] if times else viewport(normalized, state, normalized=True)[0]
     state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
     return visible
 
@@ -231,6 +243,26 @@ def viewport(points, state, *, normalized=False):
     start_fraction, end_fraction = pan * (1 - 1 / zoom), pan * (1 - 1 / zoom) + 1 / zoom
     a, b = t0 * (1 - start_fraction) + t1 * start_fraction, t0 * (1 - end_fraction) + t1 * end_fraction
     return [p for p in points if a <= p["t"] <= b], (a, b)
+
+
+def _cadence(points):
+    deltas = [b["t"] - a["t"] for a, b in zip(points, points[1:])
+              if 0 < b["t"] - a["t"] < math.inf]
+    return statistics.median(deltas) if deltas else None
+
+
+def raster_viewport(points, times):
+    """Keep original bracketing neighbors solely to clip the measured curve.
+
+    The returned records remain genuine observations at their original times.
+    Headers, sample counts, cursor inspection and interval statistics must use
+    the strictly visible records instead. Unknown neighbors still break curves.
+    """
+    if not points or not all(_finite(value) for value in times) or times[0] > times[1]:
+        return []
+    first = bisect_left(points, times[0], key=lambda point: point["t"])
+    last = bisect_right(points, times[1], key=lambda point: point["t"])
+    return points[max(0, first - 1):min(len(points), last + 1)]
 
 
 def _crosshair(rows, width, height, points, selected, times, ascii_):
@@ -282,9 +314,14 @@ def _highlight_interval(rows, width, height, selected, times, ascii_=False):
 
 
 def _source_row(g, source, metadata):
-    latest, visible, total, gaps = metadata
-    age = max(0, clock.now() - latest) if latest is not None else None
-    return [(clean(f" Source: {source} | {visible}/{total} samples | latest {short_duration(age)} ago | gaps {gaps}", g.ascii), "dim")]
+    latest, visible, total, gaps, *extra = metadata
+    age = clock.now() - latest if latest is not None else None
+    stamp = "latest " + short_duration(abs(age) if _finite(age) else None) + (" ahead of clock" if _finite(age) and age < 0 else " ago")
+    cadence = ""
+    if extra:
+        from .metric_live import format_delta
+        cadence = " | observed cadence " + (format_delta(extra[0]) if _finite(extra[0]) else "unknown")
+    return [(clean(f" Source: {source} | {visible}/{total} samples | {stamp} | gaps {gaps}{cadence}", g.ascii), "dim")]
 
 
 def _card_value(value):
@@ -295,7 +332,59 @@ def _card_value(value):
     return _NEGATIVE_ZERO if value == 0 and math.copysign(1, value) < 0 else value
 
 
-def chart_rows(g, app, points, width, height, name, source, *, interactive=True, snapshot=None):
+def _published_chart_job(app, jid):
+    """Reuse one exact current job without taking another full snapshot."""
+    store = getattr(app, "store", None)
+    if store is None or jid is None:
+        return None
+    jobs = getattr(store, "jobs", ())
+    finished = getattr(store, "finished", ())
+    if not isinstance(jobs, (list, tuple)) or not isinstance(finished, (list, tuple)):
+        return None
+    state = initialize(app)
+    cached = state.get("chart_key_job", {})
+    context = (id(store), id(jobs), len(jobs), id(finished), len(finished), str(jid))
+    if cached.get("context") == context:
+        record = cached.get("record")
+        rows = jobs if cached.get("kind") == "jobs" else finished
+        index = cached.get("index")
+        if isinstance(index, int) and 0 <= index < len(rows) and rows[index] is record:
+            return record
+    for kind, rows in (("jobs", jobs), ("finished", finished)):
+        for index, record in enumerate(rows):
+            if str(getattr(record, "id", "")) == str(jid):
+                state["chart_key_job"] = {"context": context, "record": record, "kind": kind, "index": index}
+                return record
+    state.pop("chart_key_job", None)
+    departed = getattr(store, "departed_jobs", {})
+    return departed.get(str(jid)) if isinstance(departed, dict) else None
+
+
+def chart_key(app, name, source, *, interactive=True, jid=None, job=None):
+    state = initialize(app)
+    if jid is None:
+        jid = state.get("chart_job") if interactive and state.get("modal") in ("chart", "chart_events") else _analysis_jid(app)
+    project = getattr(app, "project_state", {})
+    binding = project.get("binding") if isinstance(project, dict) else None
+    bound_attempt = (isinstance(binding, dict) and str(binding.get("job_id", "")) == str(jid or "") and
+                     binding.get("attempt") is not None)
+    attempt = None
+    if not bound_attempt:
+        job = job if job is not None and str(getattr(job, "id", "")) == str(jid or "") else _published_chart_job(app, jid)
+        if job is not None:
+            attempt = "scheduler:" + "|".join(str(getattr(job, field, None) or "") for field in ("submit", "start"))
+    return chart_interaction.key(app, name, source, jid, scope="reported-metric", attempt=attempt)
+
+
+def running_job(snapshot, jid):
+    """Only a matching current scheduler record permits a moving Live window."""
+    return bool(jid and isinstance(snapshot, dict) and any(
+        str(getattr(job, "id", "")) == str(jid) and getattr(job, "state", "") == "RUNNING"
+        for job in snapshot.get("jobs", ())))
+
+
+def chart_rows(g, app, points, width, height, name, source, *, interactive=True, snapshot=None,
+               metadata=None, zoom_key=None, running=False):
     """Cache pure dashboard cards while preserving exact interactive charts.
 
     A content scan detects edits anywhere in the retained series, including
@@ -303,9 +392,13 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
     skips normalization, sorting, cadence analysis, and rasterization only for
     unchanged noninteractive cards. Source identity and age are rendered fresh.
     """
+    zoom_key = chart_key(app, name, source, interactive=interactive) if zoom_key is None else zoom_key
+    from . import metric_live
+    live_window = metric_live.window(app, zoom_key) if running else None
     if interactive:
         return _render_chart_rows(g, app, points, width, height, name, source,
-                                  interactive=True, snapshot=snapshot)
+                                  interactive=True, snapshot=snapshot, metadata=metadata, zoom_key=zoom_key,
+                                  live_window=live_window)
     state = initialize(app)
     content = tuple((point["t"], _card_value(point.get("value")))
                     for point in points[-MAX_POINTS:]
@@ -317,31 +410,55 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
     # invalidate the raster even when its source values remain unchanged.
     zone = (os.environ.get("TZ"), time.tzname, time.timezone, time.daylight)
     glyphs = (g.ascii, g.spark, g.box, g.dot, g.rule)
+    box = chart_interaction.bounds(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
     key = (name, width, height, glyphs, label, unit, (type(precision), precision), color,
-           axis.get("mode"), repr(axis.get("low")), repr(axis.get("high")), zone, content)
+           axis.get("mode"), repr(axis.get("low")), repr(axis.get("high")), zone, content,
+           (box["x"], box["y"]) if box else None, live_window)
     cache = state.setdefault("chart_card_cache", OrderedDict())
     entry = cache.get(key)
     if entry is not None:
         cache.move_to_end(key)
+        if isinstance(metadata, dict):
+            metadata.clear()
+            metadata.update(entry["plot_metadata"])
+            metadata["key"] = zoom_key
         return [list(row) for row in entry["rows"]] + [_source_row(g, source, entry["metadata"])]
     full = sorted(({"t": timestamp, "value": -0.0 if value is _NEGATIVE_ZERO else value, "step": None}
                    for timestamp, value in content), key=lambda point: point["t"])
-    metadata = {}
+    cache_metadata, plot_metadata = {}, {}
     rows = _render_chart_rows(g, app, points, width, height, name, source, interactive=False,
-                              snapshot=snapshot, normalized_points=full, cache_metadata=metadata)
+                              snapshot=snapshot, normalized_points=full, cache_metadata=cache_metadata,
+                              metadata=plot_metadata, zoom_key=zoom_key, live_window=live_window)
+    if isinstance(metadata, dict):
+        metadata.clear()
+        metadata.update(plot_metadata)
     cache[key] = {"rows": tuple(tuple(row) for row in rows[:-1]),
-                  "metadata": metadata["source"], "points": len(content)}
+                  "metadata": cache_metadata["source"], "points": len(content),
+                  "plot_metadata": dict(plot_metadata)}
     while len(cache) > MAX_CARD_CACHE or sum(value["points"] for value in cache.values()) > MAX_CARD_CACHE_POINTS:
         cache.popitem(last=False)
     return rows
 
 
 def _render_chart_rows(g, app, points, width, height, name, source, *, interactive=True,
-                       snapshot=None, normalized_points=None, cache_metadata=None):
+                       snapshot=None, normalized_points=None, cache_metadata=None, metadata=None, zoom_key=None,
+                       live_window=None):
     state = initialize(app)
     full = _points(points) if normalized_points is None else normalized_points
-    visible, times = viewport(full, state if interactive else {}, normalized=True)
+    axis = state["axes"].get(name, {"mode": "auto"})
+    box = chart_interaction.bounds(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
+    if box:
+        times = box["x"]
+        visible = [point for point in full if times[0] <= point["t"] <= times[1]]
+    elif live_window:
+        times = live_window
+        visible = [point for point in full if times[0] <= point["t"] <= times[1]]
+    else:
+        visible, times = viewport(full, state if interactive else {}, normalized=True)
     if interactive:
+        state["chart_interaction_key"] = zoom_key
+        state["chart_box"] = (box["x"], box["y"]) if box else None
+        state["chart_live_window"] = live_window
         state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
     values = [p["value"] for p in visible]
     color = state["colors"].get(name, COLORS[sum(ord(c) for c in name) % len(COLORS)])
@@ -349,7 +466,14 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
     label, unit, precision = chart_tools.display(state, name)
     preference = chart_tools.preference(state, name)
     axis = state["axes"].get(name, {"mode": "auto"})
-    plotted, low, high, undefined = chart_tools.axis_values(values, axis)
+    visible_plotted, low, high, undefined = chart_tools.axis_values(values, axis)
+    raster_source = [point for point in full if point["t"] <= live_window[1]] if live_window else full
+    raster_points = raster_viewport(raster_source, times)
+    if len(raster_points) > len(visible):
+        low, high = charts._bounds(visible_plotted, low, high)
+    plotted, _, _, _ = chart_tools.axis_values([point["value"] for point in raster_points], axis)
+    if box:
+        low, high = box["y"]
     def axis_label(value):
         if axis["mode"] == "log":
             try:
@@ -357,11 +481,14 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
             except OverflowError:
                 return ">1e308"
         return chart_tools.format_value(value, preference)
-    deltas = [b["t"] - a["t"] for a, b in zip(full, full[1:]) if 0 < b["t"] - a["t"] < math.inf]
-    cadence = statistics.median(deltas) if deltas else None
+    cadence = _cadence(full)
     rows = charts.braille_chart(g, plotted, width, height, lo=low, hi=high, title=clean(label, g.ascii),
-                               sample_times=[p["t"] for p in visible], times=times,
-                               sample_interval=cadence, color=lambda _: color, axis_formatter=axis_label)
+                               sample_times=[p["t"] for p in raster_points], times=times,
+                               sample_interval=cadence, color=lambda _: color, axis_formatter=axis_label,
+                               metadata=metadata)
+    if isinstance(metadata, dict):
+        metadata["scale"] = "log" if axis.get("mode") == "log" else "linear"
+        metadata["key"] = zoom_key
     selected_points = chart_tools.interval(full, state, name) if interactive else []
     rows = _highlight_interval(rows, width, height, selected_points, times, g.ascii)
     # Summary and exact inspection always describe the original measurements,
@@ -380,6 +507,11 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
         exact = repr(selected["value"]) if selected["value"] is not None else "unavailable"
         rows.append([(clean(f" {_time(selected['t'])}  t={selected['t']!r}  value {exact}{step}", g.ascii), "yellow+bold")])
     description = f" Axis {axis['mode']}"
+    if live_window:
+        from .metric_live import format_delta
+        description += f" | Live {format_delta(live_window[1] - live_window[0])}; no gap filling"
+    if box:
+        description += f" | zoomed Y [{axis_label(low)}, {axis_label(high)}]"
     if axis.get("low") is not None:
         description += f" [{axis['low']!r}, {axis['high']!r}]"
         clipped = sum(value is not None and (value < axis["low"] or value > axis["high"]) for value in values)
@@ -399,6 +531,8 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
     gaps = sum(1 for p in visible if p["value"] is None)
     outages = sum(b["t"] - a["t"] > cadence * 2.5 for a, b in zip(visible, visible[1:])) if cadence else 0
     metadata = (full[-1]["t"] if full else None, len(visible), len(full), gaps + outages)
+    if live_window:
+        metadata += (cadence,)
     rows.append(_source_row(g, source, metadata))
     if cache_metadata is not None:
         cache_metadata["source"] = metadata
@@ -496,15 +630,20 @@ def timeline_events(app, snap):
 
 def _chart_control(app, args, series):
     """Validate chart controls before mutating preferences or opening a view."""
-    if not args or args[0] not in ("preset", "axis", "range", "events", "event", "shared"):
+    if not args or args[0] not in ("preset", "axis", "range", "events", "event", "shared", "undo", "reset"):
         return False
     state = initialize(app)
     action, parameters = args[0], args[1:]
     name = state.get("metric") if state.get("metric") in series else next(iter(series), "")
     try:
-        if action == "preset":
+        if action in ("undo", "reset"):
+            if parameters:
+                raise ValueError("chart undo|reset")
+            (chart_interaction.undo if action == "undo" else chart_interaction.reset)(app, state.get("chart_interaction_key"))
+        elif action == "preset":
             if len(parameters) != 1 or parameters[0] not in dict(chart_tools.PRESETS):
                 raise ValueError("chart preset 5m|30m|2h|all")
+            chart_interaction.reset(app, state.get("chart_interaction_key"))
             window = dict(chart_tools.PRESETS)[parameters[0]]
             state.update(preset=parameters[0], cursor=0, zoom=1.0, pan=1.0 if window else 0.0)
             if window:
@@ -517,6 +656,7 @@ def _chart_control(app, args, series):
                 axis.update(low=float(parameters[1]), high=float(parameters[2]))
             if len(parameters) not in (1, 3) or not name or not chart_tools.valid_axis(axis) or axis.get("mode") == "auto" and len(parameters) != 1:
                 raise ValueError("chart axis auto|fixed LOW HIGH|log [POSITIVE_LOW POSITIVE_HIGH]")
+            chart_interaction.reset(app, state.get("chart_interaction_key"))
             state["axes"][name] = axis
             state["axes"] = dict(list(state["axes"].items())[-MAX_METRICS:])
             app.say(f"{name}: {axis['mode']} axis.")
@@ -686,6 +826,8 @@ def run_command(app, args):
                 value = float(args[1]) if len(args) == 2 else float("nan")
                 if not math.isfinite(value):
                     raise ValueError
+                if args[0] != "cursor":
+                    chart_interaction.reset(app, state.get("chart_interaction_key"))
                 if args[0] == "zoom" and 1 <= value <= 1024:
                     state["zoom"] = value
                     state.pop("window", None)
@@ -825,11 +967,13 @@ def handle_key(app, key):
             change = -1 if key in ("left", "up") else 1
             state["cursor"] = 0 if key == "home" else max(0, len(points) - 1) if key == "end" else max(0, min(max(0, len(points) - 1), state.get("cursor", 0) + change))
         elif key in ("+", "=", "-", "_"):
+            chart_interaction.reset(app, state.get("chart_interaction_key"))
             state.pop("window", None)
             state.pop("preset", None)
             state["zoom"] = max(1.0, min(1024.0, state.get("zoom", 1.0) * (2 if key in ("+", "=") else .5)))
             state["cursor"] = 0
         elif key in ("[", "]"):
+            chart_interaction.reset(app, state.get("chart_interaction_key"))
             state["pan"] = max(0.0, min(1.0, state.get("pan", 0.0) + (-.1 if key == "[" else .1)))
             state["cursor"] = 0
         elif key in ("pgup", "pgdn"):
@@ -1039,10 +1183,23 @@ def _job_diff_rows(g, snap, app, width):
                 rows.append(row(f" {jid}: no measured {metric} samples", "dim"))
                 continue
             t0 = points[0]["t"]
-            values = [p["value"] for p in points]
-            plotted, lo, hi, undefined = chart_tools.axis_values(values, axis)
+            identity = chart_interaction.key(app, metric, "Tower session resource samples", jid,
+                                              scope="comparison-elapsed", attempt=t0)
+            scale = "log" if axis.get("mode") == "log" else "linear"
+            box = chart_interaction.bounds(app, identity, scale=scale)
+            elapsed_points = [dict(point, t=point["t"] - t0) for point in points]
+            curve_times = box["x"] if box else (0, span)
+            curve_points = [p for p in elapsed_points if curve_times[0] <= p["t"] <= curve_times[1]]
+            values = [p["value"] for p in curve_points]
+            visible_plotted, lo, hi, undefined = chart_tools.axis_values(values, axis)
+            raster_points = raster_viewport(elapsed_points, curve_times)
+            if len(raster_points) > len(curve_points):
+                lo, hi = charts._bounds(visible_plotted, lo, hi)
+            plotted, _, _, _ = chart_tools.axis_values([point["value"] for point in raster_points], axis)
             if state["shared_scale"]:
                 lo, hi = shared_lo, shared_hi
+            if box:
+                lo, hi = box["y"]
             def axis_label(value):
                 if axis["mode"] == "log":
                     try:
@@ -1050,10 +1207,13 @@ def _job_diff_rows(g, snap, app, width):
                     except OverflowError:
                         return ">1e308"
                 return chart_tools.format_value(value, preference)
+            metadata = {}
             curve = charts.braille_chart(g, plotted, width, 3, lo=lo, hi=hi,
-                                            title=jid, sample_times=[p["t"] - t0 for p in points],
-                                            times=(0, span), elapsed=True, axis_formatter=axis_label,
-                                            color=lambda _, i=i: COLORS[i % len(COLORS)])
+                                            title=jid, sample_times=[p["t"] for p in raster_points],
+                                            times=curve_times, sample_interval=_cadence(points),
+                                            elapsed=True, axis_formatter=axis_label,
+                                            color=lambda _, i=i: COLORS[i % len(COLORS)], metadata=metadata)
+            chart_interaction.record(app, identity, metadata, row=len(rows), scale=scale, layer=1)
             if curve:
                 curve[0] = charts._header(g, values, width, jid, unit, "   ")
             rows.extend(curve)
@@ -1076,6 +1236,7 @@ def overlay(views, snap, app, width, height):
     state["chart_page"] = page
     row = lambda text, style="": [(clean(text, g.ascii), style)]
     button_hits = []
+    chart_mark = chart_interaction.mark(app)
     if modal == "inspect":
         rows = _inspector_rows(g, snap, app, inner)
         button_hits = list(state.get("inspector_controls", []))
@@ -1083,26 +1244,44 @@ def overlay(views, snap, app, width, height):
         footer = row(" Tab / arrows: section   Up / Down: scroll   l: logs   e: evidence   Esc: back", "dim")
     elif modal == "chart":
         series, source, jid = chart_data(app, snap)
-        state["chart_frame"] = {"series": series, "job": jid,
+        chart_job = app.job_record(jid, snap) if jid and hasattr(app, "job_record") else None
+        state["chart_frame"] = {"series": series, "job": jid, "source": source,
                                 "generation": getattr(getattr(app, "research", None), "generation", None),
-                                "result": id(getattr(app, "analysis_result", None))}
+                                "result": id(getattr(app, "analysis_result", None)), "record": chart_job}
         names = list(series)
         name = state.get("metric") if state.get("metric") in names else names[0] if names else ""
         state["metric"] = name
         extra = 4 if state.get("chart_range", {}).get("metric") == name else 0
-        rows = chart_rows(g, app, series.get(name, []), inner, max(1, min(20, page - 10 - extra)), name or "No metric samples", source, snapshot=snap)
+        plot_metadata = {}
+        zoom_key = chart_key(app, name, source, jid=jid, job=chart_job)
+        from . import metric_live
+        live_running = running_job(snap, jid)
+        rows, live_hits = metric_live.controls(g, app, zoom_key, inner, running=live_running, layer=1)
+        button_hits.extend(live_hits)
+        chart_offset = len(rows)
+        curve = chart_rows(g, app, series.get(name, []), inner, max(1, min(20, page - 10 - extra - chart_offset)), name or "No metric samples", source, snapshot=snap,
+                           metadata=plot_metadata, zoom_key=zoom_key, running=live_running)
+        chart_interaction.record(app, zoom_key, plot_metadata, row=chart_offset,
+                                 scale=plot_metadata.get("scale", "linear"), layer=1)
+        rows.extend(curve)
         window = f" | window {state['window']:g}s" if state.get("window") else ""
         active_preset = state.get("preset", "all" if state.get("zoom", 1) == 1 and not state.get("window") else "custom")
-        rows.append(row(f" Zoom x{state.get('zoom', 1):g} | pan {state.get('pan', 0):.0%}{window}" +
-                        (" | [custom]" if active_preset == "custom" else ""), "cyan"))
+        display_box = chart_interaction.bounds(app, zoom_key, scale=plot_metadata.get("scale", "linear"))
+        if display_box:
+            rows.append(row(f" Box zoom t={display_box['x'][0]:.9g} to {display_box['x'][1]:.9g} | u: undo | 0: reset", "cyan"))
+        else:
+            rows.append(row(f" Zoom x{state.get('zoom', 1):g} | pan {state.get('pan', 0):.0%}{window}" +
+                            (" | [custom]" if active_preset == "custom" else ""), "cyan"))
         from .control_rows import buttons
         choices = [(label, "[" + label + "]" if label == active_preset else label,
                     ("command", "chart preset " + label)) for label, _ in chart_tools.PRESETS]
-        choices += [("auto", "Auto axis", ("command", "chart axis auto")),
+        choices += [("undo", "Undo zoom", ("command", "chart undo")),
+                    ("reset", "Reset zoom", ("command", "chart reset")),
+                    ("auto", "Auto axis", ("command", "chart axis auto")),
                     ("log", "Log axis", ("command", "chart axis log")),
                     ("range", "Select range", ("key", "r")), ("events", "Events", ("key", "e"))]
         controls, hits = buttons(g, inner, choices, selected=active_preset, group="chart_controls", prefix="chart-control:")
-        button_hits = [(y + len(rows), kind, value) for y, kind, value in hits]
+        button_hits.extend((y + len(rows), kind, value) for y, kind, value in hits)
         rows.extend(controls)
         title, footer = "Chart inspector", row(" Arrows: sample  +/-: zoom  [ ]: pan  Tab: metric  Home/End  Esc: back", "dim")
     elif modal == "chart_events":
@@ -1167,6 +1346,11 @@ def overlay(views, snap, app, width, height):
     state["scroll"] = offset
     rows = [L.clip_row(line, inner) for line in rows[offset:offset + page]] + [L.clip_row(footer, inner)]
     rendered = L.box(g, rows, width, height, title, min_width=min(max(1, inner), 100))
+    if modal in ("chart", "diff") and len(rendered) > 2:
+        first_y, first_x, first_row = rendered[1]
+        chart_interaction.place_since(app, chart_mark, dy=first_y - offset, dx=first_x + 1,
+                                     clip=(first_y, first_x + 1, rendered[-1][0],
+                                           first_x + L.vlen(L.row_text(first_row)) - 1))
     from .control_rows import place_hits
     state["control_hits"] = place_hits(button_hits, rendered[1:-1], offset=offset)
     for y, _, value in state["control_hits"]:

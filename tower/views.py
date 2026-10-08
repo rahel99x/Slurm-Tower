@@ -25,7 +25,7 @@ LOG_ERROR = re.compile(r"\b(?:error|fatal|traceback|oom|killed|failed)\b", re.IG
 LOG_WARNING = re.compile(r"\b(?:warn(?:ing)?|retry(?:ing)?|timeout)\b", re.IGNORECASE)
 LOG_SUCCESS = re.compile(r"\b(?:done|complete(?:d)?|success(?:ful)?)\b", re.IGNORECASE)
 
-JOB_COLS = [Column("id", "JOBID", 5, 16), Column("name", "NAME", 10, 30, flex=True), Column("progress", "PROG", 6, 6), Column("part", "PART", 4, 9), Column("st", "ST", 2, 3),
+JOB_COLS = [Column("progress", "PROG", 6, 6), Column("id", "JOBID", 5, 16), Column("name", "NAME", 10, 30, flex=True), Column("part", "PART", 4, 9), Column("st", "ST", 2, 3),
             Column("where", "NODES", 6, 18, flex=True), Column("cpus", "CPU", 3, 4, ">"), Column("gpu", "GPU", 3, 8), Column("time", "ELAPSED/LIMIT", 8, 20),
             Column("left", "LEFT/WAIT", 9, 11, ">"), Column("cpu%", "CPU%", 4, 4, ">"), Column("eff", "EFF", 4, 5, ">"), Column("mem%", "MEM%", 4, 4, ">"),
             Column("gpu%", "GPU%", 4, 4, ">"), Column("flags", "FLAGS", 5, 12), Column("tags", "TAGS", 4, 14), Column("info", "INFO", 34, 60, flex=True)]
@@ -162,6 +162,54 @@ class Views:
             return []
         return charts.stacked_bar(self.g, items, width, title=title)
 
+    def metric_curve(self, app, values, width, height, plot_key, *, row=0, column=0,
+                     filled=False, running=None, **options):
+        """Render one source-scoped curve and stage its measured cell bounds."""
+        from . import chart_interaction, metric_live
+        controls = []
+        if running is not None and not filled:
+            controls, _ = metric_live.controls(self.g, app, plot_key, width, running=running,
+                                               row=row, column=column)
+        live_window = metric_live.window(app, plot_key, now=clock.now())
+        if live_window:
+            options["times"] = live_window
+            # A replay or delayed publication can contain later observations.
+            # The moving window must not use those future values to draw a
+            # line into the present or report them as the current source age.
+            timestamps = options.get("sample_times")
+            if timestamps is not None:
+                observations = [(value, timestamp) for value, timestamp in zip(values, timestamps)
+                                if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
+                values = [value for value, _ in observations]
+                options["sample_times"] = [timestamp for _, timestamp in observations]
+        zoom = chart_interaction.bounds(app, plot_key, scale="linear")
+        if zoom:
+            options.update(times=zoom["x"], lo=zoom["y"][0], hi=zoom["y"][1])
+        visible_values = None
+        bounds = options.get("times")
+        sample_times = options.get("sample_times")
+        if bounds and sample_times is not None and (live_window or zoom):
+            visible_values = [charts._finite(value) for value, timestamp in zip(values, sample_times)
+                              if charts._finite(timestamp) is not None and bounds[0] <= timestamp <= bounds[1]]
+            if not zoom and options.get("hi") is None:
+                options["lo"], options["hi"] = charts._bounds(visible_values, options.get("lo", 0.0), None)
+        metadata = {}
+        painter = charts.vbar_chart if filled else charts.braille_chart
+        rows = painter(self.g, values, width, height, metadata=metadata, **options)
+        if options.get("title") and visible_values is not None and rows:
+            rows[0] = charts._header(self.g, visible_values, width, options["title"],
+                                     options.get("unit", ""), options.get("indent", "   "))
+        chart_interaction.record(app, plot_key, metadata, row=row + len(controls), column=column)
+        if controls:
+            timestamps = [timestamp for timestamp in sample_times or () if charts._finite(timestamp) is not None]
+            age = compact(max(0.0, clock.now() - max(timestamps))) if timestamps else "unavailable"
+            cadence = options.get("sample_interval")
+            note = f" Source age {age}; sampling {cadence:g}s" if cadence else f" Source age {age}"
+            if live_window and visible_values is not None and not any(value is not None for value in visible_values):
+                note += "; no observations in live window"
+            rows.append(L.clip_row([(note, "dim")], width))
+        return controls + rows
+
     @staticmethod
     def beside(panels: Sequence[List[Row]], widths: Sequence[int], gap: int = 2) -> List[Row]:
         """Join independent panels while retaining every segment's style and display width."""
@@ -211,7 +259,6 @@ class Views:
 
     def node_resource_rows(self, nodes, width: int) -> List[Row]:
         """A categorical resource matrix; columns are measurements, never an implied time axis."""
-        from .palette import gradient
         label_w = min(16, max(vlen(node.name) for node in nodes))
         cell_w = max(8, (width - label_w - 7) // 3)
         titles = ("CPU ALLOCATED", "LOAD / CORE", "MEMORY USED")
@@ -224,8 +271,7 @@ class Views:
             row: Row = [(" " + pad(cut(node.name, label_w), label_w) + "  ", "bold")]
             for i, value in enumerate(values):
                 frac = max(0.0, min(1.0, value)) if value is not None else 0
-                shade = gradient("#164e63", "#22d3ee", frac * 2) if frac < .5 else gradient("#22d3ee", "#fbbf24", (frac - .5) * 2)
-                row += gradient_bar(self.g, value, cell_w - 8, "#164e63", shade)
+                row += gradient_bar(self.g, value, cell_w - 8, "track", "cyan" if frac < .5 else "yellow")
                 row.append((f" {100 * value:>4.0f}%  " if value is not None else "    ?   ", "bold" if value is not None else "dim"))
                 if i < 2:
                     row.append(("  ", ""))
@@ -423,7 +469,12 @@ class Views:
             return [(f" :{app.palette_edit}", "magenta"), (f"   {hint}" if hint else "", "dim")]
         if app.message:
             return [(cut(app.message, width - 1, self.g.ascii), "yellow")]
-        k = app.keys_help
+        def k(action):
+            label = app.keys_help(action)
+            if self.g.ascii:
+                for symbol, name in (("↑", "Up"), ("↓", "Down"), ("←", "Left"), ("→", "Right")):
+                    label = label.replace(symbol, name)
+            return label
         if app.tab == "log" and app.logs.selection_active:
             if app.logs.selection_all:
                 return [(f" Entire log selected {self.g.dot} y copies the complete file {self.g.dot} Esc cancel", "yellow")]
@@ -1843,6 +1894,9 @@ class Views:
         return ids
 
     def analytics_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
+        from . import chart_interaction, analytics_document
+        analytics_document.begin_render(app)
+        chart_mark = chart_interaction.mark(app)
         g = self.g
         view = app.analytics_view
         days = app.analytics_days_value()
@@ -1862,6 +1916,8 @@ class Views:
             body = self.analytics_compare(snap, app, width, avail)
         else:
             body = self.analytics_timeline(snap, app, width, avail, days)
+        chart_interaction.place_since(app, chart_mark, dy=len(out),
+            clip=(len(out), 0, len(out) + len(body), width))
         return out + body, hits
 
     def analytics_advisor(self, snap: dict, app, width: int, avail: Optional[int], days: float) -> List[Row]:
@@ -1963,8 +2019,11 @@ class Views:
                 samples = [x for x in s if x.get("k") == kind]
                 values = [fn(x) for x in samples]
                 label = f"{i} {cut(rows[[r['id'] for r in rows].index(i)]['name'], 14, g.ascii)}"
-                out += charts.braille_chart(g, values, width, h, hi=hi_all, unit=unit, title=label, times=(0, span),
-                                             sample_times=[x["t"] - t0 for x in samples], sample_interval=self.cfg["intervals"][kind], elapsed=True)
+                from . import chart_interaction
+                identity = chart_interaction.key(app, title, kind, i, scope="resource-compare", attempt=t0)
+                out += self.metric_curve(app, values, width, h, identity, row=len(out),
+                    hi=hi_all, unit=unit, title=label, times=(0, span),
+                    sample_times=[x["t"] - t0 for x in samples], sample_interval=self.cfg["intervals"][kind], elapsed=True)
         if avail is not None:
             out = out[:avail]
         return out
@@ -1999,54 +2058,131 @@ class Views:
             cpu_times = (live[0]["t"], live[-1]["t"])
             cpu_stamps = [s["t"] for s in live]
             cpu_title = "cpu per core (rate, efficiency where no rate)" if g.ascii else "CPU per core · rate / efficiency"
-            charts_.append((cpu_title, [None if v is None else 100 * v for v in cpu], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"]))
+            charts_.append((cpu_title, [None if v is None else 100 * v for v in cpu], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "cpu-rate"))
             req = job.mem_bytes if job else (fin.req_mem if fin else 0)
             if req:
-                charts_.append(("memory of the request", [None if s.get("rss") is None else 100 * s["rss"] / req for s in live], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"]))
+                charts_.append(("memory of the request", [None if s.get("rss") is None else 100 * s["rss"] / req for s in live], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "memory-request"))
             else:
-                charts_.append(("resident memory (GB)", [None if s.get("rss") is None else s["rss"] / 1024 ** 3 for s in live], None, "G", cpu_times, cpu_stamps, self.cfg["intervals"]["live"]))
+                charts_.append(("resident memory (GB)", [None if s.get("rss") is None else s["rss"] / 1024 ** 3 for s in live], None, "G", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "resident-memory"))
         keys = []
-        for s in gpus:
-            for k in s.get("gpu", {}):
+        def finite_gpu(value):
+            return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and charts._finite(value) is not None and 0 <= value <= 100 else None)
+
+        def busy_mean(values):
+            # This is an observed sample mean, not a counter of GPU busy time.
+            # Unknown readings preserve their gap and never enter the divisor.
+            total, count, result = 0.0, 0, []
+            for value in values:
+                if value is None:
+                    result.append(None)
+                else:
+                    total += value
+                    count += 1
+                    result.append(total / count)
+            return result
+
+        gpu_points = sorted((point for point in gpus if isinstance(point.get("t"), (int, float))
+                             and not isinstance(point["t"], bool) and charts._finite(point["t"]) is not None),
+                            key=lambda point: point["t"])
+        for s in gpu_points:
+            devices = s.get("gpu", {})
+            for k in devices if isinstance(devices, dict) else ():
+                if not isinstance(k, str) or not k:
+                    continue
                 if k not in keys:
                     keys.append(k)
+                    if len(keys) == 4:
+                        break
+            if len(keys) == 4:
+                break
         for k in keys[:4]:
-            charts_.append((f"gpu {k} utilisation", [s.get("gpu", {}).get(k, [None])[0] for s in gpus], 100.0, "%", (gpus[0]["t"], gpus[-1]["t"]), [s["t"] for s in gpus], self.cfg["intervals"]["gpu"]))
+            values = []
+            for point in gpu_points:
+                devices = point.get("gpu", {})
+                reading = devices.get(k) if isinstance(devices, dict) else None
+                values.append(finite_gpu(reading[0]) if isinstance(reading, (list, tuple)) and reading else None)
+            times = (gpu_points[0]["t"], gpu_points[-1]["t"])
+            stamps = [point["t"] for point in gpu_points]
+            charts_.append((f"GPU {k} rate / utilization", values, 100.0, "%", times, stamps,
+                            self.cfg["intervals"]["gpu"], f"gpu:{k}:rate"))
+            charts_.append((f"GPU {k} observed busy mean / efficiency proxy", busy_mean(values), 100.0, "%", times,
+                            stamps, self.cfg["intervals"]["gpu"], f"gpu:{k}:busy-mean"))
         trace = snap.get("trace", {}).get(jid, [])
-        if trace:
-            idx = sorted({r["index"] for r in trace})
-            for i in idx[:4]:
-                pts = [r for r in trace if r["index"] == i]
-                trace_title = f"gpu {i} utilisation from the job's own nvidia-smi log (1/min, {len(pts)} samples)" if g.ascii else f"gpu {i} · job trace · {len(pts)} samples"
-                charts_.append((trace_title, [r["util"] for r in pts], 100.0, "%", (pts[0]["t"], pts[-1]["t"]), [r["t"] for r in pts], 60.0))
+        trace_points = sorted((point for point in trace if isinstance(point, dict)
+                               and isinstance(point.get("index"), int) and not isinstance(point["index"], bool)
+                               and point["index"] >= 0 and isinstance(point.get("t"), (int, float))
+                               and not isinstance(point["t"], bool) and charts._finite(point["t"]) is not None),
+                              key=lambda point: (point["index"], point["t"]))
+        idx = sorted({point["index"] for point in trace_points})
+        for i in idx[:4]:
+            pts = [point for point in trace_points if point["index"] == i]
+            values = [finite_gpu(point.get("util")) for point in pts]
+            times, stamps = (pts[0]["t"], pts[-1]["t"]), [point["t"] for point in pts]
+            charts_.append((f"GPU trace {i} rate / utilization ({len(pts)} samples)", values, 100.0, "%", times,
+                            stamps, 60.0, f"gpu-trace:{i}:rate"))
+            charts_.append((f"GPU trace {i} observed busy mean / efficiency proxy", busy_mean(values), 100.0, "%",
+                            times, stamps, 60.0, f"gpu-trace:{i}:busy-mean"))
+        if keys or idx:
+            head.append([(" GPU rate is sampled device busy %. Efficiency proxy is the mean of valid retained samples; gaps are excluded.", "dim")])
+            head.append([(" GPU scope is observed devices only. Throughput, FLOP efficiency, and full-run allocation efficiency are not measured.", "dim")])
+        elif getattr(job or fin, "gpus", 0):
+            head.append([(" GPU telemetry is unavailable. Enable GPU sampling or provide this job's nvidia-smi trace.", "dim")])
+        from . import analytics_document, chart_interaction, metric_live
+        native_document = analytics_document.eligible(app, avail)
+        source_head = len(head)
         n = len(charts_)
         if not g.ascii and width >= 120 and (avail is None or avail >= 28):
-            telemetry = [(title, values) for title, values, hi, unit, _, _, _ in charts_ if unit == "%" and len(values) >= 2][:4]
+            telemetry = [(title, values) for title, values, hi, unit, _, _, _, _ in charts_ if unit == "%" and len(values) >= 2][:4]
             if telemetry:
                 head += charts.heatmap(g, [values for _, values in telemetry], width,
                                       labels=[title.split(" · ")[0] for title, _ in telemetry], hi=100, unit="%",
                                       title="telemetry heatmap · each row's observations, oldest to newest")
-        columns = 2 if not g.ascii and width >= 140 and n >= 2 and (avail is None or avail >= 20) else 1
+        columns = 2 if not g.ascii and width >= 140 and n >= 2 and (native_document or avail is None or avail >= 20) else 1
         plot_rows = max(1, (n + columns - 1) // columns)
-        filled = not g.ascii and (avail is None or avail - len(head) >= plot_rows * 10)
-        overhead = 7 if filled else 3
-        h = 8 if avail is None else max(2, min(12, (avail - len(head)) // plot_rows - overhead))
+        filled = not native_document and not g.ascii and (avail is None or avail - len(head) >= plot_rows * 10)
+        overhead = (7 if filled else 3) + 2 * int(bool(job and job.state == "RUNNING" and width >= 24))
+        h = 8 if native_document or avail is None else max(2, min(12, (avail - len(head)) // plot_rows - overhead))
         cell_width = (width - 2 * (columns - 1)) // columns
         out = list(head)
+        record = job or fin
+        attempt = "|".join(str(getattr(record, name, None) or "") for name in ("submit", "start")) if record else None
+        running = bool(job and job.state == "RUNNING")
+        # Title + plot rows + baseline + time axis. Running controls and their
+        # source-age footer add two rows; an area companion adds four rows.
+        band_rows = h + 3 + 2 * int(running and cell_width >= metric_live.MIN_WIDTH) + 4 * int(filled)
+        chart_mark = chart_interaction.mark(app)
+        if native_document:
+            sticky = min(source_head, max(0, avail - 2))
+            count = len(head) - sticky + ((n + columns - 1) // columns) * band_rows
+            painted, page = analytics_document.prepare(app, jid, attempt, width, avail, sticky, count)
         for offset in range(0, n, columns):
-            if avail is not None and len(out) >= avail:
+            if not native_document and avail is not None and len(out) >= avail:
                 break
+            if native_document and (len(out) + band_rows <= sticky + painted or len(out) >= sticky + painted + page):
+                # Reserve measured document rows without rasterizing or staging
+                # controls for cards outside the actual painted viewport.
+                out.extend([[] for _ in range(band_rows)])
+                continue
             panels = []
-            for title, values, hi, unit, times, sample_times, sample_interval in charts_[offset:offset + columns]:
+            for position, (title, values, hi, unit, times, sample_times, sample_interval, metric_id) in enumerate(charts_[offset:offset + columns]):
                 # Each resource uses its own sampled span; a GPU trace cannot move a CPU time axis.
                 title = title.replace(" · ", " - ") if g.ascii else title
-                panel = charts.braille_chart(g, values, cell_width, h, hi=hi, unit=unit, title=title, times=times,
-                                             sample_times=sample_times, sample_interval=sample_interval)
+                from . import chart_interaction
+                identity = chart_interaction.key(app, metric_id, unit, jid, scope="resource-series", attempt=attempt)
+                column = position * (cell_width + 2)
+                panel = self.metric_curve(app, values, cell_width, h, identity, row=len(out), column=column,
+                    running=bool(job and job.state == "RUNNING"), hi=hi, unit=unit, title=title,
+                    times=times, sample_times=sample_times, sample_interval=sample_interval)
                 if filled:
-                    panel += charts.vbar_chart(g, values, cell_width, 2, hi=hi, unit=unit, times=times,
-                                              sample_times=sample_times, sample_interval=sample_interval)
+                    area_key = chart_interaction.key(app, metric_id, unit, jid, scope="resource-area", attempt=attempt)
+                    panel += self.metric_curve(app, values, cell_width, 2, area_key, row=len(out) + len(panel),
+                        column=column, filled=True, hi=hi, unit=unit, times=times,
+                        sample_times=sample_times, sample_interval=sample_interval)
                 panels.append(panel)
             out += self.beside(panels, [cell_width] * len(panels)) if columns > 1 else panels[0]
+        if native_document:
+            return analytics_document.finish(app, out, sticky, painted, page, width, chart_mark, g)
         return out if avail is None else out[:avail]
 
     def analytics_history(self, snap: dict, app, width: int, avail: Optional[int], days: float) -> List[Row]:
@@ -2153,6 +2289,8 @@ class Views:
         app.width = width
         if height is not None:
             app.height = height
+        from . import chart_interaction
+        chart_interaction.begin_frame(app, width, height)
         app.completion.update(snap)
         from .session_tools import observe, unread_count
         from .table_tools import snapshot, freeze_status
@@ -2192,6 +2330,8 @@ class Views:
         from .history_browser import wrap_render
         body, hits = wrap_render(self, snap, app, width, body_h,
             lambda panel_width, panel_height: render_body(self, snap, app, panel_width, panel_height, actions, default_renderer))
+        chart_interaction.place_since(app, 0, dy=len(head),
+            clip=None if height is None else (len(head), 0, max(len(head), height - 1), width))
         hits = [(y + len(head), kind, key) for y, kind, key in hits]
         if height is None:
             return [L.clip_row(r, width) for r in head + body], hits
@@ -2257,7 +2397,9 @@ class Views:
         if not feedback:
             return output, hits
         from .interaction import publish, decorate
-        publish(app, output, hits, width, height)
+        chart_interaction.publish(app, width, height)
+        from .metric_live import descriptors as live_descriptors
+        publish(app, output, hits, width, height, extra_controls=live_descriptors(app))
         return decorate(app, output), hits
 
     def step_lines(self, steps: Sequence[Step], width: int) -> List[Row]:
@@ -2291,12 +2433,17 @@ class Views:
     def overlay(self, snap: dict, app, width: int, height: int, *, feedback=True):
         app.content_overlay_rows, app.toolbar_overlay_rows = [], []
         rows = self._overlay_content(snap, app, width, height)
+        from .chart_interaction import publish as publish_charts
+        if feedback:
+            publish_charts(app, width, height)
         if rows is not None and not app.content_overlay_rows and not app.toolbar_overlay_rows:
             app.content_overlay_rows = rows
         if rows is not None and feedback:
             from .interaction import publish, decorate_overlays
+            from .metric_live import descriptors as live_descriptors
             publish(app, getattr(app, "frame_rows", getattr(app, "last_rows", [])),
-                    getattr(app, "last_hits", []), width, height, overlays=rows)
+                    getattr(app, "last_hits", []), width, height, overlays=rows,
+                    extra_controls=live_descriptors(app))
             return decorate_overlays(app, rows)
         return rows
 

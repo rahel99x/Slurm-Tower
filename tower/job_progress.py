@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from collections import OrderedDict
 import copy
 import math
+import os
 import threading
 import time
 
@@ -338,13 +339,11 @@ class Observation:
         percent = int(min(999, max(0, self.fraction * 100)) + .5)
         eighths = int(max(0, min(1, self.fraction)) * 8 + .5)
         block = "░" if not eighths else "▏▎▍▌▋▊▉█"[eighths - 1]
-        if self.basis == "time":
-            return f"t{percent:3d}% " if ascii_ else f"t{percent}%".ljust(5) + block
-        elif ascii_:
-            prefix = "p"
-        else:
-            prefix = block
-        return f"{prefix}{percent:3d}% "
+        if ascii_:
+            prefix = "t" if self.basis == "time" else "p"
+            return f"{prefix}{percent:3d}% "
+        prefix = "◷" if self.basis == "time" else "▸"
+        return f"{prefix}{percent}%".ljust(5) + block
 
 
 def _fraction(progress, latest):
@@ -414,6 +413,41 @@ def _source(data, jid, job, generation=None):
     return Source(*reported, timestamp=timestamp)
 
 
+def _retain_selected(app, state, root, index, jid, job, source, store, generation):
+    """Keep a validated run report when selection reconfigures the shared Hub.
+
+    The inventory and scheduler attempt, rather than the currently selected
+    job, own this bounded scalar cache. Manual file attachments still use the
+    Hub's configuration generation and cannot populate this cache.
+    """
+    project = getattr(app, "project_state", {})
+    binding = project.get("binding") if isinstance(project, dict) else None
+    metadata = index.get(jid)
+    if (not root or metadata is None or not isinstance(binding, dict)
+            or project.get("auto_suppressed") == jid
+            or binding.get("project_root") != root or binding.get("job_id") != jid
+            or binding.get("run_id") != metadata[1] or binding.get("attempt") != metadata[2]
+            or not _matches_inventory(job, metadata)):
+        return
+    run_root = os.path.join(root, "runs", metadata[1])
+    from .projects import relative_path
+    try:
+        relative_path(metadata[3])
+    except ValueError:
+        return
+    path = os.path.join(run_root, metadata[3])
+    if binding.get("run_root") != run_root or binding.get("metrics_file") != path:
+        return
+    with app.research.lock:
+        if app.research.generation != generation or app.research.settings.get("metrics_file") != path:
+            return
+    state["reports"][jid] = dict(source=source, signature=_signature(store, job),
+                                  metadata=metadata, root=root, path=path)
+    state["reports"].move_to_end(jid)
+    while len(state["reports"]) > MAX_REPORTS:
+        state["reports"].popitem(last=False)
+
+
 def published(app, snap):
     """Collect compact, exact-job sources once for a table rendering pass.
 
@@ -436,9 +470,10 @@ def published(app, snap):
                         and isinstance(entry, (tuple, list)) and len(entry) == 2):
                     compact[key[2]] = _compact(entry[1])
     result = {}
-    state = getattr(app, "job_progress_state", None)
     store = getattr(app, "store", None)
-    if isinstance(state, dict) and state.get("reports") and store is not None:
+    state = initialize(app) if store is not None else getattr(app, "job_progress_state", None)
+    root, index = "", {}
+    if isinstance(state, dict) and store is not None:
         root, index = _inventory_index(app, state)
         for jid, entry in state["reports"].items():
             job = jobs.get(jid)
@@ -455,6 +490,14 @@ def published(app, snap):
         source = _source(data, jid, jobs[jid], generation)
         if source is not None:
             result[jid] = source
+            if isinstance(state, dict) and store is not None:
+                _retain_selected(app, state, root, index, jid, jobs[jid], source, store, generation)
+        else:
+            # A new selected-source read is authoritative, including removal
+            # or invalidation of its previously reported progress fields.
+            result.pop(jid, None)
+            if isinstance(state, dict):
+                state["reports"].pop(jid, None)
     supplied = snap.get("progress", {})
     if isinstance(supplied, dict):
         for jid, data in supplied.items():

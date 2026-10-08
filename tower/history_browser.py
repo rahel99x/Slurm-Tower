@@ -363,7 +363,11 @@ def wrap_render(views, snap, app, width, height, content_renderer):
         "geometry": (getattr(app, "width", None), getattr(app, "height", None))}
     app.history_browser_content_rect = Rect(content.x, content.y + origin, content.width, content.height)
     app.history_browser_rect = Rect(browser.x, browser.y + origin, browser.width, browser.height)
+    from . import chart_interaction
+    chart_mark = chart_interaction.mark(app)
     rows, hits = content_renderer(content.width, content.height)
+    chart_interaction.place_since(app, chart_mark, dy=content.y, dx=content.x,
+        clip=(content.y, content.x, content.y + content.height, content.x + content.width))
     canvas = [[(" " * width, "bg:canvas")] for _ in range(height)]
     for y in range(height):
         chunks = []

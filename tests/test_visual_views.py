@@ -103,8 +103,16 @@ def test_analytics_uses_each_resources_actual_timestamps(visual_dashboard, monke
     assert calls[1][1]["sample_times"] == [100, 130]
     assert calls[2][1]["times"] == (110, 170)
     assert calls[2][1]["sample_times"] == [110, 170]
-    assert calls[3][1]["times"] == (10, 70)
-    assert calls[3][1]["sample_interval"] == 60
+    # The sampled busy mean shares this device's actual clock. Both job trace
+    # curves retain their independent span and one-minute source cadence.
+    assert calls[3][0] == [20, 50]
+    assert calls[3][1]["times"] == (110, 170)
+    assert calls[3][1]["sample_times"] == [110, 170]
+    assert calls[4][1]["times"] == (10, 70)
+    assert calls[4][1]["sample_interval"] == 60
+    assert calls[5][0] == [5, 10]
+    assert calls[5][1]["times"] == (10, 70)
+    assert calls[5][1]["sample_interval"] == 60
 
 
 def test_large_analytics_has_observed_heatmap_and_precision_curves(visual_dashboard):
@@ -117,7 +125,7 @@ def test_large_analytics_has_observed_heatmap_and_precision_curves(visual_dashbo
     text = L.to_text(rows, 160)
     assert "telemetry heatmap" in text and "newest at right" in text
     assert "██" in text
-    assert any(0x2800 <= ord(char) <= 0x28ff for char in text)
+    assert any(char in charts.QUADRANTS[1:] for char in text)
     assert "#" not in text
     assert len(rows) <= 50
 

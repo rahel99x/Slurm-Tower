@@ -48,7 +48,7 @@ DEFAULTS: Dict[str, Any] = {
     "series_keep": 4000,                 # samples kept per job for the analytics tab (also appended to state/series/<job>.jsonl)
     "analytics_days": [1, 2, 7, 14, 30], # the history windows the analytics tab cycles through
     "research": {"metrics_file": "", "contract": "", "workdir": "", "passport": "", "planning_file": "", "interval": 5.0},
-    "theme": "default",                  # default | mono | high | cb (colour-blind safe) | reader (plain text, no glyphs)
+    "theme": "default",                  # named colour palettes; mono | high | cb | reader accessibility modes
     "host": "",                          # remote mode: run every Slurm command on this login node over ssh (ControlMaster reused)
     "ssh_user": "",                      # the login on that host (empty: the same as here)
     "ssh_opts": [],                      # extra ssh options, e.g. ["-J", "bastion"]
@@ -101,7 +101,7 @@ gpu_types = ["a100", "a40", "a30", "v100", "l40s", "p100"]
 
 series_keep = 4000              # samples kept per job for the analytics tab (also appended to state/series/<job>.jsonl)
 analytics_days = [1, 2, 7, 14, 30]
-theme = "default"               # default | dark | light | terminal | mono | high | cb | reader
+theme = "default"               # default | dark | light | darcula | modnokai | gruvbox-dark | terminal | mono | high | cb | reader
 
 # host = "login.example.edu"    # remote mode: every Slurm command runs there over ssh (a ControlMaster connection is reused)
 # ssh_user = "me"

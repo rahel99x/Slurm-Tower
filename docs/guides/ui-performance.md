@@ -4,6 +4,9 @@
 
 Tower 4.3.1 introduced the cached pointer display and bounded long inline views.
 Tower 4.4.0 retains that path for draggable workspaces, shared launch groups, history browsers, and Quick Advisor.
+Tower 4.5.0 extends it to current-viewport directional focus and metric crosshair feedback.
+Theme changes repaint the document with the selected canvas and surfaces.
+Live metric windows use display deadlines while source sampling retains its own limits.
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
 The display changes do not increase Slurm sampling rates.
 
@@ -31,6 +34,12 @@ Tower retains the last published page while pointer feedback changes.
 It updates the affected terminal rows instead of rebuilding the whole page for each movement report.
 The page still refreshes for changed data, deliberate input, resize, and active animations.
 Continuous pointer movement does not postpone background-result publication.
+
+Metric crosshairs read the frozen, final plot geometry.
+Moving a pointer does not recompute a curve or read its source.
+A valid rectangular release changes display bounds and requests a fresh document.
+Each zoom belongs to the exact metric, source, job, and attempt.
+Live advances the visible time window at a bounded display rate; a one-millisecond window does not request one-millisecond scheduler samples.
 
 The control graph indexes visible rows and control identities.
 Advisor results and wrapped Details documents reuse their current published inputs.
@@ -140,6 +149,42 @@ Adaptive controls also passed terminal checks at 40, 80, 120, and 180 columns in
 Those checks covered buffered divider capture, drag cancellation, resize, older Recents, shared folds, exact historical job selection, four history docking orientations, asynchronous Quick Advisor, and six-cell progress sorting.
 The scheduler fixtures allowed only read commands.
 
+## Tower 4.5.0 metric and input measurements
+
+The metric comparison used Tower 4.4.0 at `de94c7b` and the final 4.5.0 display and input paths.
+Both revisions used Python 3.12 on the same runner and ran sequentially.
+The counting-paint benchmark used 120 columns, 36 rows, 500 jobs, 2,000 accounting records, and 20 measured frames.
+The Research fixture contained 64 metrics and 256 records.
+
+| UI workload, median | 4.4.0 | 4.5.0 |
+| --- | ---: | ---: |
+| Cached Advisor hover | 0.14 ms | 0.23 ms |
+| Advisor wheel frame | 25.73 ms | 33.35 ms |
+| Research document refresh | 12.20 ms | 16.78 ms |
+
+Cached Advisor hover painted two rows without page composition, job-row formatting, aggregation, chart rasterization, control-graph publication, or source I/O.
+A separate 100-frame metric-crosshair check measured a 0.77 ms median and a 1.88 ms 95th percentile.
+It used the published plot geometry and performed no page composition, chart rasterization, control-graph publication, or source I/O.
+Full document refreshes do more work to publish current metric controls and exact plot geometry.
+
+The paired local terminal check used `screen-256color`, 120 columns, 36 rows, the same job counts, eight running jobs, and 128 job names.
+Both revisions used the same compact observer after actual `curses.doupdate()`.
+The wheel settings included smooth scrolling and the same Details Advisor document.
+
+| Input workload | 4.4.0 | 4.5.0 | Terminal updates, 4.4.0 / 4.5.0 |
+| --- | ---: | ---: | ---: |
+| Final hover after 1,000 movement reports, median of three bursts | 43.54 ms | 81.67 ms | 5 / 6 |
+| Command after 1,000 movement reports | 521.78 ms | 530.47 ms | 18 / 22 |
+| Target acceptance after 700 Advisor wheel reports | 1,284.03 ms | 486.20 ms | 18 / 9 |
+| Reverse through 820 wheel reports, then complete a focus command | 1,202.54 ms | 814.02 ms | 25 / 22 |
+
+The direct Details wheel route removes repeated input dispatch before the next viewport publication.
+The forward-wheel measurement stops when Tower accepts the target; smooth motion settles afterward.
+The reverse-wheel measurement requires the visible focus change after the queued command.
+The hover result is a three-burst median; each other row describes one observed burst.
+These observations include queued input and exclude SSH transport and terminal-emulator presentation.
+They show bounded cached feedback and fewer wheel updates in this fixture, not a universal improvement for every workload.
+
 ## Validate a source change
 
 Use the reproducible benchmark to measure UI work on your computer:
@@ -176,6 +221,11 @@ python3 scripts/setup.py --mode demo --dev
   tests/test_workspace_render_budget.py \
   tests/test_advisor_render_budget.py \
   tests/test_chart_render_budget.py \
+  tests/test_chart_interaction.py \
+  tests/test_readable_curve.py \
+  tests/test_metric_live.py \
+  tests/test_reported_metric_live.py \
+  tests/test_theme_coherence.py \
   tests/test_table_filter_budget.py \
   tests/test_pane_dividers.py \
   tests/test_adaptive_recents.py \

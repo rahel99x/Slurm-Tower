@@ -12,6 +12,13 @@ Use the feature guides for complete procedures and operating limits.
 Use [Mouse and button navigation](guides/pointer-navigation.md) for hover feedback, directional focus, dragging, and motion preferences.
 Use [Adjustable workspaces and job advice](guides/adaptive-workspaces.md) for dividers, Recents, launch groups, history panels, and Quick Advisor.
 
+In compact native **Analytics → Job series**, Up, Down, Home, and End change the job.
+The mouse wheel, Page Up, and Page Down scroll its metric document.
+Use `:series-scroll home` or `:series-scroll end` to reach its first or last rows.
+The job heading stays visible. A changed job returns the document to the top.
+Point at Job history to scroll that browser instead.
+Slider, browser, and directional button focus use their own keys while active.
+
 ## Control notation
 
 A leading `:` means: open the command palette, then type the command.
@@ -145,6 +152,8 @@ See [Update rate](guides/live-workbench.md#set-the-update-rate) for source limit
 | Move the pointer over a button, menu choice, or link | Highlight that visible control |
 | F8, `:focusbuttons`, or `:focusbuttons on` | Enter directional button focus |
 | Arrow keys with button focus | Select the nearest visible control in that direction |
+| Up / Down with Jobs or Recents row focus | Select real jobs and scroll or load the next row at the viewport edge |
+| Right from a Jobs or Recents row with button focus | Move into visible Details controls |
 | Tab / Shift-Tab with button focus | Select the next or previous visible control |
 | Home / End with button focus | Select the first or last visible control |
 | Enter / Space with button focus | Activate the focused control |
@@ -156,8 +165,28 @@ See [Update rate](guides/live-workbench.md#set-the-update-rate) for source limit
 Mouse hover and drag require movement reports from the terminal.
 Use `:terminaltest` to inspect reported keys and mouse events.
 Keyboard navigation remains available when those reports are missing.
+Jobs row focus selects that exact job for Details without activating a Details button.
+Viewport changes publish fresh row controls before another action can use their positions.
 The reader theme and `animations = false` use immediate scrolling and skip the welcome.
 See [Mouse and button navigation](guides/pointer-navigation.md) for procedures, saved preferences, and troubleshooting.
+
+### Terminal palette
+
+| Control | Function |
+| --- | --- |
+| `T` | Cycle the available themes |
+| `:theme NAME` | Select an exact palette during the session |
+| `:theme darcula` | Select Darcula |
+| `:theme modnokai`, `:theme monokai` | Select Modnokai; Monokai is an alias |
+| `:theme gruvbox-dark`, `:theme gruvbox` | Select Gruvbox Dark |
+| `:theme terminal` | Retain the terminal's own background |
+| `:theme mono`, `:theme reader` | Use colour-free output; reader also uses plain ASCII |
+
+The active theme updates the canvas, blank cells, text, menus, information strips, and chart colours.
+Theme changes preserve job selection and measured values.
+Use `dark`, `light`, `high`, or `cb` for the other explicit display palettes.
+Use `--no-color` or `NO_COLOR` to suppress colour.
+See [Terminal palettes](guides/pointer-navigation.md#change-the-terminal-palette) for controls and terminal limits.
 
 ### Adjustable panel dividers
 
@@ -276,8 +305,10 @@ Click column headings for cascading sorts.
 Use `:sortby [TABLE] COLUMN [asc|desc|off]` for the equivalent command.
 Use `:sortby [TABLE] clear` to remove every rule in that table.
 See [Tables](guides/tables.md) for sort editing, column controls, filters, marks, and drill-down.
-The six-cell Progress column also supports `:sortby jobs progress asc\|desc\|off`.
-An application bar reports a published completion fraction; its `t` fallback reports time-limit usage.
+The six-cell Progress column precedes JOBID and supports `:sortby jobs progress asc\|desc\|off`.
+The marking and fold gutter remains separate to its left.
+`▸` identifies a published application completion fraction; `◷` identifies time-limit usage.
+ASCII uses `p` and `t` for those same states.
 See [Job progress](guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for exact source fields and unknown states.
 
 ### Jobs Details buttons
@@ -576,6 +607,12 @@ See [Operations](guides/operations.md) for precise persistence, limits, and trou
 | `:chart window SECONDS` | Select a custom time window |
 | `:chart zoom FACTOR` | Select a zoom factor from one to 1024 |
 | `:chart pan FRACTION` | Select a position from zero to one |
+| `:chart undo`, `:chart reset` | Undo or reset rectangular zoom for the inspector's current metric |
+| `:chartzoom undo`, `:chartzoom reset` | Undo or reset rectangular zoom for the last selected or zoomed metric graph |
+| `:metric-live TOKEN on\|off\|toggle` | Control Live for a currently visible running metric; TOKEN is its session control token |
+| `:metric-window TOKEN SECONDS` | Set that metric's display window from 0.001 to 5 seconds |
+| `:metric-window TOKEN focus` | Enter its slider keyboard controls |
+| `:series-scroll up\|down\|page-up\|page-down\|home\|end` | Scroll the compact native Analytics Job Series metric document |
 | `:chart axis auto` | Fit the axis to available measurements |
 | `:chart axis fixed LOW HIGH` | Apply fixed numeric bounds |
 | `:chart axis log [POSITIVE_LOW POSITIVE_HIGH]` | Apply a logarithmic scale |
@@ -604,12 +641,27 @@ Use `r` to set the start and end of a sample interval.
 Use `e` to open observed events.
 Use `s` to change shared-scale mode.
 Click a visible time-preset or axis control for the corresponding chart operation.
+Move the pointer inside a metric plot for its cyan dotted crosshair.
+Press, drag, and release inside the same plot to zoom both axes to a rectangle.
+The rectangle must span at least two columns and one row.
+Press `u` or `0` while pointing at that graph to undo or reset rectangular zoom.
+Esc before release discards the preview; an outside release or changed job/layout also cancels it.
+Menus, dialogs, and startup previews prevent capture of hidden graphs.
 
 In Diff, `s` changes the comparison scale lock.
 In the event picker, Enter opens the selected citation or job.
 Click an event's visible text or source row to open that exact painted citation.
 Chart Events and Timeline links also support F8 navigation and Enter activation.
 Display labels and precision do not change recorded values.
+A running metric can show **Live off/ON** and a logarithmic window slider.
+Compact rows use empty/filled Live symbols, or `o`/`+` in ASCII mode.
+Drag left for five seconds or right for one millisecond.
+While the slider has focus, use Left/Right, Page Up/Page Down, Home, and End.
+Enter or Esc leaves slider focus. Esc during a drag restores its previous duration.
+Live displays `[current time - duration, current time]`; it does not change source polling.
+A valid rectangular zoom turns Live off. A cancelled rectangle resumes it.
+Completed jobs cannot enable Live.
+
 See [Charts](guides/charts.md) for coverage, axis restrictions, and declared units.
 
 ## Artifact inspection
@@ -699,7 +751,7 @@ Run `tower --help` for the parser's complete current syntax.
 | `--no-gpu` | Disable live GPU sampling |
 | `--bell` | Ring on observed job starts |
 | `--ascii` | Select portable character graphics |
-| `--unicode` | Select block and braille graphics when encoding permits them |
+| `--unicode` | Select Unicode block graphics and symbols when encoding permits them |
 | `--no-color` | Disable color |
 | `--no-plugins` | Disable plugin loading |
 | `--once` | Print one frame and exit |

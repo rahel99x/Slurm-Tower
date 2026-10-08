@@ -228,14 +228,14 @@ def test_controller_filter_sort_tabs_overlays_and_mouse(tmp_path):
 def test_flags_thresholds_and_once_outputs(tmp_path):
     backend, store, sampler, actions, views, app = make_app(tmp_path)
     text = screen.once_text(app, views, store, actions, 180, False, tab="jobs")
-    row = next(l for l in text.splitlines() if l.startswith(" 12477369"))
+    row = next(l for l in text.splitlines() if "12477369" in l)
     assert "!cpu" in row and "!mem" in row and " 95 " in row                 # a GPU job at 30 % cpu, 19 % memory after 17 min
-    row = next(l for l in text.splitlines() if l.startswith(" 12480003"))
+    row = next(l for l in text.splitlines() if "12480003" in l)
     assert "dep" in row and "Dependency" in row
-    head = next(l for l in text.splitlines() if l.startswith(" JOBID"))
-    assert head.split() == ["JOBID", "NAME", "PROG", "PART", "ST", "^", "NODES", "CPU", "GPU", "ELAPSED/LIMIT", "LEFT/WAIT", "CPU%", "EFF", "MEM%", "GPU%", "FLAGS", "TAGS", "INFO"]
+    head = next(l for l in text.splitlines() if l.lstrip().startswith("PROG"))
+    assert head.split() == ["PROG", "JOBID", "NAME", "PART", "ST", "^", "NODES", "CPU", "GPU", "ELAPSED/LIMIT", "LEFT/WAIT", "CPU%", "EFF", "MEM%", "GPU%", "FLAGS", "TAGS", "INFO"]
     narrow = screen.once_text(app, views, store, actions, 100, False, tab="jobs")
-    head = next(l for l in narrow.splitlines() if l.startswith(" JOBID"))
+    head = next(l for l in narrow.splitlines() if l.lstrip().startswith("PROG"))
     assert "FLAGS" not in head and "INFO" in head and all(L.vlen(l) <= 100 for l in narrow.splitlines())
     hist = screen.once_text(app, views, store, actions, 160, False, tab="history")
     assert "core-hours" in hist and "OUT_OF_MEMORY" in hist and "0:125" in hist
@@ -362,6 +362,12 @@ def test_selection_copy_and_exports(tmp_path):
 
 def test_command_palette_and_analytics_views(tmp_path):
     backend, store, sampler, actions, views, app = make_rich_app(tmp_path)
+    # Rapid fake sampling rounds can share one rounded wall timestamp. This
+    # test exercises interactive time bounds, so supply a deterministic span.
+    for series in store.series.values():
+        first = series[0]["t"]
+        for index, point in enumerate(series):
+            point["t"] = first + 12 * index
     W, H = 150, 44
     views.compose(store.snapshot(), app, W, H, actions)
 
@@ -408,7 +414,17 @@ def test_command_palette_and_analytics_views(tmp_path):
     app.handle("down"); assert app.analytics_job == "12480001"
     app.handle("up"); assert app.analytics_job == "12477369"
     rows, _ = views.compose(store.snapshot(), app, 150, 44, actions)
-    assert "gpu a01-05:0 utilisation" in "\n".join(L.row_text(r) for r in rows) or "gpu task0:0 utilisation" in "\n".join(L.row_text(r) for r in rows)
+    from tower import chart_interaction
+    # Additional GPU efficiency cards are reached through the real document
+    # controls; they do not have to fit beside CPU and memory in one frame.
+    for _ in range(16):
+        if any(plot.key[2].startswith("gpu:") for plot in chart_interaction.initialize(app)["plots"]):
+            break
+        app.handle("pgdn")
+        rows, _ = views.compose(store.snapshot(), app, 150, 44, actions)
+    assert any(plot.key[2].startswith("gpu:") for plot in chart_interaction.initialize(app)["plots"])
+    assert any(plot.key[2].startswith(("gpu:a01-05:0:", "gpu:task0:0:"))
+               for plot in chart_interaction.initialize(app)["plots"])
     app.analytics_view = "history"
     text = "\n".join(L.row_text(r) for r, in zip(views.compose(store.snapshot(), app, 150, 44, actions)[0:1]) for r in r)
     assert "jobs per day" in text and "core-hours per partition" in text and "queue wait" in text and "cpu efficiency" in text
@@ -707,7 +723,7 @@ def test_plugins_add_commands_flags_tabs_hooks_and_sources(tmp_path):
     sampler.round(wait=True)
     assert [e["kind"] for e in store.events].count("tick") == 1 and store.health["ticker"].calls == 1
     text = screen.once_text(app, views, store, actions, 160, False, tab="jobs")
-    row = next(l for l in text.splitlines() if l.startswith(" 12480001"))
+    row = next(l for l in text.splitlines() if "12480001" in l)
     assert "big" in row
     app.run_command("hello world"); assert app.message == "hello world"
     app.run_command("hell"); assert app.message == "hello alex"                # a unique prefix (hel would also match help)
@@ -765,16 +781,17 @@ def test_themes_map_styles_and_reader_mode_drops_glyphs(tmp_path):
     app = App(store, sampler, actions, cfg, "alex")
     app.views_ref = views
     seen = []
-    for _ in range(8):
+    from tower.controller import THEMES
+    for _ in range(len(THEMES)):
         app.handle("T"); seen.append(app.theme)
-    assert seen == ["mono", "high", "cb", "reader", "dark", "light", "terminal", "default"]
+    assert seen == THEMES[1:] + THEMES[:1]
     app.run_command("theme reader")
     assert views.g.ascii and views.g.full == "#"
     text = screen.once_text(app, views, store, actions, 150, False, tab="jobs")
     assert "─" not in text and "█" not in text and "·" not in text
     app.run_command("theme default")
     assert not views.g.ascii
-    app.run_command("theme nope"); assert app.message.startswith("theme <default|mono|high|cb|reader|dark|light|terminal>")
+    app.run_command("theme nope"); assert app.message == "theme <" + "|".join(THEMES) + ">"
 
 
 # ------------------------------------------------------------------------------------------------ layer B: group, queue weather, allocation, node map, steps, GPU trace
@@ -878,8 +895,16 @@ def test_group_weather_budget_map_steps_and_trace_through_the_dashboard(tmp_path
         app.handle("7")
         app.run_command("history-dock off")  # This assertion inspects the full scientific chart title.
         rows, _ = views.compose(store.snapshot(), app, 150, 50, actions)
-        text = "\n".join(L.row_text(r) for r in rows)
-        assert "gpu 0 utilisation from the job's own nvidia-smi log (1/min, 30 samples)" in text
+        from tower import chart_interaction
+        for _ in range(24):
+            trace_plot = next((plot for plot in chart_interaction.initialize(app)["plots"]
+                               if plot.key[2] == "gpu-trace:0:rate"), None)
+            if trace_plot:
+                break
+            app.handle("pgdn")
+            rows, _ = views.compose(store.snapshot(), app, 150, 50, actions)
+        assert trace_plot is not None
+        assert trace_plot.x_bounds == (store.trace["12477369"][0]["t"], store.trace["12477369"][-1]["t"])
         # a finished job's details: sacct -j on demand
         app.handle("3"); app.cursor["history"] = [f.id for f in store.finished].index("12476001")
         app.handle("i")
@@ -1005,9 +1030,12 @@ def test_tags_pins_notes_filter_and_compare(tmp_path):
     app.run_command("tag 12480001 urgent paper"); assert app.message == "tagged 12480001: #urgent #paper"
     app.run_command("pin 12480003"); assert app.message == "pinned 12480003" and store.pinned("12480003")
     app.run_command("note 12480001 rerun with 32 cores"); assert store.tags["12480001"]["note"] == "rerun with 32 cores"
-    rows, _ = views.compose(store.snapshot(), app, W, H, actions)
+    rows, hits = views.compose(store.snapshot(), app, W, H, actions)
     text = "\n".join(L.row_text(r) for r in rows)
-    assert app.visible_ids[0] == "12480003" and " ^  12480003" in text and "urgent paper" in text and "rerun with 32 cores" in text        # pinned first, tags column, the note
+    pinned_y = next(y for y, kind, jid in hits if kind == "job" and jid == "12480003")
+    pinned_row = L.row_text(rows[pinned_y])[:app.workspace_main_rect.width]
+    assert app.visible_ids[0] == "12480003" and pinned_row.lstrip().startswith("^") and "12480003" in pinned_row
+    assert "urgent paper" in text and "rerun with 32 cores" in text
     app.run_command("filter #paper"); views.compose(store.snapshot(), app, W, H, actions); assert app.visible_ids == ["12480001"]
     app.run_command("filter"); views.compose(store.snapshot(), app, W, H, actions)
     app.cursor["jobs"] = app.visible_ids.index("12480001"); views.compose(store.snapshot(), app, W, H, actions)

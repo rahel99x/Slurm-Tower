@@ -134,7 +134,9 @@ def menu_items(app, menu):
             Item("reader", "Plain ASCII reader mode", "theme reader"),
         ]
         from .controller import THEMES
-        entries += [Item("theme-" + name, "Theme: " + name, "theme " + name) for name in THEMES if name != "reader"]
+        labels = {"darcula": "Darcula", "modnokai": "Modnokai", "gruvbox-dark": "Gruvbox Dark"}
+        entries += [Item("theme-" + name, "Theme: " + labels.get(name, name), "theme " + name)
+                    for name in THEMES if name != "reader"]
         return entries
     return [
         Item("help", "Page controls and searchable help", "help"),
@@ -573,8 +575,9 @@ def overlay(views, snap, app, width, height):
             disabled = _blocked(app, item)
             state["menu_disabled"][item.key] = disabled
             marker = (">" if ascii_ else "▸") if index == cursor else " "
-            style = "muted+bg:surface" if disabled else "accent+bold+bg:surface-raised" if index == cursor else "text+bg:surface"
-            content = L.fill_row([(marker + " " + L.cut(item.label, max(0, item_width - 2), ascii_), style)], item_width, "")
+            selected_style = "sel" if getattr(app, "theme", "default") in ("terminal", "mono", "reader") else "accent+bold+bg:surface-raised"
+            style = "muted+bg:surface" if disabled else selected_style if index == cursor else "text+bg:surface"
+            content = L.fill_row([(marker + " " + L.cut(item.label, max(0, item_width - 2), ascii_), style)], item_width, style)
             state["menu_hits"].append((1 + len(frame), left + int(bordered), left + int(bordered) + item_width, item.key))
         frame.append([(vertical, "border+bg:surface")] + content + [(vertical, "border+bg:surface")] if bordered else content)
     if bordered and overhead == 3:
@@ -586,4 +589,5 @@ def overlay(views, snap, app, width, height):
     state["painted_menu"] = state["menu"]
     state["menu_token"] = (getattr(app, "mode", "main"), getattr(app, "tab", ""), state["menu"])
     state["menu_rect"] = (1, left, 1 + min(len(frame), capacity), left + box_width)
-    return [(1 + index, left, L.clip_row(row, box_width)) for index, row in enumerate(frame[:capacity])]
+    return [(1 + index, left, L.fill_row(row, box_width, "text+bg:surface"))
+            for index, row in enumerate(frame[:capacity])]

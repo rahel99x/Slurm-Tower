@@ -11,6 +11,8 @@ STATES = {"COMPLETED": "green", "RUNNING": "cyan", "PENDING": "yellow", "FAILED"
 
 
 def render(views, snap, app, width, height):
+    from . import chart_interaction, metric_live
+    chart_mark = chart_interaction.mark(app)
     g = views.g
     text = lambda value: clean(value, g.ascii)
     row = lambda value, style="": [(text(value), style)]
@@ -54,11 +56,18 @@ def render(views, snap, app, width, height):
             rows.append(row(" ETA " + (short_duration(eta) + " from reported progress" if eta is not None else "unavailable: report consistent progress samples"), "dim"))
         series = result.get("series", {})
         names = analysis_ui.dashboard_names(app, series)
+        reported_jid = context.get("jid") or getattr(job, "id", None)
+        live_running = analysis_ui.running_job(snap, reported_jid)
+        source = result.get("path", "application metrics")
+        identities = {name: analysis_ui.chart_key(app, name, source, interactive=False, jid=reported_jid, job=job)
+                      for name in names}
+        live_rows = {name: int(live_running and width >= metric_live.MIN_WIDTH and identities[name] is not None)
+                     for name in names}
         rows.append(row(f" Dashboard {len(names)}/{len(series)} metrics  | :dashboard pin/hide/move/expand/color  | :chart METRIC", "dim"))
         # Offscreen charts reserve their document rows without rasterizing. This
         # makes 64-metric dashboards cost roughly the visible cards per frame.
-        tail_rows = len(result.get("errors", [])[:8]) + int(bool(result.get("truncated")))
-        total_rows = len(rows) + sum((10 if name in analysis["expanded"] else 5) + 4 + int(name in analysis["pinned"]) for name in names) + tail_rows
+        tail_rows = len(result.get("errors", [])[:8]) + int(bool(result.get("truncated"))) + int(bool(series) and not names)
+        total_rows = len(rows) + sum((10 if name in analysis["expanded"] else 5) + 5 + live_rows[name] + int(name in analysis["pinned"]) for name in names) + tail_rows
         visible_height = max(0, height - len(nav)) if height is not None else total_rows
         window = getattr(app, "research_document_window", None)
         if getattr(app, "research_document_mode", False) and window:
@@ -72,12 +81,21 @@ def render(views, snap, app, width, height):
             height_ = 10 if name in analysis["expanded"] else 5
             if name in analysis["pinned"]:
                 rows.append(row(" " + ("*" if g.ascii else "◆") + " Pinned " + name, "yellow+bold"))
-            hits.append((len(rows), "research_metric", name))
-            count = height_ + 4
+            count = height_ + 5 + live_rows[name]
             if len(rows) < render_end and len(rows) + count > render_start:
-                rows.extend(analysis_ui.chart_rows(g, app, series[name], width, height_, name,
-                                                  result.get("path", "application metrics"), interactive=False))
+                identity = identities[name]
+                controls, _ = metric_live.controls(g, app, identity, width,
+                    running=live_running, row=len(rows))
+                rows.extend(controls)
+                hits.append((len(rows), "research_metric", name))
+                metadata = {}
+                chart = analysis_ui.chart_rows(g, app, series[name], width, height_, name,
+                    source, interactive=False, metadata=metadata, zoom_key=identity,
+                    snapshot=snap, running=live_running)
+                chart_interaction.record(app, identity, metadata, row=len(rows), scale=metadata.get("scale", "linear"))
+                rows.extend(chart)
             else:
+                hits.append((len(rows) + live_rows[name], "research_metric", name))
                 rows.extend([[] for _ in range(count)])
         if series and not names:
             rows.append(row(" No visible metrics match. :dashboard search clears search; :dashboard show METRIC or reset restores cards.", "yellow"))
@@ -207,6 +225,8 @@ def render(views, snap, app, width, height):
     # Scroll the entire bounded document. Visible hits follow the exact same slice.
     if getattr(app, "research_document_mode", False):
         app.research_rows = len(rows)
+        chart_interaction.place_since(app, chart_mark, dy=len(nav),
+            clip=(len(nav), 0, len(nav) + len(rows), width))
         return nav + rows, nav_hits + [(y + len(nav), kind, key) for y, kind, key in hits]
     avail = max(0, height - len(nav)) if height is not None else len(rows)
     offset = max(0, min(app.research_scroll, max(0, len(rows) - avail)))
@@ -232,4 +252,6 @@ def render(views, snap, app, width, height):
                                        context=scroll_context, immediate=height is None)
     paint_offset = max(0, min(paint_offset, max(0, len(rows) - avail)))
     visible_hits = [(y - paint_offset + len(nav), kind, key) for y, kind, key in hits if paint_offset <= y < paint_offset + avail]
+    chart_interaction.place_since(app, chart_mark, dy=len(nav) - paint_offset,
+        clip=(len(nav), 0, len(nav) + avail, width))
     return nav + rows[paint_offset:paint_offset + avail], nav_hits + visible_hits

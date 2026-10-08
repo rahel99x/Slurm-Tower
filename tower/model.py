@@ -811,7 +811,7 @@ class Store:
             if value is not None:
                 self.hist_cpu[jid].append(value)
         if lv.cpu_time is not None:
-            self.record(jid, dict(t=round(lv.t, 1), k="live", cpu=lv.rate, eff=lv.avg, rss=lv.rss, cpu_time=lv.cpu_time))
+            self.record(jid, dict(t=lv.t, k="live", cpu=lv.rate, eff=lv.avg, rss=lv.rss, cpu_time=lv.cpu_time))
 
     def apply_gpu(self, jid: str, samples: Optional[List[GpuSample]]):
         with self.lock:
@@ -823,7 +823,7 @@ class Store:
                 m[0] += s.util
                 m[1] += 1
         if samples:
-            self.record(jid, dict(t=round(clock.now(), 1), k="gpu", gpu={f"{s.node}:{s.index}": [s.util, s.used, s.total] for s in samples}))
+            self.record(jid, dict(t=clock.now(), k="gpu", gpu={f"{s.node}:{s.index}": [s.util, s.used, s.total] for s in samples}))
 
     def gpu_mean_of(self, key: str) -> Optional[float]:
         m = self.gpu_mean.get(key)

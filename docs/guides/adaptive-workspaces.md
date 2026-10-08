@@ -5,6 +5,7 @@
 Tower 4.4.0 adds adjustable dividers, scrollable Recents, launch groups, history panels, Quick Advisor, and a compact job-progress column.
 These controls use terminal characters and the existing mouse and keyboard input.
 They do not change the Slurm fetching rate.
+Tower 4.5.0 adds refreshed job-row focus, source-specific graph zoom, coherent runtime palettes, and a leftmost progress field.
 
 ## Change panel size
 
@@ -54,6 +55,9 @@ The paired-source Logs view uses `log:sources`.
 The history browser on each page uses `history:analytics`, `history:deps`, `history:log`, or `history:research`.
 Use `:layout split 60` when you need an exact Main percentage.
 Existing `Ctrl-W`, F6, `:focus`, `:maximize`, and saved-layout commands remain available.
+With button focus, Right from a Queue or Recents row reaches visible Details controls.
+Up and Down keep exact job selection synchronized and admit older rows at viewport edges.
+See [Button navigation](pointer-navigation.md#select-controls-with-the-keyboard) for the refreshed focus graph.
 
 In `:logview split`, drag the grey separator to change the two original-source widths.
 The default split is 50 percent, with a 20–80 percent range.
@@ -99,6 +103,21 @@ It does not scan all accounting history for the default preview.
 Newly departed jobs appear as awaiting accounting until Slurm reports their terminal state.
 Jobs and Recents retain separate filters and cascading sorts.
 
+## Read metric graphs inside Details
+
+Open **Analytics → Job series** or an available **Research** metric view for the selected job.
+Point inside a plot for a cyan dotted crosshair.
+Drag a rectangle and release inside that plot to set its horizontal and vertical bounds.
+Use `u` while pointing at the plot to undo, or `0` to reset rectangular zoom.
+The graph keeps the exact selected job and source.
+
+A running metric can show its own Live toggle and a window slider from five seconds to one millisecond.
+Live changes the displayed interval and keeps the normal source sampling rate.
+A valid rectangular zoom turns Live off.
+GPU utilisation and observed busy mean use recorded device observations and retain missing-data gaps.
+The busy mean indicates activity; it does not measure computation efficiency.
+See [Charts](charts.md) for scale controls, Live procedures, safe cancellation, and GPU source limits.
+
 ## Fold related launches
 
 Tower groups jobs when the published evidence supports a shared launch.
@@ -107,7 +126,7 @@ The fold setting is shared by Jobs, Recents, History, Group, Dependencies, and t
 
 1. Find a job row with a launch-group fold symbol.
 2. Click the symbol to hide or show its other matching members.
-3. Select a member and press Left to close the group or Right to open it when page controls have focus.
+3. Select a member and press Left to close the group or Right to open it when ordinary job-row navigation owns the keys.
 4. Open another job page and check the same group's fold setting.
 
 **Expected result:** Closing a group leaves one real representative job row.
@@ -275,20 +294,22 @@ Use the update slider separately when you need a different source rate.
 
 ## Read the six-cell progress column
 
-Jobs includes a six-cell Progress column.
+Jobs places its six-cell Progress column before JOBID.
+The fixed marking and group-fold gutter remains separate to its left.
 It uses published data and starts no file read or scheduler command while rendering.
 
 | Display | Meaning |
 | --- | --- |
-| Solid fractional block and a percentage | Application-reported completion fraction |
+| `▸`, a percentage, and a fractional block | Application-reported completion fraction |
 | `p` and a percentage in ASCII | The same application-reported fraction |
-| `t` and a percentage | Elapsed time as a fraction of the Slurm time limit |
+| `◷`, a percentage, and a fractional block | Elapsed time as a fraction of the Slurm time limit |
+| `t` and a percentage in ASCII | The same time-limit usage fraction |
 | `wait` | The job is pending |
 | `--` | Neither application progress nor a usable time limit is available |
 
-Unicode time-limit usage keeps the `t` prefix and adds a fractional block at the right edge.
-For example, `t42% ▍` uses six cells; ASCII shows `t 42% `.
-The `t` value measures used allocation time.
+For example, `▸42% ▍` and `◷42% ▍` each use six cells.
+ASCII uses `p 42% ` and `t 42% ` respectively.
+The clock or `t` value measures used allocation time.
 It does not measure completed work or predict when the application will finish.
 A completed job still needs valid application progress to show application completion.
 Missing progress remains unknown rather than being assumed to be 100 percent.
@@ -331,7 +352,7 @@ Sorting uses the underlying numeric fraction.
 | A historical job has no chart, report, or log | Check its exact source and source coverage; missing data remains unavailable |
 | Quick Advisor omits a resource recommendation | Check evidence coverage; unavailable samples remain unknown |
 | A newer sample does not change a finished Quick Advisor report | Select Refresh analysis to request a new calculation |
-| Progress shows `t` instead of an application bar | Publish valid progress for the exact job; `t` reports time-limit usage |
+| Progress shows `◷` or `t` | Publish valid application progress for the exact job; the clock and `t` report time-limit usage |
 
 Use [Display and input performance](ui-performance.md) for checks and connection limits.
 Use [Controls](../CONTROLS.md) for the complete command syntax.

@@ -368,11 +368,13 @@ def _section_title(row: L.Row) -> Optional[str]:
     return title.lower() if title else None
 
 
-def partition(body, hits, tab: str = "jobs") -> dict:
+def partition(body, hits, tab: str = "jobs", *, chart_records=()) -> dict:
     """Separate supporting sections while retaining their source hit records."""
     groups = {name: {"rows": [], "hits": []} for name in PANELS}
     panel = "main"
     source_map = {}
+    from .interaction import ROW_KINDS
+    data_rows = {y for y, kind, _ in hits if kind in ROW_KINDS}
     recent_separators = {y - 1 for y, kind, value in hits if kind == "sort_header"
                          and isinstance(value, tuple) and value[0] == "recent"}
     recent_rows = [y for y, kind, value in hits if kind == "recent"]
@@ -380,7 +382,7 @@ def partition(body, hits, tab: str = "jobs") -> dict:
         recent_separators.add(min(recent_rows) - 2)
     limit = MAX_SOURCE_ROWS + MAX_REFLOW_ROWS if tab == "jobs" else MAX_SOURCE_ROWS
     for y, row in enumerate(body[:limit]):
-        title = _section_title(row)
+        title = None if y in data_rows else _section_title(row)
         # Inline Research/Analytics headings belong to Details even when they
         # say "history" or "dependencies". Only the queue's outer separator
         # changes which workspace owns a row.
@@ -397,6 +399,11 @@ def partition(body, hits, tab: str = "jobs") -> dict:
         if y in source_map:
             panel, index = source_map[y]
             groups[panel]["hits"].append((index, kind, key))
+    if chart_records:
+        from .chart_interaction import map_records
+        for panel, group in groups.items():
+            mapping = {y: index for y, (target, index) in source_map.items() if target == panel}
+            group["charts"] = map_records(chart_records, mapping)
     return groups
 
 
@@ -510,11 +517,18 @@ def _cached_reflow(state, panel, rows, hits, width, mapping):
 
 def _preserve_titles(fitted, original) -> None:
     originals = {}
-    for row in original["rows"]:
+    from .interaction import ROW_KINDS
+    original_data = {y for y, kind, _ in original["hits"] if kind in ROW_KINDS}
+    fitted_data = {y for y, kind, _ in fitted["hits"] if kind in ROW_KINDS}
+    for index, row in enumerate(original["rows"]):
+        if index in original_data:
+            continue
         title = _section_title(row)
         if title:
             originals.setdefault(tuple(title.split()[:2]), (title, row))
     for index, row in enumerate(fitted["rows"]):
+        if index in fitted_data:
+            continue
         title = _section_title(row)
         if not title:
             continue
@@ -571,6 +585,7 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         raw_mapping = {}
         source, source_hits = _cached_reflow(state, panel, source, source_hits,
                                             max(0, rect.width - padding * 2), raw_mapping)
+        chart_mapping = dict(raw_mapping)
         # Column headers are buttons, not selectable data rows. Header-only
         # tables must keep their normal panel-scrolling controls.
         drill_buttons = {"sort_header", "node_row", "node_cell", "partition_row", "user_drill", "control", "job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"}
@@ -598,6 +613,7 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                         remaining.append(row)
                 source = remaining
                 source_hits = [(remap[y], kind, value) for y, kind, value in source_hits if y in remap]
+                chart_mapping = {raw: remap[fitted] for raw, fitted in chart_mapping.items() if fitted in remap}
                 page -= len(sticky)
         if panel == "main" and source_hits and page >= 2:
             headers = [y for y, kind, _ in source_hits if kind == "sort_header"]
@@ -618,6 +634,7 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                     remaining.append(row)
             source = remaining
             source_hits = [(remap[y], kind, value) for y, kind, value in source_hits if y in remap]
+            chart_mapping = {raw: remap[fitted] for raw, fitted in chart_mapping.items() if fitted in remap}
             page -= len(sticky)
         state.sizes[key] = (len(source), page)
         top = state.scroll.get(key, 0)
@@ -647,6 +664,13 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                    inline.get("mode"), inline.get("research_view"), inline.get("analytics_view"))
         painted_top = viewport(app, "workspace:" + key, logical_top, len(source), page, context=context)
         visible, mapped_hits, top = L.scroll_window(source, source_hits, max(0, rect.width - padding * 2), page, painted_top)
+        if groups[panel].get("charts"):
+            from .chart_interaction import map_records, put_records
+            mapping = {raw: fitted - top for raw, fitted in chart_mapping.items() if top <= fitted < top + page}
+            put_records(app, map_records(groups[panel]["charts"], mapping,
+                dy=rect.y + 1 + padding + len(sticky), dx=rect.x + padding,
+                clip=(rect.y + 1 + padding + len(sticky), rect.x + padding,
+                      rect.y + rect.height - padding, rect.x + rect.width - padding)))
         state.scroll[key] = logical_top
         if native_jobs and panel == "details":
             from .job_panels import _view_key
@@ -775,19 +799,24 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         previous_deferred = getattr(app, "job_panel_defer_content", False)
         previous_canvas = getattr(app, "job_panel_source_canvas", False)
         app.job_panel_defer_content = app.job_panel_source_canvas = True
+        from . import chart_interaction
+        chart_mark = chart_interaction.mark(app)
         try:
             body, hits = default_renderer(main_width, max(height, MAX_SOURCE_ROWS))
         finally:
             app.job_panel_defer_content = previous_deferred
             app.job_panel_source_canvas = previous_canvas
-        queue = partition(body, hits, "jobs")["main"]
+        records = chart_interaction.take_since(app, chart_mark)
+        queue = partition(body, hits, "jobs", chart_records=records)["main"]
         groups = {"main": queue, "details": {"rows": [], "hits": []}}
         if detail_rect:
             from .job_panels import render as render_details
             job = app.job_record(getattr(app, "selected_id", None), snap)
+            chart_mark = chart_interaction.mark(app)
             detail_rows, detail_hits = render_details(views, snap, app, job, usable(detail_rect),
                                                       app.job_panel_target_height)
-            groups["details"] = {"rows": detail_rows, "hits": detail_hits}
+            groups["details"] = {"rows": detail_rows, "hits": detail_hits,
+                                 "charts": chart_interaction.take_since(app, chart_mark)}
         return transform_body(app, body, hits, width, height,
                               ascii_=getattr(views.g, "ascii", False), groups=groups)
     # Native tab renderers already limit their work to their requested height.
@@ -796,11 +825,14 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
     previous_canvas = getattr(app, "job_panel_source_canvas", False)
     if native_jobs:
         app.job_panel_source_canvas = True
+    from . import chart_interaction
+    chart_mark = chart_interaction.mark(app)
     try:
         body, hits = default_renderer(width, source_height)
     finally:
         app.job_panel_source_canvas = previous_canvas
-    groups = partition(body, hits, getattr(app, "tab", "jobs"))
+    records = chart_interaction.take_since(app, chart_mark)
+    groups = partition(body, hits, getattr(app, "tab", "jobs"), chart_records=records)
     originals = {panel: {"rows": list(group["rows"]), "hits": list(group["hits"])} for panel, group in groups.items()}
     rects = geometry(app, width, height, has_details=bool(groups["details"]["rows"]))
     # Refit columns and plots to their actual panel widths instead of cutting
@@ -813,11 +845,13 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         if usable_width not in by_width:
             if native_jobs:
                 app.job_panel_source_canvas = True
+            chart_mark = chart_interaction.mark(app)
             try:
                 fitted_body, fitted_hits = default_renderer(usable_width, source_height)
             finally:
                 app.job_panel_source_canvas = previous_canvas
-            by_width[usable_width] = partition(fitted_body, fitted_hits, getattr(app, "tab", "jobs"))
+            records = chart_interaction.take_since(app, chart_mark)
+            by_width[usable_width] = partition(fitted_body, fitted_hits, getattr(app, "tab", "jobs"), chart_records=records)
         groups[panel] = by_width[usable_width][panel]
         _preserve_titles(groups[panel], originals[panel])
         _preserve_metadata(groups[panel], originals[panel])

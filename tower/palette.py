@@ -7,6 +7,7 @@ The module never emits cursor controls or imports curses.
 from __future__ import annotations
 
 import colorsys
+import math
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -25,6 +26,8 @@ PALETTE = {
     "border-strong": "#64748b", "text-secondary": "#b8c7da", "track": "#24445b",
     "chart-1": "#67e8f9", "chart-2": "#c4b5fd", "chart-3": "#6ee7b7",
     "chart-4": "#fbbf24", "chart-5": "#fb7185", "chart-6": "#93c5fd",
+    "selection": "#1e3a5f", "orange": "#fb923c", "cursor": "#67e8f9",
+    "notice": "#92400e", "notice-text": "#fff7ed",
 }
 LIGHT_PALETTE = {
     "green": "#166534", "yellow": "#854d0e", "red": "#be123c",
@@ -35,10 +38,60 @@ LIGHT_PALETTE = {
     "border-strong": "#64748b", "text-secondary": "#334155", "track": "#cbd5e1",
     "chart-1": "#0e7490", "chart-2": "#6d28d9", "chart-3": "#166534",
     "chart-4": "#854d0e", "chart-5": "#be123c", "chart-6": "#1d4ed8",
+    "selection": "#dbeafe", "orange": "#9a3412", "cursor": "#0e7490",
+    "notice": "#ffedd5", "notice-text": "#7c2d12",
 }
+# Named editor themes retain their familiar canvas and accent hues. Every token
+# has a value: new panels and old semantic styles use the same active palette.
+DARCULA_PALETTE = dict(PALETTE, **{
+    "canvas": "#2b2b2b", "black": "#2b2b2b", "surface": "#313335",
+    "surface-raised": "#3c3f41", "surface-sunken": "#232525",
+    "white": "#a9b7c6", "text-secondary": "#c4ccd4", "muted": "#9b9fa7",
+    "faint": "#737a84", "border": "#555b64", "border-strong": "#8c929c",
+    "green": "#a9c58f", "yellow": "#ffc66d", "red": "#ff6b68",
+    "cyan": "#56c4d8", "magenta": "#c792ea", "blue": "#6ea5ff",
+    "track": "#42505a", "selection": "#214283", "orange": "#ffad66",
+    "cursor": "#67e8f9", "notice": "#614321", "notice-text": "#ffe0b2",
+    "chart-1": "#56c4d8", "chart-2": "#c792ea", "chart-3": "#a9c58f",
+    "chart-4": "#ffc66d", "chart-5": "#ff6b68", "chart-6": "#6ea5ff",
+})
+MODNOKAI_PALETTE = dict(PALETTE, **{
+    "canvas": "#272822", "black": "#272822", "surface": "#30312b",
+    "surface-raised": "#3e3d32", "surface-sunken": "#20211c",
+    "white": "#f8f8f2", "text-secondary": "#dfdfd4", "muted": "#b0ad96",
+    "faint": "#817f71", "border": "#5c5a4e", "border-strong": "#a09c88",
+    "green": "#a6e22e", "yellow": "#e6db74", "red": "#f92672",
+    "cyan": "#66d9ef", "magenta": "#ae81ff", "blue": "#78a8e8",
+    "track": "#49483e", "selection": "#49483e", "orange": "#fd971f",
+    "cursor": "#66d9ef", "notice": "#66401c", "notice-text": "#ffe0b2",
+    "chart-1": "#66d9ef", "chart-2": "#ae81ff", "chart-3": "#a6e22e",
+    "chart-4": "#e6db74", "chart-5": "#f92672", "chart-6": "#78a8e8",
+})
+GRUVBOX_DARK_PALETTE = dict(PALETTE, **{
+    "canvas": "#282828", "black": "#282828", "surface": "#32302f",
+    "surface-raised": "#3c3836", "surface-sunken": "#1d2021",
+    "white": "#ebdbb2", "text-secondary": "#d5c4a1", "muted": "#bdae93",
+    "faint": "#928374", "border": "#665c54", "border-strong": "#a89984",
+    "green": "#b8bb26", "yellow": "#fabd2f", "red": "#fb4934",
+    "cyan": "#8ec07c", "magenta": "#d3869b", "blue": "#83a598",
+    "track": "#504945", "selection": "#504945", "orange": "#fe8019",
+    "cursor": "#67e8f9", "notice": "#68441d", "notice-text": "#f9e1b2",
+    "chart-1": "#8ec07c", "chart-2": "#d3869b", "chart-3": "#b8bb26",
+    "chart-4": "#fabd2f", "chart-5": "#fb4934", "chart-6": "#83a598",
+})
 # Terminal inherits the emulator's canvas. The selected row uses reverse video,
 # making it legible on an unknown light or dark default terminal background.
-THEME_NAMES = ("default", "dark", "light", "terminal", "mono", "high", "cb", "reader")
+THEME_NAMES = ("default", "mono", "high", "cb", "reader", "dark", "light", "terminal",
+               "darcula", "modnokai", "gruvbox-dark")
+THEME_ALIASES = {"monokai": "modnokai", "gruvbox": "gruvbox-dark"}
+_THEME_PALETTES = {"light": LIGHT_PALETTE, "darcula": DARCULA_PALETTE,
+                   "modnokai": MODNOKAI_PALETTE, "gruvbox-dark": GRUVBOX_DARK_PALETTE}
+# Compatibility for fixed styles in older views. Only known application colours
+# are translated; an unrelated custom RGB value retains its exact meaning.
+_LEGACY_COLORS = {value: key for key, value in reversed(tuple(PALETTE.items()))}
+_LEGACY_COLORS.update({"#22d3ee": "cyan", "#a78bfa": "magenta", "#34d399": "green",
+                       "#ec4899": "magenta", "#155e75": "track", "#164e63": "track",
+                       "#38bdf8": "blue", "#3b82f6": "blue"})
 ALIASES = {
     "accent": "cyan", "success": "green", "warning": "yellow", "warn": "yellow",
     "danger": "red", "error": "red", "text": "white", "info": "blue",
@@ -58,12 +111,48 @@ INDEXED: tuple[RGB, ...] = BASIC + BRIGHT + tuple((r, g, b) for r in _LEVELS for
 
 def rgb(value: str) -> RGB:
     """Parse exactly a six-digit RGB colour, rejecting terminal control text."""
-    if len(value) != 7 or not value.startswith("#"):
+    if (not isinstance(value, str) or len(value) != 7 or not value.startswith("#") or
+            any(ch not in "0123456789abcdefABCDEF" for ch in value[1:])):
         raise ValueError("colour must be #rrggbb")
-    try:
-        return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))  # type: ignore[return-value]
-    except ValueError as exc:
-        raise ValueError("colour must be #rrggbb") from exc
+    return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))  # type: ignore[return-value]
+
+
+def canonical_theme(theme: str) -> str:
+    """Normalize human-friendly theme names; unknown names remain rejectable."""
+    if not isinstance(theme, str):
+        return ""
+    name = "-".join(theme.strip().lower().replace("_", "-").split())
+    return THEME_ALIASES.get(name, name)
+
+
+def _tokens(theme: str) -> dict[str, str]:
+    return _THEME_PALETTES.get(canonical_theme(theme), PALETTE)
+
+
+@lru_cache(maxsize=4096)
+def cell_style(style: str = "", theme: str = "default", surface: str = "canvas") -> str:
+    """Inherit the complete canvas without overriding explicit cell colours.
+
+    Terminal, monochrome and reader modes retain the emulator's default canvas.
+    Styled coloured output paints whitespace too, including short and empty rows.
+    """
+    theme = canonical_theme(theme)
+    if theme in ("terminal", "mono", "reader"):
+        return style
+    return "+".join(part for part in ("text", "bg:" + surface, style) if part)
+
+
+def gradient_style(start: str, end: str, fraction: float) -> str:
+    """A theme-aware gradient expression that remains valid in cached rows."""
+    t = max(0.0, min(1.0, fraction)) if math.isfinite(fraction) else 0.0
+    return f"gradient:{start}:{end}:{t:.6f}"
+
+
+def _color(value: str, theme: str, tokens: dict[str, str]) -> RGB:
+    value = _alias(value)
+    if theme not in ("default", "dark", "terminal", "mono", "reader"):
+        value = _LEGACY_COLORS.get(value.lower(), value)
+    return rgb(tokens.get(value, value))
 
 
 def gradient(start: str, end: str, fraction: float) -> str:
@@ -91,9 +180,15 @@ color_depth = detect_color_depth
 
 
 @lru_cache(maxsize=4096)
-def color_index(value: RGB, count: int = 256) -> int:
+def color_index(value: RGB, count: int = 256, background: bool = False) -> int:
     """Quantise colours, keeping semantic hues in the eight-colour fallback."""
     if count < 256:
+        # Eight-colour backgrounds need a stable dark or light canvas. A dark
+        # navy RGB must not become the terminal's saturated blue background.
+        if background and max(value) < 128:
+            return 0
+        if background and min(value) > 180:
+            return 7
         hue, light, saturation = colorsys.rgb_to_hls(*(v / 255 for v in value))
         if saturation <= .25:
             return 0 if light < .3 else 7
@@ -121,7 +216,7 @@ class Style:
 
 def theme_tokens(theme: str = "default") -> dict[str, str]:
     """A fresh semantic token map; callers cannot mutate the global palette."""
-    return dict(LIGHT_PALETTE if theme == "light" else PALETTE)
+    return dict(_tokens(theme))
 
 
 def chart_colors(theme: str = "default") -> tuple[str, ...]:
@@ -142,10 +237,11 @@ def _alias(token: str) -> str:
 @lru_cache(maxsize=4096)
 def resolve(style: str, theme: str = "default") -> Style:
     """Resolve semantic, custom and accessibility styles once for both painters."""
+    theme = canonical_theme(theme)
     flags: list[str] = []
     foreground = background = None
     plain = theme in ("mono", "reader")
-    tokens = LIGHT_PALETTE if theme == "light" else PALETTE
+    tokens = _tokens(theme)
     colored = False
     for token in style.split("+"):
         if token in FLAGS:
@@ -157,13 +253,27 @@ def resolve(style: str, theme: str = "default") -> Style:
                 flags.append("rev")
             else:
                 foreground = rgb(tokens["white"])
-                background = rgb("#dbeafe" if theme == "light" else "#1e3a5f")
+                background = rgb(tokens["selection"])
                 colored = True
             continue
         token = _alias(token)
         if plain:
             if token in ("red", "yellow", "magenta"):
                 flags.append("bold")
+            continue
+        if token.startswith("gradient:"):
+            try:
+                _, start, end, fraction = token.split(":")
+                amount = float(fraction)
+                if not math.isfinite(amount):
+                    continue
+                a, b = _color(start, theme, tokens), _color(end, theme, tokens)
+                amount = max(0.0, min(1.0, amount))
+                value_rgb = tuple(round(x + (y - x) * amount) for x, y in zip(a, b))
+                foreground = _cb_rgb(value_rgb) if theme == "cb" else value_rgb
+                colored = True
+            except (TypeError, ValueError):
+                continue
             continue
         if theme == "terminal" and token in ("white", "text-secondary", "muted", "faint"):
             foreground = None
@@ -176,7 +286,7 @@ def resolve(style: str, theme: str = "default") -> Style:
             try:
                 if theme == "terminal" and background_token and value in ("canvas", "surface", "surface-raised", "surface-sunken"):
                     continue
-                value_rgb = rgb(tokens.get(_alias(value), value))
+                value_rgb = _color(value, theme, tokens)
             except ValueError:
                 continue
             if theme == "cb":
@@ -212,6 +322,11 @@ def ansi_codes(style: str, color_depth: Optional[int] = None, theme: str = "defa
 def _ansi_codes(style: str, depth: int, theme: str) -> str:
     parsed = resolve(style, theme)
     codes = [FLAGS[flag] for flag in parsed.flags]
+    if depth != 24 and depth < 256 and "sel" in style.split("+") and parsed.background is not None:
+        canvas = resolve(cell_style("", theme), theme).background
+        if canvas is not None and color_index(parsed.background, 8, background=True) == color_index(canvas, 8, background=True):
+            if "7" not in codes:
+                codes.append("7")
     for value, foreground in ((parsed.foreground, True), (parsed.background, False)):
         if value is None:
             continue
@@ -220,5 +335,5 @@ def _ansi_codes(style: str, depth: int, theme: str) -> str:
         elif depth >= 256:
             codes.extend(("38" if foreground else "48", "5", str(color_index(value))))
         else:
-            codes.append(str((30 if foreground else 40) + color_index(value, 8)))
+            codes.append(str((30 if foreground else 40) + color_index(value, 8, background=not foreground)))
     return ";".join(codes)

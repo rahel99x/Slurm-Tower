@@ -21,7 +21,8 @@ from .transitions import CompletionFeedback
 KEY_LABELS = {"up": "↑", "down": "↓", "pgup": "PgUp", "pgdn": "PgDn", "home": "Home", "end": "End", "tab": "Tab", "btab": "S-Tab", "enter": "Enter",
               "esc": "Esc", "space": "Space"}
 KEY_LABELS_ASCII = dict(KEY_LABELS, up="Up", down="Down")
-THEMES = ["default", "mono", "high", "cb", "reader", "dark", "light", "terminal"]
+from .palette import THEME_NAMES, canonical_theme
+THEMES = list(THEME_NAMES)
 
 
 class App:
@@ -66,7 +67,8 @@ class App:
         self.click_row: Optional[int] = None
         self.last_rows: list = []
         self.palette_edit = ""
-        self.theme = cfg["theme"] if cfg["theme"] in THEMES else "default"
+        configured_theme = canonical_theme(cfg["theme"])
+        self.theme = configured_theme if configured_theme in THEMES else "default"
         self.plugins = None                                # PluginAPI (set by the cli)
         self.switch_profile: Optional[str] = None          # set by :profile <name>: the cli restarts with it
         self.profile_name = getattr(cfg, "profile_name", "")
@@ -114,8 +116,9 @@ class App:
             self.sort.update({k: v for k, v in ui["sort"].items() if v in SORTS.get(k, [])})
         if isinstance(ui.get("reverse"), dict):
             self.reverse.update({k: bool(v) for k, v in ui["reverse"].items() if k in SORTS})
-        if ui.get("theme") in THEMES:
-            self.theme = ui["theme"]
+        restored_theme = canonical_theme(ui.get("theme"))
+        if restored_theme in THEMES:
+            self.theme = restored_theme
         if ui.get("analytics_view") in dict(ANALYTICS_VIEWS):
             self.analytics_view = ui["analytics_view"]
         if ui.get("nodes_view") in dict(NODES_VIEWS):
@@ -141,6 +144,10 @@ class App:
         return float(self.days_options[self.days_index])
 
     def set_theme(self, name: str):
+        name = canonical_theme(name)
+        if name not in THEMES:
+            self.fail("theme <" + "|".join(THEMES) + ">")
+            return
         self.theme = name
         self.labels = KEY_LABELS_ASCII if name == "reader" or self._ascii_cfg else KEY_LABELS
         if self.views_ref is not None and hasattr(self.views_ref, "set_ascii"):
@@ -1522,8 +1529,8 @@ class App:
             else:
                 self.fail("source <" + "|".join(sorted(self.store.health)) + "> <on|off>")
         elif cmd == "theme":
-            if args and args[0] in THEMES:
-                self.set_theme(args[0])
+            if args and canonical_theme(" ".join(args)) in THEMES:
+                self.set_theme(" ".join(args))
             else:
                 self.fail("theme <" + "|".join(THEMES) + ">")
         elif cmd == "profile":
@@ -1730,12 +1737,21 @@ class App:
         pointer_mouse(self, y, x, button="motion", shift=shift)
         from .toolbar import handle_mouse as toolbar_mouse
         if toolbar_mouse(self, y, x, button=button, shift=shift):
+            from . import chart_interaction, metric_live
+            chart_interaction.cancel(self)
+            metric_live.cancel(self)
             return
         from .pane_drag import handle_mouse as pane_mouse
         if pane_mouse(self, y, x, button=button, shift=shift):
             return
         from .history_browser import handle_mouse as history_mouse
         if history_mouse(self, y, x, button=button, shift=shift):
+            return
+        from .metric_live import handle_mouse as live_mouse
+        if live_mouse(self, y, x, button=button, shift=shift):
+            return
+        from .chart_interaction import handle_mouse as chart_mouse
+        if chart_mouse(self, y, x, button=button, shift=shift):
             return
         if button == "press" and not shift and pointer_mouse(self, y, x, button="left"):
             return

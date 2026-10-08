@@ -95,19 +95,20 @@ def test_columns_all_tables_reorder_resize_hide_restore(dashboard, table):
     _, app, _ = dashboard
     cols = table_ui.definitions(table)
     keys = [column.key for column in cols]
-    optional = next(column.key for column in cols if column.key not in table_ui.REQUIRED and column.key != keys[0])
+    resized = next(key for key in keys if key != "progress")
+    optional = next(column.key for column in cols if column.key not in table_ui.REQUIRED and column.key != resized)
     assert table_ui.run_command(app, ["columns", table, "order", ",".join(reversed(keys))])
-    assert table_ui.run_command(app, ["columns", table, "width", keys[0], "12"])
+    assert table_ui.run_command(app, ["columns", table, "width", resized, "12"])
     assert table_ui.run_command(app, ["columns", table, "hide", optional])
     shown = table_ui.columns(app, table, cols)
     assert [column.key for column in shown] == [key for key in reversed(keys) if key != optional]
-    sized = next(column for column in shown if column.key == keys[0])
+    sized = next(column for column in shown if column.key == resized)
     assert sized.lo == sized.hi == 12
     state = json.loads(json.dumps(table_ui.save(app)))
     table_ui.initialize(app)
     table_ui.restore(app, state)
     assert app.table_state["order"][table] == list(reversed(keys))
-    assert app.table_state["widths"][table][keys[0]] == 12
+    assert app.table_state["widths"][table][resized] == 12
     assert app.table_state["hidden"][table] == [optional]
 
 
@@ -122,13 +123,14 @@ def test_invalid_width_is_atomic(dashboard, width):
 def test_column_overlay_keyboard_order_width_visibility(dashboard):
     _, app, views = dashboard
     table_ui.run_command(app, ["columns", "jobs"])
+    table_ui.handle_key(app, "down")  # JOBID follows the leading six-cell PROG.
     table_ui.handle_key(app, "right")
-    assert app.table_state["order"]["jobs"][:2] == ["name", "id"]
+    assert app.table_state["order"]["jobs"][:3] == ["progress", "name", "id"]
     table_ui.handle_key(app, "+")
     assert app.table_state["widths"]["jobs"]["id"] >= 6
     table_ui.handle_key(app, "a")
     assert "id" not in app.table_state["widths"]["jobs"]
-    table_ui.handle_key(app, "down")
+    table_ui.handle_key(app, "home")
     table_ui.handle_key(app, "space")
     assert "progress" in app.table_state["hidden"]["jobs"]
     overlay = table_ui.overlay(views, app.store.snapshot(), app, 100, 30)
@@ -156,6 +158,7 @@ def test_sort_editor_reorders_removes_and_preserves_selected_id(dashboard):
     assert table_sort.chain(app, "jobs") == [("cpus", "desc")]
     table_tools.handle_key(app, "a")
     assert app.table_tools_state["modal"] == "headers"
+    table_tools.handle_key(app, "down")  # Skip PROG and add JOBID as the next priority.
     table_tools.handle_key(app, "enter")
     assert table_sort.chain(app, "jobs")[-1] == ("id", "asc")
     table_tools.handle_key(app, "esc")

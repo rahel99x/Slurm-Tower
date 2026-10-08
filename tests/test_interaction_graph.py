@@ -533,3 +533,64 @@ def test_combining_mark_on_first_highlighted_grapheme_keeps_its_base_style():
     output = ui.decorate(app, rows)
     assert output[0][0][0].startswith("e\u0301")
     assert "under" in output[0][0][1]
+
+
+@pytest.mark.parametrize("text", [" selected job ", " 選択e\u0301界 "])
+@pytest.mark.parametrize("active", [False, True])
+def test_native_selected_row_retains_its_style_under_hover_and_keyboard_focus(text, active):
+    app = App()
+    source_style = "cyan+bg:surface+sel"
+    rows = [[(text, source_style)], [(" ordinary job ", "cyan")]]
+    ui.publish(app, rows, [button("selected", 0, 1, 8), button("ordinary", 1, 1, 8)], 60, 12)
+    ui.handle_mouse(app, 0, 3, "motion")
+    ui.initialize(app).update(active=active, focused="selected")
+    painted = ui.decorate(app, rows)
+    assert L.row_text(painted[0]) == text
+    accented = [style for _, style in painted[0] if "under" in style.split("+")]
+    assert accented
+    for style in accented:
+        assert set(source_style.split("+")) <= set(style.split("+"))
+        assert "bold" in style.split("+")
+        assert "bg:surface-raised" not in style.split("+")
+        assert "bg:panel" not in style.split("+")
+    assert rows[0] == [(text, source_style)]
+    ui.handle_mouse(app, 1, 3, "motion")
+    ui.initialize(app).update(active=False)
+    painted = ui.decorate(app, rows)
+    assert painted[0] == rows[0]
+    assert any("under" in style for _, style in painted[1])
+
+
+@pytest.mark.parametrize("text", [" selected content ", " 選択e\u0301界 "])
+@pytest.mark.parametrize("active", [False, True])
+def test_explicit_yank_rows_keep_selection_and_orange_marker_under_hover_and_focus(text, active):
+    app = App()
+    selected = [(text, "sel"), ("◆", "fg:#fb923c+bold")]
+    ordinary = [(" ordinary button ", "cyan+dim")]
+    rows = [[("header", "")], selected, ordinary]
+    ui.publish(app, rows, [button("selected", 1, 1, 8), button("ordinary", 2, 1, 8)], 60, 12)
+    ui.handle_mouse(app, 1, 3, "motion")
+    state = ui.initialize(app)
+    state.update(active=active, focused="selected")
+    app.sel_anchor = app.sel_end = 1
+    painted = ui.decorate(app, rows)
+    assert painted[1] is selected
+    assert painted[1][-1] == ("◆", "fg:#fb923c+bold")
+    assert L.row_text(painted[1]) == L.row_text(selected)
+    # The cursor still provides feedback on controls beyond the yank range.
+    ui.handle_mouse(app, 2, 3, "motion")
+    painted = ui.decorate(app, rows)
+    assert painted[1] is selected
+    assert any("under" in style for _, style in painted[2])
+
+
+def test_selected_screen_line_does_not_suppress_overlay_menu_feedback():
+    app = App()
+    app.sel_anchor = app.sel_end = 4
+    overlay = [(4, 10, [("| button |", "dim")])]
+    paint(app, overlays=overlay, extra=[{"id": "menu", "rect": (4, 11, 5, 17),
+                                       "action": ("command", "test menu")}])
+    ui.handle_mouse(app, 4, 12, "motion")
+    painted = ui.decorate_overlays(app, overlay)
+    assert any("under" in style for _, style in painted[0][2])
+    assert L.row_text(painted[0][2]) == "| button |"

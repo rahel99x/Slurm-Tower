@@ -1,5 +1,8 @@
-"""Chart primitives for the analytics tab: vertical bar / area charts with axes (eight sub-levels per row), horizontal
-bar rows, histograms, a Gantt timeline and time axes.  Everything returns rows of (text, style) segments."""
+"""Pure terminal charts: connected opaque curves, measured areas, and timelines.
+
+Every chart returns rows of text/style segments. Telemetry curves keep observed
+extrema and leave unknown intervals empty; the renderer never smooths samples.
+"""
 from __future__ import annotations
 
 import math
@@ -14,6 +17,7 @@ LEVELS = " ▁▂▃▄▅▆▇█"
 LEVELS_ASCII = " ..:::##"
 MAX_COLUMNS = 2048
 MAX_HEIGHT = 128
+QUADRANTS = " ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"
 
 
 def _finite(v: Optional[float]) -> Optional[float]:
@@ -113,28 +117,68 @@ def _header(g: Glyphs, values: Sequence[Optional[float]], width: int, title: str
     return row
 
 
+def _clip_time_samples(samples: Sequence[Tuple[float, Optional[float]]], times: Tuple[float, float],
+                       gap_limit: float) -> List[Tuple[float, Optional[float], bool]]:
+    """Clip the observed piecewise line at time boundaries for rasterization.
+
+    An edge intersection is a position on a line between original observations,
+    not a new measurement. The source arrays, headers, cursor and statistics
+    remain original records. Missing endpoints or a cadence outage cannot yield
+    an intersection. At most two additional drawing vertices are produced.
+    """
+    t0, t1 = times
+    output = []
+    previous = None
+
+    def intersection(before: Tuple[float, float], after: Tuple[float, float], boundary: float) -> float:
+        fraction = _fraction(boundary, before[0], after[0])
+        return _between(min(before[1], after[1]), max(before[1], after[1]),
+                        fraction if before[1] <= after[1] else 1 - fraction)
+
+    for timestamp, value in samples:
+        bridge = (previous is not None and value is not None and previous[1] is not None
+                  and timestamp - previous[0] <= gap_limit)
+        current = (timestamp, value)
+        if timestamp < t0:
+            previous = (timestamp, value)
+            continue
+        if bridge and previous[0] < t0 < timestamp:
+            output.append((t0, intersection(previous, current, t0), False))
+        if timestamp > t1:
+            if bridge and previous[0] < t1:
+                output.append((t1, intersection(previous, current, t1), True))
+            break
+        output.append((timestamp, value, bridge))
+        previous = (timestamp, value)
+    return output
+
+
+def _window_values(values: Sequence[Optional[float]], sample_times: Optional[Sequence[float]],
+                   times: Optional[Tuple[float, float]]) -> Sequence[Optional[float]]:
+    """Statistics describe actual records inside the time window, never edges."""
+    if sample_times is None or times is None:
+        return values
+    return [value for timestamp, value in zip(sample_times, values)
+            if _finite(timestamp) is not None and times[0] <= timestamp <= times[1]]
+
+
 def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float], width: int,
                  times: Optional[Tuple[float, float]], sample_interval: Optional[float],
                  envelope: bool = False) -> Tuple[List[Tuple[int, Optional[float], bool]], Tuple[float, float]]:
     """Bounded timestamp buckets with enough metadata to break curves across outages."""
-    samples = [(timestamp, value) for timestamp, value in zip(sample_times, values) if math.isfinite(timestamp)]
+    samples = [(timestamp, value) for timestamp, value in zip(sample_times, values) if _finite(timestamp) is not None]
     samples.sort(key=lambda item: item[0])
-    if times is None or not all(math.isfinite(t) for t in times) or times[1] < times[0]:
+    if times is None or len(times) != 2 or not all(_finite(t) is not None for t in times) or times[1] < times[0]:
         times = (samples[0][0], samples[-1][0]) if samples else (0.0, 0.0)
     if width <= 0:
         return [], times
     deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:]) if b[0] > a[0] and math.isfinite(b[0] - a[0]))
-    cadence = sample_interval if sample_interval is not None and math.isfinite(sample_interval) and sample_interval > 0 else (
+    cadence = sample_interval if _finite(sample_interval) is not None and sample_interval > 0 else (
               deltas[(len(deltas) - 1) // 2] if deltas else 0.0)
     gap_limit = min(sys.float_info.max, cadence * 2.5)
     t0, t1 = times
     buckets: dict[int, list[Tuple[float, Optional[float], bool]]] = {}
-    previous: Optional[Tuple[float, Optional[float]]] = None
-    for timestamp, value in samples:
-        bridge = previous is not None and value is not None and previous[1] is not None and timestamp - previous[0] <= gap_limit
-        previous = (timestamp, value)
-        if timestamp < t0 or timestamp > t1:
-            continue
+    for timestamp, value, bridge in _clip_time_samples(samples, times, gap_limit):
         x = min(width - 1, max(0, round(_fraction(timestamp, t0, t1) * (width - 1)))) if t1 > t0 else width - 1
         buckets.setdefault(x, []).append((timestamp, value, bridge))
     points: List[Tuple[int, Optional[float], bool]] = []
@@ -228,6 +272,40 @@ def time_axis(t0: float, t1: float, width: int, indent: str = "", elapsed: bool 
     span = t1 - t0
     fmt = "%H:%M" if span < 36 * 3600 else "%m-%d %H:%M"
     n = max(2, min(8, width // 14))
+    if span < 1:
+        # Preserve the actual timestamp anchor and enough fractional digits to
+        # distinguish small display windows. Rounding the fractional component
+        # before formatting also carries correctly across a second or midnight.
+        digits = min(6, max(1, math.ceil(-math.log10(span) + math.log10(n - 1))))
+        scale = 10 ** digits
+
+        def precise_label(value):
+            if elapsed:
+                return f"{value:.{digits}f}s"
+            whole = math.floor(value)
+            fraction = round((value - whole) * scale)
+            if fraction == scale:
+                whole, fraction = whole + 1, 0
+            try:
+                return time.strftime("%H:%M:%S", time.localtime(whole)) + f".{fraction:0{digits}d}"
+            except (OverflowError, OSError, ValueError):
+                return fmt_num(value, "s")
+
+        first, last = precise_label(t0), precise_label(t1)
+        if len(first) + len(last) + 1 > width or first == last:
+            label = cut(last, width, True)
+            return [(indent + " " * max(0, width - len(label)) + label, "dim")]
+        line = [" "] * width
+        line[:len(first)], line[-len(last):] = list(first), list(last)
+        placed = {first, last}
+        for i in range(1, n - 1):
+            frac = i / (n - 1)
+            label = precise_label(_between(t0, t1, frac))
+            x = max(0, min(width - len(label), round(frac * (width - 1)) - len(label) // 2))
+            if label not in placed and all(c == " " for c in line[max(0, x - 1):x + len(label) + 1]):
+                line[x:x + len(label)] = list(label)
+                placed.add(label)
+        return [(indent + "".join(line), "dim")]
     if span < 120 and not elapsed:                          # too short for a scale: one label at the end
         try:
             label = time.strftime("%H:%M:%S", time.localtime(t1))
@@ -261,13 +339,60 @@ def _trace_axis(times: Tuple[float, float], samples: int, chart_w: int, indent: 
     return time_axis(times[0], times[1], occupied, indent + " " * (chart_w - occupied), elapsed)
 
 
+def _plot_metadata(metadata: Optional[dict], width: int, chart_w: int, height: int,
+                   indent: str, axis_w: int, title: str, lo: float, hi: float,
+                   times: Optional[Tuple[float, float]], timestamped: bool,
+                   has_data: bool, raster: Tuple[int, int]) -> None:
+    """Publish exact local half-open geometry without retaining caller state.
+
+    Timestamp-less short traces occupy only the right edge, so they deliberately
+    publish no time transform. Interactive callers must provide sample times.
+    Bounds are the plotted coordinate system, including log10 when supplied.
+    """
+    if metadata is None:
+        return
+    top = int(bool(title))
+    left = min(max(0, width), vlen(indent) + axis_w)
+    metadata.clear()
+    metadata.update(plot_rect=(top, left, top + height, left + chart_w),
+                    x_bounds=times if timestamped else None,
+                    y_bounds=(lo, hi), raster=raster,
+                    valid=bool(chart_w and height), has_data=has_data)
+
+
+def _clip_curve_segment(x0: int, value0: float, x1: int, value1: float,
+                        lo: float, hi: float) -> Optional[Tuple[float, float, float, float]]:
+    """Clip observed linear segments, rather than flattening clipped values.
+
+    Intersections use the same overflow-safe fraction as the chart. Two samples
+    above or below a fixed/zoomed range cannot manufacture a boundary plateau.
+    """
+    if min(value0, value1) > hi or max(value0, value1) < lo:
+        return None
+    lower, upper = min(value0, value1), max(value0, value1)
+
+    def endpoint(x: int, value: float) -> Tuple[float, float]:
+        if lo <= value <= hi:
+            return float(x), value
+        boundary = lo if value < lo else hi
+        fraction = _fraction(boundary, lower, upper)
+        if value1 < value0:
+            fraction = 1 - fraction
+        return x0 + (x1 - x0) * fraction, boundary
+
+    start, end = endpoint(x0, value0), endpoint(x1, value1)
+    return start[0], start[1], end[0], end[1]
+
+
 def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height: int, lo: float = 0.0, hi: Optional[float] = None,
                unit: str = "", title: str = "", times: Optional[Tuple[float, float]] = None, color: Optional[Callable[[float], str]] = None,
                indent: str = "   ", axis_w: int = 7, sample_times: Optional[Sequence[float]] = None,
                sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
-               axis_formatter: Optional[Callable[[float], str]] = None) -> List[Row]:
+               axis_formatter: Optional[Callable[[float], str]] = None,
+               metadata: Optional[dict] = None) -> List[Row]:
     """A vertical bar (area) chart ``height`` rows tall with eight sub-levels per row, a y axis on the left and a
     time axis below.  ``values`` are resampled to the chart width; None leaves a gap."""
+    axis_w = max(1, axis_w)
     chart_w = max(0, min(MAX_COLUMNS, width - vlen(indent) - axis_w))
     height = max(0, min(MAX_HEIGHT, height))
     values = [_finite(v) for v in values]
@@ -285,11 +410,14 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
             lows[x] = value if lows[x] is None else min(lows[x], value) if value is not None else None
     # Summary figures describe the source samples, not the bucket averages used to draw the chart.
     lo, hi = _bounds(values, lo, hi)
+    _plot_metadata(metadata, width, chart_w, height, indent, axis_w, title, lo, hi,
+                   times, sample_times is not None, any(v is not None for v in vals),
+                   (1, len(g.spark) if not g.ascii else len(LEVELS_ASCII[1:])))
     levels = g.spark if not g.ascii else LEVELS_ASCII[1:]
     nlev = len(levels)
     rows: List[Row] = []
     if title:
-        rows.append(_header(g, values, width, title, unit, indent))
+        rows.append(_header(g, _window_values(values, sample_times, times), width, title, unit, indent))
     for r in range(height):
         label = ""
         if r == 0:
@@ -302,8 +430,8 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
         floor = (height - 1 - r) * nlev                      # sub-levels below this row
         row_style = ""
         if not g.ascii and not color:
-            from .palette import gradient
-            row_style = "fg:" + gradient("#155e75", "#67e8f9", (height - r) / max(1, height))
+            from .palette import gradient_style
+            row_style = gradient_style("track", "cyan", (height - r) / max(1, height))
         for x, v in enumerate(vals):
             guide = g.dot if not g.ascii and r in (0, height // 2) and x % 8 == 0 else " "
             if v is None:
@@ -359,11 +487,9 @@ def hbar_rows(g: Glyphs, items: Sequence[Tuple[str, float, str]], width: int, in
             filled = text.rstrip(g.empty)
             row += [(filled, style or (color(label, v) if color else "cyan")), (g.empty * (bar_w - vlen(filled)), "dim")]
         else:
-            shades = {"green": ("#065f46", "#6ee7b7"), "red": ("#881337", "#fb7185"),
-                      "yellow": ("#92400e", "#fcd34d"), "magenta": ("#6b21a8", "#d8b4fe"),
-                      "blue": ("#1e40af", "#93c5fd"), "cyan": ("#155e75", "#67e8f9")}
-            start, end = shades.get(style.split("+")[0], ("#155e75", "#67e8f9"))
-            row += gradient_bar(g, frac, bar_w, start, end)
+            hue = style.split("+")[0]
+            hue = hue if hue in ("green", "red", "yellow", "magenta", "blue", "cyan") else "cyan"
+            row += gradient_bar(g, frac, bar_w, "track", hue)
         row += [(f" {fmt_num(v, unit)}", "bold")]
         rows.append(row)
     return [clip_row(row, width) for row in rows]
@@ -374,66 +500,108 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
                   times: Optional[Tuple[float, float]] = None, color: Optional[Callable[[float], str]] = None,
                   indent: str = "   ", axis_w: int = 7, sample_times: Optional[Sequence[float]] = None,
                   sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
-                  axis_formatter: Optional[Callable[[float], str]] = None) -> List[Row]:
-    """A high-resolution telemetry curve using a 2 x 4 dot raster per terminal cell.
+                  axis_formatter: Optional[Callable[[float], str]] = None,
+                  metadata: Optional[dict] = None) -> List[Row]:
+    """Connected telemetry with a solid 2 x 2 quadrant raster per Unicode cell.
 
-    Adjacent observed samples are connected; missing samples break the curve. Short
-    traces stay right-aligned without stretching time. Zero is a real baseline point.
-    The explicit ASCII mode uses the equivalent filled area chart.
+    The historical function name remains API-compatible. Opaque half-cell strokes
+    are easier to follow than isolated dots, including with colour disabled. ASCII
+    uses connected directional strokes instead of filling the area below a curve.
+    No curve is smoothed: compression preserves first/minimum/maximum/last points,
+    unknown samples and cadence outages break segments, and clipping intersects
+    the actual observed line instead of fabricating a boundary value.
     """
-    if g.ascii:
-        return vbar_chart(g, values, width, height, lo, hi, unit, title, times, color, indent, axis_w, sample_times, sample_interval, elapsed, envelope, axis_formatter)
-    from .palette import gradient
+    axis_w = max(1, axis_w)
     values = [_finite(v) for v in values]
     lo, hi = _bounds(values, lo, hi)
     chart_w = max(0, min(MAX_COLUMNS, width - vlen(indent) - axis_w))
     height = max(0, min(MAX_HEIGHT, height))
+    raster = 1 if g.ascii else 2
     if sample_times is None:
-        points = envelope_points(values, chart_w * 2) if envelope else [(x, value, True) for x, value in enumerate(resample(values, chart_w * 2))]
+        points = envelope_points(values, chart_w * raster) if envelope else [
+            (x, value, True) for x, value in enumerate(resample(values, chart_w * raster))]
     else:
-        points, times = _time_points(values, sample_times, chart_w * 2, times, sample_interval, envelope)
-    pixels_h = height * 4
+        points, times = _time_points(values, sample_times, chart_w * raster, times, sample_interval, envelope)
+    _plot_metadata(metadata, width, chart_w, height, indent, axis_w, title, lo, hi,
+                   times, sample_times is not None, any(v is not None for _, v, _ in points),
+                   (raster, raster))
+    pixels_h, pixels_w = height * raster, chart_w * raster
     cells = [[0] * chart_w for _ in range(height)]
-    dots = ((1, 2, 4, 64), (8, 16, 32, 128))
 
-    def mark(x: int, y: int) -> None:
-        if 0 <= x < chart_w * 2 and 0 <= y < pixels_h:
-            cells[y // 4][x // 2] |= dots[x % 2][y % 4]
+    def mark(x: int, y: int, direction: int = 16) -> None:
+        if 0 <= x < pixels_w and 0 <= y < pixels_h:
+            if g.ascii:
+                cells[y][x] |= direction
+            else:
+                cells[y // 2][x // 2] |= 1 << ((y % 2) * 2 + x % 2)
 
-    previous: Optional[Tuple[int, int]] = None
-    if pixels_h:
+    def stroke(px: int, py: int, ex: int, ey: int) -> None:
+        dx, dy = abs(ex - px), abs(ey - py)
+        sx, sy = (1 if px < ex else -1), (1 if py < ey else -1)
+        # Directional ASCII strokes make level, rising, and falling segments
+        # readable without colour; a same-column envelope uses a range marker.
+        direction = (32 if dx == 0 and dy else 1 if dy == 0 else
+                     4 if ey > py else 8)
+        error = dx - dy
+        while True:
+            mark(px, py, direction)
+            if px == ex and py == ey:
+                break
+            doubled = error * 2
+            if doubled > -dy:
+                error -= dy
+                px += sx
+            if doubled < dx:
+                error += dx
+                py += sy
+
+    previous: Optional[Tuple[int, float, Optional[int]]] = None
+    if pixels_h and pixels_w:
         for x, value, bridge in points:
             if value is None:
                 previous = None
                 continue
-            fraction = _fraction(value, lo, hi)
-            y = int(round((1 - fraction) * (pixels_h - 1)))
-            mark(x, y)
+            y = round((1 - _fraction(value, lo, hi)) * (pixels_h - 1)) if lo <= value <= hi else None
+            if y is not None:
+                mark(x, y)
             if previous is not None and bridge:
-                px, py = previous
-                # x advances by exactly one observed raster column. A vertical
-                # span is rasterized at its nearest side for a continuous curve.
-                distance = max(abs(x - px), abs(y - py))
-                for step in range(1, distance):
-                    t = step / distance
-                    mark(int(round(px + (x - px) * t)), int(round(py + (y - py) * t)))
-            previous = (x, y)
+                if previous[2] is not None and y is not None:
+                    # The usual in-range path reuses integer pixel coordinates.
+                    # Only actual clipping needs stable boundary interpolation.
+                    stroke(previous[0], previous[2], x, y)
+                else:
+                    segment = _clip_curve_segment(previous[0], previous[1], x, value, lo, hi)
+                    if segment is not None:
+                        x0, v0, x1, v1 = segment
+                        stroke(round(x0), round((1 - _fraction(v0, lo, hi)) * (pixels_h - 1)),
+                               round(x1), round((1 - _fraction(v1, lo, hi)) * (pixels_h - 1)))
+            previous = (x, value, y)
+
+    def ascii_stroke(mask: int) -> str:
+        directions = mask & 47
+        if directions & 32:
+            return ":"
+        if directions in (1, 4, 8):
+            return {1: "-", 4: "\\", 8: "/"}[directions]
+        return "+" if directions else "."
+
     rows: List[Row] = []
     if title:
-        rows.append(_header(g, values, width, title, unit, indent))
+        rows.append(_header(g, _window_values(values, sample_times, times), width, title, unit, indent))
     for r, masks in enumerate(cells):
         axis_value = hi if r == 0 else lo if r == height - 1 else _mean((lo, hi)) if height >= 5 and r == height // 2 else None
         label = (axis_formatter(axis_value) if axis_formatter else fmt_num(axis_value, unit)) if axis_value is not None else ""
-        row: Row = [(indent + pad(cut(label, max(0, axis_w - 1), g.ascii), axis_w - 1, ">") + "│", "dim")]
+        row: Row = [(indent + pad(cut(label, max(0, axis_w - 1), g.ascii), axis_w - 1, ">") + ("|" if g.ascii else "│"), "dim")]
         fraction = 1 - r / max(1, height - 1)
-        style = color(fraction) if color else "fg:" + gradient("#38bdf8", "#c4b5fd", fraction)
+        style = (color(fraction) if color else "chart-1") + "+bold"
         for x, mask in enumerate(masks):
-            guide = "·" if r in (0, height // 2) and x % 8 == 0 else " "
-            row.append((chr(0x2800 + mask), style + "+bold") if mask else (guide, "dim"))
+            # Guides are isolated dim dots, visually distinct from opaque ink.
+            guide = "·" if not g.ascii and r in (0, height // 2) and x % 8 == 0 else " "
+            row.append(((ascii_stroke(mask) if g.ascii else QUADRANTS[mask]), style) if mask else (guide, "dim"))
         rows.append(row)
-    rows.append([(indent + " " * max(0, axis_w - 1) + "└" + "─" * chart_w, "dim")])
+    rows.append([(indent + " " * max(0, axis_w - 1) + ("+" if g.ascii else "└") + g.rule * chart_w, "dim")])
     if times:
-        rows.append(_trace_axis(times, len(values), chart_w, indent + " " * axis_w, 2, elapsed) if sample_times is None else
+        rows.append(_trace_axis(times, len(values), chart_w, indent + " " * axis_w, raster, elapsed) if sample_times is None else
                     time_axis(times[0], times[1], chart_w, indent + " " * axis_w, elapsed))
     return [clip_row(row, width) for row in rows]
 
@@ -446,7 +614,7 @@ def heatmap(g: Glyphs, matrix: Sequence[Sequence[Optional[float]]], width: int, 
     Rows share one scale. Each row also prints its newest measurement so the map
     remains useful with colour disabled. At most 128 matrix rows are rendered.
     """
-    from .palette import gradient
+    from .palette import gradient_style
     source = [[_finite(v) for v in values] for values in matrix[:MAX_HEIGHT]]
     lo, hi = _bounds([v for values in source for v in values], lo, hi)
     label_w = min(16, max(0, (width - vlen(indent) - 12) // 3)) if labels else 0
@@ -468,8 +636,8 @@ def heatmap(g: Glyphs, matrix: Sequence[Sequence[Optional[float]]], width: int, 
                 if g.ascii:
                     row.append((g.spark[min(7, int(fraction * 7.999))], level(fraction)))
                 else:
-                    shade = gradient("#164e63", "#22d3ee", fraction * 2) if fraction < 0.5 else gradient("#22d3ee", "#fbbf24", (fraction - 0.5) * 2)
-                    row.append(("██", "fg:" + shade))
+                    shade = gradient_style("track", "cyan", fraction * 2) if fraction < 0.5 else gradient_style("cyan", "yellow", (fraction - 0.5) * 2)
+                    row.append(("██", shade))
         latest = values[-1] if values else None
         row.append((" " + fmt_num(latest, unit), "bold"))
         out.append(clip_row(row, width))

@@ -111,7 +111,7 @@ def test_curses_pairs_remain_stable_and_bounded_during_gradient_frames(colors, p
     assert painter.attr("red", "mono") == curses.A_BOLD
     assert painter.attr("sel", "reader") == curses.A_BOLD | curses.A_REVERSE
     if colors == 8 and pairs == 2:
-        assert curses.initialized[0][2] == -1
+        assert curses.initialized[0][2] == curses.COLOR_BLACK
         assert selected & curses.A_REVERSE
 
 

@@ -1,8 +1,8 @@
 """A bounded, cell-accurate interaction graph for the painted terminal frame.
 
-Renderers publish controls as data. Neither graph construction, hovering nor
-directional traversal reads files, requests samples, or changes a selection.
-Activation delegates to the existing controller, preserving its confirmations.
+Renderers publish controls as data. Graph construction and pointer feedback
+never read files or request samples. Explicit keyboard row focus binds only a
+published real job ID; activation uses the controller and its confirmations.
 """
 from __future__ import annotations
 
@@ -71,12 +71,17 @@ class Graph:
     height: int
     generation: int
     observed_geometry: tuple = ()
+    regions: tuple = ()
+    scope: tuple = ()
     _identities: object = field(init=False, repr=False, compare=False)
     _rows: object = field(init=False, repr=False, compare=False)
     _spanning: tuple = field(init=False, repr=False, compare=False)
+    _regions: object = field(init=False, repr=False, compare=False)
+    _ordered: tuple = field(init=False, repr=False, compare=False)
+    _order_indices: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
-        identities, rows, spanning = {}, {}, []
+        identities, rows, spanning, regions = {}, {}, [], {}
         for index, control in enumerate(self.controls):
             identities.setdefault(control.id, control)
             rect = control.rect
@@ -89,11 +94,25 @@ class Graph:
                 # Multi-row controls do not multiply storage by screen height.
                 # Native buttons and table rows take the constant-time row path.
                 spanning.append(entry)
+            if control.group == "pane-dividers":
+                region = "divider"
+            elif control.group.startswith("toolbar") or control.group == "tabs":
+                region = "global:" + control.group
+            else:
+                region = next((name for name, bounds in self.regions
+                               if bounds.top <= rect.top and rect.bottom <= bounds.bottom
+                               and bounds.left <= rect.left and rect.right <= bounds.right), "")
+            regions[control.id] = region
         object.__setattr__(self, "_identities", MappingProxyType(identities))
         object.__setattr__(self, "_rows", MappingProxyType({
             y: tuple(sorted(entries, key=lambda entry: entry[0], reverse=True))
             for y, entries in rows.items()}))
         object.__setattr__(self, "_spanning", tuple(sorted(spanning, key=lambda entry: entry[0], reverse=True)))
+        object.__setattr__(self, "_regions", MappingProxyType(regions))
+        ordered = tuple(sorted((control for control in self.controls if control.enabled),
+                               key=lambda control: (control.rect.top, control.rect.left, control.id)))
+        object.__setattr__(self, "_ordered", ordered)
+        object.__setattr__(self, "_order_indices", MappingProxyType({control.id: index for index, control in enumerate(ordered)}))
 
     def get(self, identity):
         try:
@@ -109,6 +128,9 @@ class Graph:
             return spanning[1] if spanning else None
         return spanning[1] if spanning and spanning[0] > local[0] else local[1]
 
+    def region(self, control):
+        return self._regions.get(control.id, "")
+
 
 def initialize(app):
     state = getattr(app, "interaction_state", None)
@@ -116,7 +138,8 @@ def initialize(app):
         state = {}
         app.interaction_state = state
     for key, value in (("graph", None), ("pointer", None), ("hovered", None), ("focused", None),
-                       ("active", False), ("routing", False), ("generation", 0), ("pending_focus", None)):
+                       ("active", False), ("routing", False), ("generation", 0), ("pending_focus", None),
+                       ("frame_required", False)):
         state.setdefault(key, value)
     return state
 
@@ -132,6 +155,49 @@ def overlay(views, snap, app, width, height):
 def _state(app, name):
     value = getattr(app, name, {})
     return value if isinstance(value, dict) else {}
+
+
+def _scope(app):
+    """Overlay identities are distinct from ordinary viewport/row changes."""
+    toolbar = _state(app, "toolbar_state")
+    analysis = _state(app, "analysis_state")
+    mode = getattr(app, "mode", "main")
+    return (mode, getattr(app, "tab", ""), toolbar.get("menu"), toolbar.get("panel"),
+            analysis.get("modal"), _state(app, "table_tools_state").get("modal"),
+            id(getattr(app, "confirm", None)) if mode == "confirm" else None,
+            id(_state(app, "execution_state").get("review")) if mode == "execution" else None)
+
+
+def _viewport(app):
+    """Bounded preference/offset identity; never inspect jobs or chart data."""
+    tab = getattr(app, "tab", "")
+    top, cursor = _state(app, "top"), _state(app, "cursor")
+    table = _state(app, "table_state")
+    layout = getattr(app, "layout_state", None)
+    scroll = getattr(layout, "scroll", {})
+    browser = _state(app, "history_browser_state").get("views", {}).get(tab, {})
+    if not isinstance(browser, dict):
+        browser = {}
+    logs = getattr(app, "logs", None)
+    recent = getattr(app, "recent_history_state", None)
+    from .table_ui import fingerprint
+    tables = (tab, "recent") if tab == "jobs" else (tab,)
+    return (tuple((name, top.get(name), cursor.get(name),
+                   _state(app, "sort").get(name), _state(app, "reverse").get(name),
+                   fingerprint(app, name),
+                   tuple(table.get("hidden", {}).get(name, ())[:64]),
+                   tuple(table.get("order", {}).get(name, ())[:64]),
+                   tuple(sorted(table.get("widths", {}).get(name, {}).items()))[:64])
+                  for name in tables),
+            getattr(app, "filter", ""), table.get("groups"), tuple(table.get("collapsed", ())[:256]),
+            getattr(layout, "density", None), getattr(layout, "ratio", None),
+            getattr(layout, "maximized", None),
+            scroll.get(tab + ":main"), scroll.get(tab + ":details"),
+            browser.get("top"), browser.get("dock"), browser.get("ratio"),
+            getattr(recent, "ratio", None), getattr(recent, "manual_split", None),
+            getattr(app, "research_scroll", None), getattr(app, "research_task_offset", None),
+            getattr(app, "deps_scope_top", None), getattr(logs, "top", None),
+            getattr(logs, "browser_top", None), _state(app, "analytics_document_state").get("top"))
 
 
 def _context(app):
@@ -153,7 +219,8 @@ def _context(app):
             table_tools.get("tab"), _state(app, "table_state").get("tab") if getattr(app, "mode", "main") == "columns" else None,
             id(getattr(app, "confirm", None)) if getattr(app, "mode", "main") == "confirm" else None,
             id(execution.get("review")) if getattr(app, "mode", "main") == "execution" else None,
-            repr(execution.get("pending_action"))[:512] if getattr(app, "mode", "main") == "execution" else None)
+            repr(execution.get("pending_action"))[:512] if getattr(app, "mode", "main") == "execution" else None,
+            _viewport(app))
 
 
 def _current(app):
@@ -283,6 +350,15 @@ def _hit_controls(app, rows, hits, width, height, *, layer=0, spans=None):
                 if panel is not None and panel.y <= y < panel.y + panel.height and panel.x:
                     right = panel.x - 1
             rect = _row_rect(rows, y, width, height, overlays=spans, main_right=right)
+            if rect and getattr(app, "tab", "") == "jobs" and kind in ("job", "recent"):
+                main = _pane_rect(getattr(app, "workspace_main_rect", None), width, height)
+                if main and main.top <= y < main.bottom:
+                    # A table row remains selectable in its leading cells.
+                    # Progress text can start farther right (" wait " / --);
+                    # that padding must not become the divider's drag buffer.
+                    # Keep the outer structural margin free for resizing.
+                    rect = Rect(rect.top, min(rect.left, main.left + 1), rect.bottom,
+                                min(rect.right, main.right))
             content = getattr(app, "history_browser_content_rect", None)
             if rect and getattr(app, "tab", "") in ("analytics", "deps", "log", "research") and content is not None:
                 rect = _rect((max(rect.top, content.y), max(rect.left, content.x),
@@ -394,6 +470,78 @@ def _modal_controls(app, rows, width, height, spans):
                               ("row", y, left), prefix, button=False, layer=2)
 
 
+def _pane_rect(value, width, height):
+    if value is None:
+        return None
+    parts = tuple(getattr(value, name, None) for name in ("y", "x", "height", "width"))
+    if not all(_integer(item) for item in parts):
+        return None
+    y, x, h, w = parts
+    return Rect(y, x, y + h, x + w).clip(width, height)
+
+
+def _regions(app, width, height):
+    """Use painted pane bounds, rather than the center of a wide table row."""
+    if getattr(app, "mode", "main") != "main":
+        return (("modal", Rect(0, 0, height, width)),)
+    tab = getattr(app, "tab", "")
+    browser = _state(app, "history_browser_state").get("frame")
+    browsing = (tab in ("analytics", "deps", "log", "research") and isinstance(browser, dict)
+                and browser.get("tab") == tab and browser.get("mode") == "main"
+                and browser.get("geometry") == (getattr(app, "width", None), getattr(app, "height", None)))
+    body = (_pane_rect(getattr(app, "history_browser_content_rect", None), width, height)
+            if browsing else None)
+    body = body or Rect(max(0, getattr(app, "body_origin", 0)), 0, max(0, height - 1), width)
+    regions = []
+    if browsing:
+        rect = _pane_rect(getattr(app, "history_browser_rect", None), width, height)
+        if rect:
+            regions.append(("page:history", rect))
+    dividers = _state(app, "pane_drag_state").get("dividers", {})
+    # Research and Logs render their own native documents. A Main rectangle
+    # retained from Jobs must not invent a hidden Details pane on those pages.
+    workspace = tab == "jobs" or "workspace:" + tab in dividers
+    main = _pane_rect(getattr(app, "workspace_main_rect", None), width, height) if workspace else None
+    panel = _pane_rect(getattr(app, "job_panel_rect", None), width, height) if tab == "jobs" else None
+    layout = getattr(app, "layout_state", None)
+    has_details = "details" in getattr(layout, "available", ())
+    if main and body.top <= main.top and main.bottom <= body.bottom and body.left <= main.left and main.right <= body.right:
+        if panel:
+            regions.append(("page:details", panel))
+        elif has_details and main.right < body.right:
+            regions.append(("page:details", Rect(body.top, main.right + 1, body.bottom, body.right)))
+        elif has_details and main.bottom < body.bottom:
+            regions.append(("page:details", Rect(main.bottom + 1, body.left, body.bottom, body.right)))
+        regions.append(("page:main", main))
+    elif panel:
+        regions.append(("page:details", panel))
+    # The broader content rectangle is deliberately last; native split bounds
+    # win, and pages without a workspace still have a stable content domain.
+    regions.append(("page:main", body))
+    return tuple((name, rect) for name, rect in regions if rect.top < rect.bottom and rect.left < rect.right)
+
+
+def _recover_focus(app, previous, graph, current):
+    """Reanchor a removed row within its current table, never activate it."""
+    if not previous or not current or previous.scope != graph.scope:
+        return None
+    if not current.button and current.group in ("job", "recent", "fin"):
+        migrated = next((control for control in graph.controls if control.enabled and not control.button
+                         and control.group in ("job", "recent", "fin") and control.label == current.label
+                         and graph.region(control) == previous.region(current)), None)
+        if migrated:
+            return migrated
+    candidates = [control for control in graph.controls if control.enabled
+                  and control.group == current.group and graph.region(control) == previous.region(current)]
+    if not candidates:
+        return None
+    selected = str(getattr(app, "selected_id", ""))
+    return next((control for control in candidates if not control.button and control.label == selected),
+                min(candidates, key=lambda control: (abs(control.rect.center[0] - current.rect.center[0]),
+                                                       abs(control.rect.center[1] - current.rect.center[1]),
+                                                       control.rect.top, control.rect.left, control.id)))
+
+
 def publish(app, rows, hits, width, height, overlays=None, extra_controls=()):
     """Publish one immutable graph from the final visible frame's metadata.
 
@@ -468,13 +616,24 @@ def publish(app, rows, hits, width, height, overlays=None, extra_controls=()):
     token = _context(app)
     geometry = (getattr(app, "width", None), getattr(app, "height", None))
     visible = tuple(visible)
-    graph = state["graph"]
+    graph = previous = state["graph"]
+    previous_focus = previous.get(state["focused"]) if previous else None
+    regions, scope = _regions(app, width, height), _scope(app)
     if (graph is None or graph.token != token or graph.width != width or graph.height != height
-            or graph.observed_geometry != geometry or graph.controls != visible):
+            or graph.observed_geometry != geometry or graph.controls != visible or graph.regions != regions):
         state["generation"] += 1
-        graph = Graph(visible, token, width, height, state["generation"], geometry)
+        graph = Graph(visible, token, width, height, state["generation"], geometry, regions, scope)
     state["graph"] = graph
-    if graph.get(state["focused"]) is None:
+    state["frame_required"] = False
+    focused = graph.get(state["focused"])
+    if focused is None or not focused.enabled:
+        recovered = _recover_focus(app, previous, graph, previous_focus) if state["active"] else None
+        state["focused"] = recovered.id if recovered else None
+        state["active"] = bool(recovered)
+        if recovered:
+            _bind_row(app, recovered)
+    elif previous and previous.scope != scope:
+        # The same incidental ID on another page/modal is not the same focus.
         state["focused"], state["active"] = None, False
     pointer = state["pointer"]
     hovered = graph.at(*pointer) if pointer else None
@@ -497,7 +656,45 @@ def nearest(graph: Graph, current: Control, direction: str):
     vertical = direction in ("up", "down")
     sign = -1 if direction in ("left", "up") else 1
     cy, cx = current.rect.center
-    ranked = []
+    region = graph.region(current)
+    best = None
+    # Table rows span every column. A header to the right of their center is
+    # still in the same pane; it must not steal a requested pane crossing.
+    row_crossing = (not current.button or current.group == "job-history" and ":job:" in current.id) and direction in ("left", "right")
+    pane_candidates = []
+    # At the left edge of Details, return to the exact selected table row.
+    # Otherwise a short header fragment near the top could win over Recents.
+    if direction == "left" and region == "page:details":
+        siblings = [control for control in graph.controls if control.enabled
+                    and graph.region(control) == region
+                    and control.rect.top < current.rect.bottom and current.rect.top < control.rect.bottom
+                    and control.rect.center[1] < cx]
+        if not siblings:
+            pane_candidates = [control for control in graph.controls if control.enabled
+                               and not control.button and graph.region(control) == "page:main"]
+            if pane_candidates:
+                selected = graph.token[2] if len(graph.token) > 2 else None
+                return next((control for control in pane_candidates if control.label == selected),
+                            min(pane_candidates, key=lambda control: (abs(control.rect.center[0] - cy),
+                                                                     control.rect.top, control.rect.left, control.id)))
+    if row_crossing and region:
+        bounds = dict(reversed(graph.regions))
+        wanted = "page:details" if region == "page:main" and direction == "right" and "page:details" in bounds else "page:main" if region == "page:details" and direction == "left" else None
+        if wanted is None and region in ("page:main", "page:history") and "page:history" in bounds:
+            other = "page:history" if region == "page:main" else "page:main"
+            delta = bounds[other].center[1] - bounds[region].center[1]
+            if delta * sign > 0 or delta == 0 and region == "page:history" and direction == "left":
+                wanted = other
+        if wanted:
+            pane_candidates = [control for control in graph.controls if control.enabled and graph.region(control) == wanted]
+    if pane_candidates:
+        if region == "page:main" and direction == "right" and len(graph.token) > 10:
+            active_tab = graph.get("job_panel_tab:" + str(graph.token[10]))
+            if active_tab in pane_candidates:
+                return active_tab
+        return min(pane_candidates, key=lambda control: (abs(control.rect.center[0] - cy),
+                                                         abs(control.rect.center[1] - cx),
+                                                         control.rect.top, control.rect.left, control.id))
     for candidate in graph.controls:
         if candidate.id == current.id or not candidate.enabled:
             continue
@@ -508,12 +705,74 @@ def nearest(graph: Graph, current: Control, direction: str):
         orthogonal = abs(nx - cx if vertical else ny - cy)
         overlap = (current.rect.left < candidate.rect.right and candidate.rect.left < current.rect.right
                    if vertical else current.rect.top < candidate.rect.bottom and candidate.rect.top < current.rect.bottom)
+        # A row's own cells are a single semantic target, not independent
+        # column controls. Only inline controls on the same painted row apply.
+        if row_crossing and graph.region(candidate) == region and not overlap:
+            continue
         same_group = candidate.group == current.group
-        rank = (0 if overlap else 1, 0 if same_group else 1,
+        same_region = bool(region and graph.region(candidate) == region)
+        rank = (0 if same_region else 1 if region else 0,
+                0 if overlap else 1, 0 if same_group else 1,
                 forward + 2 * orthogonal, orthogonal, forward,
                 candidate.rect.top, candidate.rect.left, candidate.id)
-        ranked.append((rank, candidate))
-    return min(ranked, key=lambda value: value[0])[1] if ranked else None
+        if best is None or rank < best[0]:
+            best = rank, candidate
+    return best[1] if best else None
+
+
+def needs_frame(app):
+    """Stop a key burst before another event can use displaced row geometry."""
+    return bool(initialize(app)["frame_required"])
+
+
+def _bind_row(app, control):
+    """Bind explicit Jobs row focus using existing published real identities."""
+    if (getattr(app, "mode", "main") != "main" or getattr(app, "tab", "") != "jobs"
+            or control.button or control.group not in ("job", "recent")):
+        return False
+    ids = getattr(app, "visible_ids", ()) if control.group == "job" else getattr(app, "recent_ids", ())
+    if control.label not in ids or not isinstance(getattr(app, "cursor", None), dict):
+        return False
+    index = ids.index(control.label) + (len(getattr(app, "visible_ids", ())) if control.group == "recent" else 0)
+    changed = getattr(app, "selected_id", None) != control.label or app.cursor.get("jobs") != index
+    app.cursor["jobs"], app.selected_id = index, control.label
+    layout = getattr(app, "layout_state", None)
+    if layout:
+        layout.focus = "main"
+    panel = _state(app, "job_panel_state")
+    panel["focus"] = ""
+    if changed:
+        initialize(app)["frame_required"] = True
+    return changed
+
+
+def _advance_row(app, graph, current, direction):
+    """At a table viewport edge, admit the next actual scheduler row."""
+    if (direction not in ("up", "down") or current.button or current.group not in ("job", "recent")
+            or getattr(app, "mode", "main") != "main" or getattr(app, "tab", "") != "jobs"
+            or not callable(getattr(app, "move", None))):
+        return False
+    cy = current.rect.center[0]
+    sign = 1 if direction == "down" else -1
+    if any(control.enabled and control.group == current.group and graph.region(control) == graph.region(current)
+           and (control.rect.center[0] - cy) * sign > 0 for control in graph.controls):
+        return False
+    _bind_row(app, current)
+    old = getattr(app, "selected_id", None)
+    from .recent_history import navigate
+    if not navigate(app, direction):
+        app.move(direction)
+        ids = list(getattr(app, "visible_ids", ())) + list(getattr(app, "recent_ids", ()))
+        cursor = getattr(app, "cursor", {}).get("jobs", 0)
+        if 0 <= cursor < len(ids):
+            app.selected_id = ids[cursor]
+    selected = getattr(app, "selected_id", None)
+    if selected == old or not selected:
+        return False
+    kind = "job" if selected in getattr(app, "visible_ids", ()) else "recent"
+    state = initialize(app)
+    state["focused"], state["active"], state["frame_required"] = kind + ":" + selected, True, True
+    return True
 
 
 def _focus(app, enabled=True):
@@ -533,6 +792,11 @@ def _focus(app, enabled=True):
     if target is None:
         return False
     state["focused"], state["active"] = target.id, True
+    # F8 explicitly transfers keyboard ownership from a clicked job browser.
+    # Its native arrow handler runs before this graph in the shared workbench.
+    browser = _state(app, "history_browser_state")
+    browser["focused"] = False
+    _bind_row(app, target)
     return True
 
 
@@ -593,25 +857,32 @@ def handle_key(app, key):
         return True
     if not state["active"]:
         return False
-    graph = _current(app)
-    if graph is None:
-        state["active"] = False
-        return False
     if key == "esc":
         state["active"] = False
+        state["pending_focus"] = None
         return True
+    graph = _current(app)
+    if graph is None:
+        if state["frame_required"] and state.get("graph") and state["graph"].scope == _scope(app):
+            # The terminal loop paints before the next queued event. Small
+            # embedders that call again sooner still cannot activate old data.
+            if key in ("up", "down", "left", "right", "home", "end", "tab", "btab", "enter", "space"):
+                return True
+        state["active"] = False
+        return False
     current = graph.get(state["focused"])
     if current is None:
         state["active"] = False
         return False
     target = None
     if key in ("up", "down", "left", "right"):
+        if _advance_row(app, graph, current, key):
+            return True
         target = nearest(graph, current, key)
     elif key in ("home", "end", "tab", "btab"):
-        ordered = sorted((control for control in graph.controls if control.enabled),
-                         key=lambda control: (control.rect.top, control.rect.left, control.id))
+        ordered = graph._ordered
         if ordered:
-            index = next((i for i, control in enumerate(ordered) if control.id == current.id), 0)
+            index = graph._order_indices.get(current.id, 0)
             index = 0 if key == "home" else len(ordered) - 1 if key == "end" else (index + (1 if key == "tab" else -1)) % len(ordered)
             target = ordered[index]
     elif key in ("enter", "space"):
@@ -623,6 +894,7 @@ def handle_key(app, key):
         return False
     if target:
         state["focused"] = target.id
+        _bind_row(app, target)
     return True
 
 
@@ -653,8 +925,15 @@ def handle_mouse(app, y, x, button="left", shift=False, **kwargs):
 
 @lru_cache(maxsize=512)
 def _feedback_style(style, feedback):
-    # Preserve semantic foreground, replace selection backgrounds, and remove
-    # dim so the actual hit region remains readable on every supported theme.
+    # Native cursor selection retains its semantic text and background. Hover
+    # and keyboard focus add accents without making the selected job resemble
+    # an ordinary hovered row. Explicit yank ranges are protected by decorate.
+    source = style.split("+")
+    if "sel" in source:
+        accents = [token for token in feedback.split("+") if token in ("under", "bold")]
+        return "+".join(dict.fromkeys(source + accents))
+    # Other controls keep their semantic foreground while replacing their
+    # ordinary background and removing dim for readable feedback in each theme.
     tokens = [token for token in style.split("+") if token not in ("dim", "sel", "rev", "under", "bold") and not token.startswith("bg:")]
     return "+".join(tokens + feedback.split("+"))
 
@@ -723,7 +1002,7 @@ def feedback_rows(app):
 
 
 def decorate(app, rows, origin=(0, 0)):
-    """Return styled rows without changing text, width, or controller selection."""
+    """Style controls while preserving the explicit screen-line yank range."""
     targets = _targets(app)
     if not targets:
         return rows
@@ -733,6 +1012,13 @@ def decorate(app, rows, origin=(0, 0)):
                for y in range(max(y0, control.rect.top), min(y0 + len(rows), control.rect.bottom))}
     for index in sorted(indices):
         y = index + y0
+        anchor, end = getattr(app, "sel_anchor", None), getattr(app, "sel_end", None)
+        if _integer(anchor) and _integer(end) and min(anchor, end) <= y <= max(anchor, end):
+            # Explicit yank selection has stronger visual precedence than a
+            # passive pointer or arrow-focus background. Native table cursors
+            # still receive normal feedback outside this selected line range.
+            # Menus retain their own feedback in decorate_overlays below.
+            continue
         ranges = [(control.rect.left - x0, control.rect.right - x0, style)
                   for control, style in targets if control.rect.top <= y < control.rect.bottom]
         if ranges:

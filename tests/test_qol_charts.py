@@ -141,7 +141,7 @@ def test_compressed_unicode_chart_renders_both_extremes(spike, baseline, target_
     values[500] = spike
     rows = charts.braille_chart(L.Glyphs(False), values, 18, 5, lo=0, hi=100)
     plots = rows[:-1]
-    assert any(0x2800 < ord(char) <= 0x28ff for char in L.row_text(plots[target_row])[10:])
+    assert any(char in charts.QUADRANTS[1:] for char in L.row_text(plots[target_row])[10:])
     buckets, _ = charts._time_points(values, range(1000), 8, None, 1, envelope=True)
     assert any(value == spike for _, value, _ in buckets) and len(buckets) <= 32
 

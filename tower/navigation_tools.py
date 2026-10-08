@@ -14,6 +14,7 @@ from itertools import chain, islice
 
 from . import clock, layout as L, navigation_ui
 from .research import RESEARCH_VIEWS, clean
+from .palette import THEME_NAMES
 
 MODES = {"jump_picker", "settings_editor", "bindings_editor", "field_explanation", "value_peek", "locations_picker"}
 MAX_LOCATIONS = 50
@@ -373,7 +374,7 @@ def _activate_jump(app, entry):
         app.say("Opened log " + value)
 
 
-SETTING_CHOICES = {"theme": ("default", "dark", "light", "terminal", "mono", "high", "cb", "reader"),
+SETTING_CHOICES = {"theme": THEME_NAMES,
                    "workspace.density": ("comfortable", "compact", "focused")}
 SETTING_LABELS = {"theme": "Theme", "workspace.density": "Density", "color": "Terminal colors", "animations": "Completion animation",
                   "bell": "Terminal bell", "mouse": "Mouse input", "gpu_sampling": "GPU sampling",

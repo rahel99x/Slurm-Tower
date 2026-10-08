@@ -21,7 +21,9 @@ def test_fractional_meters_have_eighth_cell_precision_and_clamp():
 def test_gradients_preserve_fractional_shape_without_ansi_in_text():
     row = L.gradient_bar(L.Glyphs(False), 0.5625, 2)
     assert L.row_text(row) == "█▏"
-    assert all(style.startswith("fg:#") for _, style in row)
+    from tower import palette as P
+    assert all(P.resolve(style).foreground is not None for _, style in row)
+    assert P.resolve(row[0][1], "darcula").foreground != P.resolve(row[0][1]).foreground
     assert row[0][1] != row[1][1]
     assert "\x1b" not in L.to_text([row], 2)
     assert L.row_text(L.gradient_bar(L.Glyphs(False), None, 5)) == "░░?░░"
@@ -56,11 +58,13 @@ def test_narrow_chart_headers_keep_complete_statistics_and_units():
 
 
 def _masks(rows, offset=10):
-    return [[ord(ch) - 0x2800 if 0x2800 <= ord(ch) <= 0x28FF else 0
+    # Decode the solid 2 x 2 raster so these assertions inspect measurements,
+    # rather than accepting any incidental axis or quiet grid character.
+    return [[charts.QUADRANTS.index(ch) if ch in charts.QUADRANTS else 0
              for ch in L.row_text(row)[offset:]] for row in rows]
 
 
-def test_braille_curve_has_real_zero_points_and_does_not_bridge_missing_samples():
+def test_solid_curve_has_real_zero_points_and_does_not_bridge_missing_samples():
     g = L.Glyphs(False)
     # 12 columns total -> two data cells, exactly four raster sample positions.
     observed = _masks(charts.braille_chart(g, [0, 0, 0, 0], 12, 4, hi=100)[:-1])
@@ -70,8 +74,8 @@ def test_braille_curve_has_real_zero_points_and_does_not_bridge_missing_samples(
     # Adjacent extrema produce a connecting stroke. A missing entire cell stays blank.
     rows = charts.braille_chart(g, [0, None, None, 100, 100, 100], 13, 4, hi=100)
     cells = _masks(rows[:-1])
-    assert all((row[0] & (8 | 16 | 32 | 128)) == 0 for row in cells)
-    assert all((row[1] & (1 | 2 | 4 | 64)) == 0 for row in cells)
+    assert all((row[0] & (2 | 8)) == 0 for row in cells)
+    assert all((row[1] & (1 | 4)) == 0 for row in cells)
 
 
 def test_timestamp_raster_keeps_actual_locations_and_breaks_backoff_gaps():

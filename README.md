@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.4.0 |
+| Release | Tower 4.5.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -162,6 +162,9 @@ Metric labels and state names remain visible without color.
 
 Press `T` to change the theme.
 Use `:theme dark`, `:theme light`, or `:theme terminal` to select a background style.
+Use `:theme darcula`, `:theme modnokai`, or `:theme gruvbox-dark` for an editor palette.
+`monokai` is an alias for `modnokai`; `gruvbox` is an alias for `gruvbox-dark`.
+Theme changes update the canvas, text, menus, information strips, and chart colours during the session.
 The `mono`, `high`, `cb`, and `reader` themes provide additional display options.
 The `reader` theme uses plain ASCII text and static notices.
 Set `animations` to `false` for immediate scrolling and static completion notices.
@@ -242,7 +245,7 @@ See the [50-improvement guide](docs/QUALITY_OF_LIFE.md) for the new workflows.
 | Search complete log sources | `:logsearch`, `:logresults`, `:logolder`, `:loggoto`, `:logmarks` | [Log search](docs/guides/log-search.md) |
 | Compare and organize log content | `:logdiff`, `:logalign`, `:logjson`, `:logfold`, `:logunread` | [Log display](docs/guides/log-view.md) |
 | Find destinations and change preferences | `:jump`, `:forward`, `:location`, `:settings`, `:keybindings`, `:peek` | [Navigation](docs/guides/navigation.md) |
-| Inspect measured intervals and graph scales | `:chart`, `:metricdisplay` | [Charts](docs/guides/charts.md) |
+| Inspect measured intervals and adjust graph scales | `:chart`, `:metricdisplay` | [Charts](docs/guides/charts.md) |
 | Review completions and application results | `:inbox`, `:activity`, `:exports`, `:alerts`, `:terminaldoctor` | [Operations](docs/guides/operations.md) |
 | Read declared result files | `:outputs`, `:artifact` | [Artifacts](docs/guides/artifacts.md) |
 
@@ -294,6 +297,19 @@ Choose a subview and scroll its content vertically.
 Each inline view fits the available width without horizontal panning.
 See [Live workbench](docs/guides/live-workbench.md) for panel navigation and live updates.
 
+For a running job, each metric has a Live button and a time-window slider.
+Use these controls on Analytics → Job series or Jobs → Details → Analytics → Job series.
+Set the window from five seconds to one millisecond.
+Live follows the current time and displays recorded observations within that window.
+The display limit does not change the source sampling interval.
+Read the source age and sampling interval when the window is empty.
+
+GPU charts show each observed device's utilization rate and its sampled-mean efficiency proxy.
+The proxy is the mean of valid retained busy percentages.
+Missing measurements stay unknown.
+It does not measure application throughput or FLOP efficiency.
+Use the [chart guide](docs/guides/charts.md) for live controls, graph zoom, and GPU evidence.
+
 Drag a grey divider to give either panel more space.
 The full vertical divider has a centred blue diamond.
 Drag the horizontal divider above Recents to show more recent jobs.
@@ -316,8 +332,9 @@ Click a group's fold symbol to hide or show its jobs across the job pages.
 Use `:jobgroups off` when you need individual rows.
 Collapsed groups retain a real representative job ID; hidden members do not become action targets automatically.
 
-The six-cell Progress column uses the job's published application progress when available.
-Its `t` fallback shows elapsed time against the Slurm limit, not completed work.
+The six-cell Progress column appears before JOBID and uses the job's published application progress when available.
+Unicode uses `▸` for reported progress and `◷` for elapsed time against the Slurm limit.
+ASCII uses `p` and `t`. Time usage does not report completed work.
 Projects can publish `progress.completed` and `progress.total` in their linked `metrics.jsonl`.
 See [Job progress](docs/guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for display states, alternate numeric keys, and sorting.
 

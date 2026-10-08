@@ -207,11 +207,11 @@ def gradient_bar(g: Glyphs, frac: Optional[float], width: int, start: str = "#22
         width = max(0, width)
         left = max(0, (width - 1) // 2)
         return [(g.empty * left + ("?" if width else "") + g.empty * max(0, width - left - 1), "dim")]
-    from .palette import gradient
+    from .palette import gradient_style
     rows: Row = []
     for i, ch in enumerate(text):
-        color = gradient(start, end, i / max(1, width - 1)) if ch != g.empty else "#24445b"
-        rows.append((ch, "fg:" + color))
+        style = gradient_style(start, end, i / max(1, width - 1)) if ch != g.empty else "track"
+        rows.append((ch, style))
     return rows
 
 
@@ -261,7 +261,7 @@ def box(g: Glyphs, lines: Sequence[Row], width: int, height: int, title: str, mi
     if width <= 0 or height <= 0:
         return []
     if width < 4 or height < 3:
-        return [(0, 0, clip_row([(title, "bold")], width))]
+        return [(0, 0, fill_row([(title, "bold")], width, "text+bg:surface"))]
     inner = max((sum(vlen(t) for t, _ in l) for l in lines), default=0)
     w = min(width - 2, max(min_width, inner + 4))
     h = min(max(2, height - 2), len(lines) + 2)
@@ -283,7 +283,7 @@ def box(g: Glyphs, lines: Sequence[Row], width: int, height: int, title: str, mi
         segs.append((vt, "bold"))
         rows.append((y0 + 1 + i, x0, segs))
     rows.append((y0 + h - 1, x0, [((bl + hz * (w - 2) + br)[:w], "bold")]))
-    return rows
+    return [(y, x, fill_row(row, w, "text+bg:surface")) for y, x, row in rows]
 
 
 def truncate(text: str, width: int) -> str:
@@ -358,15 +358,20 @@ ANSI = {"bold": "1", "dim": "2", "rev": "7", "under": "4", "green": "32", "yello
 
 
 def to_text(rows: Sequence[Row], width: int, color: bool = False, color_depth: Optional[int] = None,
-            theme: str = "default") -> str:
-    """Rows as lines of text, with ANSI colours when asked."""
+            theme: str = "default", canvas: bool = False) -> str:
+    """Rows as lines of text, with optional complete themed ANSI canvas."""
     if color:
-        from .palette import ansi_codes, color_depth as detect_depth
+        from .palette import ansi_codes, cell_style, colors_disabled, canonical_theme, color_depth as detect_depth
         color_depth = detect_depth() if color_depth is None else color_depth
+        canvas = bool(canvas and color_depth and not colors_disabled() and
+                      canonical_theme(theme) not in ("terminal", "mono", "reader"))
     out = []
     for row in rows:
         parts = []
-        for text, style in clip_row(row, width):
+        fitted = fill_row(row, width, "") if color and canvas else clip_row(row, width)
+        for text, style in fitted:
+            if color and canvas:
+                style = cell_style(style, theme)
             if color and style:
                 codes = ansi_codes(style, color_depth=color_depth, theme=theme)
                 parts.append(f"\033[{codes}m{text}\033[0m" if codes else text)

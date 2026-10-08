@@ -41,7 +41,7 @@ def test_canonical_report_has_a_distinct_reported_marker_and_six_cells(dashboard
     assert observation.fraction == .42 and observation.basis == "reported"
     assert observation.unit == "steps" and observation.style == "cyan"
     assert observation.format(True) == "p 42% "
-    assert L.vlen(observation.text) == 6 and observation.text[0] in "▏▎▍▌▋▊▉█░"
+    assert observation.text == "▸42% ▍" and L.vlen(observation.text) == 6
 
 
 @pytest.mark.parametrize("latest,expected", [({"progress_fraction": .625}, .625),
@@ -73,7 +73,7 @@ def test_canonical_progress_is_authoritative_over_optional_metric_names(dashboar
 def test_invalid_reported_bounds_do_not_create_progress(dashboard, progress):
     cache(dashboard, {"status": "ok", "progress": progress})
     observation = P.observation(dashboard.store.jobs[0], source(dashboard))
-    assert observation.basis == "time" and observation.format() == "t42% ▍"
+    assert observation.basis == "time" and observation.format() == "◷42% ▍"
     assert observation.format(True) == "t 42% "
 
 
@@ -89,8 +89,9 @@ def test_invalid_alias_bounds_are_ignored(dashboard, latest):
 
 @pytest.mark.parametrize("fraction", [0, .001, .125, .42, .5, .875, .999, 1])
 @pytest.mark.parametrize("ascii_", [False, True])
-def test_all_progress_cells_are_exactly_six_terminal_columns(fraction, ascii_):
-    observation = P.Observation(fraction, "reported")
+@pytest.mark.parametrize("basis", ["reported", "time"])
+def test_all_progress_cells_are_exactly_six_terminal_columns(fraction, ascii_, basis):
+    observation = P.Observation(fraction, basis)
     cell = observation.format(ascii_)
     assert L.vlen(cell) == 6 and len(cell) == 6
     assert cell.isascii() if ascii_ else True
@@ -107,9 +108,105 @@ def test_time_use_is_not_called_completion_and_can_exceed_one_hundred_percent():
     job = Job("900", "exact", "cpu", "RUNNING", elapsed="01:12:00", limit="01:00:00")
     observation = P.observation(job, {})
     assert observation.basis == "time" and observation.fraction == 1.2
-    assert observation.text == "t120%█" and observation.style == "red"
+    assert observation.text == "◷120%█" and observation.style == "red"
     assert observation.format(True) == "t120% "
     assert observation.source == "elapsed/requested wall-time"
+
+
+@pytest.mark.parametrize("basis,marker", [("time", "◷"), ("reported", "▸")])
+@pytest.mark.parametrize("fraction,suffix", [(0, "0%  ░"), (.42, "42% ▍"), (1, "100%█")])
+def test_single_cell_markers_keep_allocation_time_distinct_from_completion(basis, marker, fraction, suffix):
+    assert L.vlen(marker) == 1
+    assert P.Observation(fraction, basis).text == marker + suffix
+
+
+@pytest.fixture
+def progress_table():
+    from tower.controller import App
+    from tower.views import Views
+
+    cfg = Config({"log_lines": 0, "animations": False, "startup_animation": False})
+    store = Store(persist=False)
+    app = App(store, None, None, cfg, "reader")
+    app.research = ResearchHub(cfg)
+    app.job_panel_state["mode"] = "off"
+    views = Views(L.Glyphs(False), cfg)
+    app.views_ref = views
+    yield store, app, views
+    app.research.close()
+
+
+@pytest.mark.parametrize("width,maximized", [(40, False), (80, False), (160, False), (160, True), (240, True)])
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_leading_progress_retains_six_cells_beside_marks_and_array_fold_controls(progress_table, width, maximized, ascii_):
+    store, app, views = progress_table
+    store.jobs = [Job("101_0", "array", "cpu", "RUNNING", elapsed="00:25:00", limit="01:00:00"),
+                  Job("101_1", "array", "cpu", "RUNNING", elapsed="00:25:00", limit="01:00:00")]
+    app.marks.add("101_0")
+    app.table_state["groups"] = True
+    views.set_ascii(ascii_)
+    if maximized:
+        app.run_command("focus main")
+        app.run_command("maximize on")
+    rows, hits = views.compose(store.snapshot(), app, width, 40)
+    headers = [hit for hit in hits if hit[1] == "sort_header" and hit[2][0] == "jobs"]
+    _, _, progress = headers[0]
+    assert progress[:2] == ("jobs", "progress") and progress[3] - progress[2] == 6
+    assert next(hit[2] for hit in headers if hit[2][1] == "id")[2] >= progress[3] + 2
+    y = next(y for y, kind, jid in hits if kind == "job" and jid == "101_0")
+    text = L.row_text(rows[y])
+    expected = P.Observation(25 / 60, "time").format(ascii_)
+    assert text[progress[2]:progress[3]] == expected
+    assert views.g.mark in text[:progress[2]]
+    fold = next(value for row, kind, value in hits if row == y and kind == "control"
+                and value.get("group") == "job-groups")
+    assert fold["right"] <= progress[2]
+    assert all(L.vlen(row_text) <= width for row_text in map(L.row_text, rows))
+
+
+def test_leading_progress_mouse_cycle_sorts_raw_fractions_and_keeps_job_identity(progress_table):
+    from tower import table_sort
+
+    store, app, views = progress_table
+    store.jobs = [Job("100", "high", "cpu", "RUNNING"),
+                  Job("2", "low", "cpu", "RUNNING"),
+                  Job("3", "unknown", "cpu", "PENDING")]
+    for jid, fraction in (("100", .5004), ("2", .5003)):
+        app.research.cache[(app.research.generation, "experiment", jid)] = (0, {"status": "ok", "latest": {"progress_fraction": fraction}})
+    app.table_state["groups"] = False
+    for direction, expected in (("asc", ["2", "100", "3"]), ("desc", ["100", "2", "3"]), (None, ["100", "2", "3"])):
+        rows, hits = views.compose(store.snapshot(), app, 160, 40)
+        selected = app.selected_id
+        y, _, payload = next(hit for hit in hits if hit[1] == "sort_header" and hit[2][:2] == ("jobs", "progress"))
+        assert payload[3] - payload[2] == 6
+        app.click(y, payload[2], hits)
+        assert app.selected_id == selected and app.visible_ids == expected
+        assert table_sort.chain(app, "jobs") == ([] if direction is None else [("progress", direction)])
+    table_sort.set_sort(app, "jobs", "progress", "asc")
+    table_sort.set_sort(app, "jobs", "id", "desc")
+    rows, hits = views.compose(store.snapshot(), app, 160, 40)
+    assert table_sort.chain(app, "jobs") == [("progress", "asc"), ("id", "desc")]
+    assert app.visible_ids == ["2", "100", "3"]
+    payload = next(hit[2] for hit in hits if hit[1] == "sort_header" and hit[2][:2] == ("jobs", "progress"))
+    assert payload[3] - payload[2] == 6
+
+
+def test_custom_column_order_and_hidden_progress_preserve_identity_columns(progress_table):
+    from tower import table_ui
+    from tower.views import JOB_COLS
+
+    store, app, views = progress_table
+    assert [col.key for col in JOB_COLS[:2]] == ["progress", "id"]
+    app.table_state["order"]["jobs"] = ["id", "progress", "name"]
+    assert [col.key for col in table_ui.columns(app, "jobs", JOB_COLS)[:3]] == ["id", "progress", "name"]
+    app.table_state["hidden"]["jobs"] = ["progress"]
+    columns = table_ui.columns(app, "jobs", JOB_COLS)
+    assert columns[0].key == "id" and all(col.key != "progress" for col in columns)
+    store.jobs = [Job("900", "exact", "cpu", "RUNNING")]
+    _, hits = views.compose(store.snapshot(), app, 80, 30)
+    assert any(hit[1] == "sort_header" and hit[2][:2] == ("jobs", "id") for hit in hits)
+    assert not any(hit[1] == "sort_header" and hit[2][:2] == ("jobs", "progress") for hit in hits)
+    assert app.selected_id == "900"
 
 
 @pytest.mark.parametrize("limit", ["", "UNLIMITED", "0", "nan", "inf", "-1"])

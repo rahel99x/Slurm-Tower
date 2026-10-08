@@ -12,6 +12,7 @@ from .table_sort import (TABLE_KEYS, chain, clear_sort, cycle_sort, describe_sor
                          valid_header, validate_chain)
 
 MAX_VIEWS = 32
+COLUMN_LAYOUT_VERSION = 2
 FIELDS = {"state", "partition", "tag", "name", "id", "user"}
 REQUIRED = {"id", "name", "st", "state"}
 
@@ -23,6 +24,7 @@ def initialize(app):
 def restore(app, data):
     if not isinstance(data, dict):
         return
+    legacy_columns = data.get("column_layout_version") != COLUMN_LAYOUT_VERSION
     for tab in TABLE_KEYS:
         for key, check in (("hidden", _hidden), ("facets", _facets), ("order", _order), ("widths", _widths)):
             values = data.get(key, {})
@@ -31,6 +33,9 @@ def restore(app, data):
                     app.table_state[key][tab] = check(values[tab], tab)
                 except ValueError:
                     pass
+        if legacy_columns and tab == "jobs" and tab in app.table_state["order"]:
+            order = app.table_state["order"][tab]
+            app.table_state["order"][tab] = ["progress"] + [key for key in order if key != "progress"]
         filters = data.get("filters", {})
         if isinstance(filters, dict) and isinstance(filters.get(tab), str) and len(filters[tab]) <= 256:
             app.table_state["filters"][tab] = filters[tab]
@@ -48,7 +53,10 @@ def restore(app, data):
             if not isinstance(name, str) or not re.fullmatch(r"[\w .-]{1,64}", name):
                 continue
             try:
-                app.table_state["views"][name] = _view(app, value)
+                view = _view(app, value)
+                if legacy_columns and view["tab"] == "jobs":
+                    view["order"] = ["progress"] + [key for key in view["order"] if key != "progress"]
+                app.table_state["views"][name] = view
             except ValueError:
                 continue
     if "groups" in data:
@@ -58,7 +66,9 @@ def restore(app, data):
 
 
 def save(app):
-    return {key: copy.deepcopy(app.table_state[key]) for key in ("hidden", "order", "widths", "filters", "facets", "views", "sorts", "groups", "collapsed")}
+    result = {key: copy.deepcopy(app.table_state[key]) for key in ("hidden", "order", "widths", "filters", "facets", "views", "sorts", "groups", "collapsed")}
+    result["column_layout_version"] = COLUMN_LAYOUT_VERSION
+    return result
 
 
 def command_names():
@@ -99,7 +109,10 @@ def _widths(value, tab):
             any(key not in available or isinstance(width, bool) or not isinstance(width, int) or not 2 <= width <= 120
                 for key, width in value.items())):
         raise ValueError("column widths must be between 2 and 120 terminal cells")
-    return dict(value)
+    result = dict(value)
+    if tab == "jobs" and "progress" in result:
+        result["progress"] = 6
+    return result
 
 
 def _hidden(value, tab):
@@ -151,7 +164,8 @@ def columns(app, tab, original):
     positions = {key: index for index, key in enumerate(order)} if isinstance(order, list) else {}
     original = sorted(original, key=lambda column: positions.get(column.key, len(positions)))
     widths = state.get("widths", {}).get(tab, {})
-    original = [replace(column, lo=widths[column.key], hi=widths[column.key], flex=False)
+    original = [replace(column, lo=6, hi=6, flex=False) if tab == "jobs" and column.key == "progress" else
+                replace(column, lo=widths[column.key], hi=widths[column.key], flex=False)
                 if isinstance(widths, dict) and isinstance(widths.get(column.key), int) and not isinstance(widths[column.key], bool) and 2 <= widths[column.key] <= 120
                 else column for column in original]
     selected = chain(app, tab)
@@ -334,6 +348,8 @@ def run_command(app, args):
                         raise ValueError("unknown column")
                     updated.pop(values[1], None)
                 else:
+                    if tab == "jobs" and values[1] == "progress" and int(values[2]) != 6:
+                        raise ValueError("Progress uses a fixed width of six terminal cells")
                     updated[values[1]] = int(values[2])
                 state["widths"][tab] = _widths(updated, tab)
                 app.say(f"{tab} column width updated")
@@ -464,6 +480,9 @@ def handle_key(app, key):
         state["cursor"] = other
     elif key in ("+", "=", "-", "a") and cols:
         column = cols[state["cursor"]]
+        if state["tab"] == "jobs" and column.key == "progress":
+            app.say("Progress uses a fixed width of six terminal cells")
+            return True
         widths = state["widths"].setdefault(state["tab"], {})
         if key == "a":
             widths.pop(column.key, None)
@@ -527,7 +546,8 @@ def overlay(views, snap, app, width, height):
             [(" +/- width | a automatic width | r reset | Enter done", "dim")]]
     for index, column in enumerate(cols[start:start + available], start):
         required = " (required)" if column.key in REQUIRED else ""
-        width_text = str(state["widths"].get(state["tab"], {}).get(column.key, "auto"))
+        width_text = ("6 (fixed)" if state["tab"] == "jobs" and column.key == "progress"
+                      else str(state["widths"].get(state["tab"], {}).get(column.key, "auto")))
         text = f" [{' ' if column.key in hidden else 'x'}] {column.title:16} {column.key} width {width_text}{required}"
         rows.append([(text, "sel" if index == cursor else "")])
     rendered = L.box(views.g, rows, width, height, state["tab"].title() + " columns")

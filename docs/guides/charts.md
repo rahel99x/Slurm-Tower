@@ -1,7 +1,8 @@
 # Read and adjust charts
 
-Tower draws charts with terminal characters. Unicode mode uses a dot raster and
-block graphs. ASCII mode uses an area graph and range marks. Both modes use the
+Tower draws charts with terminal characters. Unicode curves use connected opaque
+quadrants. ASCII curves use connected strokes. Filled area graphs retain their
+block presentation. Both modes use the
 same samples, time windows, and scale limits. No chart control starts a job or
 requests extra scheduler data.
 
@@ -20,6 +21,117 @@ Use Page Up and Page Down to read rows that do not fit in a small terminal.
 The selected sample shows its original timestamp, value, and reported step. A
 display preference does not change these values. The chart stays attached to the
 job that was selected when you opened it.
+
+## Read a long Job series page
+
+Open **Analytics → Job series** in the compact native layout and select the required job.
+Use the mouse wheel, Page Up, and Page Down to scroll the metric document.
+Use `:series-scroll home` or `:series-scroll end` to reach its first or last rows.
+The job heading and navigation controls remain visible.
+Up, Down, Home, and End continue to change the job.
+Changing the job returns the document to its first row.
+
+Point at the metric content when scrolling with the wheel.
+A wheel event over Job history scrolls that browser instead.
+Inside Jobs Details, use the Details column's normal scroll controls.
+When a slider or directional button focus owns the keys, its controls take priority.
+
+## Point at a metric graph
+
+Move the pointer inside a visible metric plot with recorded data.
+Tower draws a cyan dotted crosshair with `+` at the pointer.
+Unicode uses `·` for the dots; ASCII uses `.`.
+The crosshair stays inside the measured plot, outside its labels and controls.
+It marks the pointer's coordinates and does not turn a missing sample into a measurement.
+
+Hover uses the published graph geometry.
+It does not reload the source, change the selected job, or rasterize the curve again.
+The terminal must report mouse movement.
+Use `:terminaltest` when movement reports are missing.
+
+## Follow a running metric
+
+A running job can show a Live control and a time-window slider above each metric.
+Each metric has its own setting. A curve and its filled companion share one setting.
+
+1. Open the exact running job's metric view.
+2. Click **Live off** to enable Live.
+3. Drag the slider toward the left for five seconds, or toward the right for one millisecond.
+4. Read the duration beside the toggle. Wider rows label it `Δ`, or `dt` in ASCII mode.
+5. Click **Live ON** to return to the ordinary retained view.
+
+**Expected result:** Live displays the interval from the dashboard's current time minus the chosen duration to its current time.
+The slider uses logarithmic steps between `5s` and `1ms`.
+Subsecond axes show fractional seconds in their timestamp labels.
+Labels use available terminal space and do not imply a finer source cadence.
+Each metric retains its own duration. A completed job has no active Live control.
+The control row needs at least 24 available terminal columns.
+Compact rows use `○ Live` and `● Live`, or `o Live` and `+ Live` in ASCII mode.
+The empty symbol is off; the filled symbol is on. Both slider endpoints remain labelled.
+
+Select the slider with the mouse or directional button focus.
+Use Left and Right for one slider step, Page Up and Page Down for five steps,
+Home for five seconds, and End for one millisecond.
+Press Enter or Esc to leave slider focus.
+Press Esc during a drag to restore its previous duration.
+A page, source, geometry, or terminal-size change also discards an unfinished drag.
+
+The control graph assigns a temporary token such as `m1` to each visible source.
+Use `:metric-live TOKEN on|off|toggle` and `:metric-window TOKEN SECONDS`
+with that visible token, or `:metric-window TOKEN focus` for keyboard adjustment.
+Tokens are session controls, not project metric IDs. Commands reject a hidden or nonrunning source.
+Live preferences do not survive a restart.
+
+Live changes the displayed interval. It does not increase Slurm polling or create measurements.
+The Live clock requests at most ten scheduled display refreshes per second while an uncaptured Live plot is visible.
+Input and scrolling animations can request other display refreshes.
+A one-millisecond window can therefore contain no recorded observations.
+Valid empty axes retain their Live controls and time labels, but have no crosshair or rectangular selection until recorded data is visible.
+Read the source-age and sampling-cadence note below the graph before interpreting a sparse window.
+Missing observations and sampling outages remain gaps.
+Current resource captures retain their timestamp precision.
+Older saved captures can retain the earlier 0.1-second rounding.
+A precise capture timestamp does not establish equally frequent source measurements.
+
+During a rectangular selection, Tower holds that plot's painted time mapping fixed.
+Cancelling the selection resumes Live.
+Committing a valid rectangle turns Live off and keeps the selected bounds.
+Enabling Live again clears that metric's completed rectangular zoom.
+
+## Zoom a rectangular area
+
+1. Press the left mouse button inside the required metric plot.
+2. Keep the button pressed and move to the opposite corner of the required area.
+3. Check the dotted rectangle.
+4. Release inside the same plot.
+
+**Expected result:** The graph uses the rectangle's horizontal and vertical bounds.
+The selection must span at least two columns and one row.
+A click without that area leaves the view unchanged.
+The operation changes the display bounds and preserves the original measurements.
+Between adjacent known samples, a zoom can show their connected line even when
+the selected interval contains no original sample. The sample count still
+reports zero for that interval. Missing values and sampling outages remain gaps.
+
+Press `u` while pointing at the graph to undo the last rectangular zoom.
+Press `0` while pointing at it to restore its original rectangular view.
+Use `:chartzoom undo` or `:chartzoom reset` for the last selected or zoomed graph.
+In the chart inspector, use the Undo zoom and Reset zoom buttons, or
+`:chart undo` and `:chart reset`, for the current metric.
+The existing `+`, `-`, time presets, and axis commands remain available.
+
+Each zoom belongs to an exact metric, source, job, and run attempt.
+Another job cannot inherit it.
+Zooms are session display state; they do not change files or sampler intervals.
+Tower retains at most 128 zoom entries and 16 undo steps per entry.
+
+Press Esc before release to discard the preview.
+Releasing outside the plot also discards it.
+Changing the page, job, source, graph bounds, panel geometry, or terminal size cancels capture.
+Opening a menu, dialog, or startup preview cancels it too.
+A missing release times out after 15 seconds.
+Cancellation keeps the previous completed zoom.
+On a logarithmic graph, vertical selection uses that graph's logarithmic coordinates.
 
 <a id="feature-41"></a>
 
@@ -68,9 +180,12 @@ remain available in the sample inspector and interval statistics.
 
 When samples share a terminal column, Tower retains the first, minimum, maximum,
 and last known values in source order. This envelope preserves short spikes.
-Unicode mode draws the range with its dot raster. ASCII mode marks the range
-inside its area graph. If a bucket contains an unknown sample, the bucket stays
+Unicode curves draw the range with opaque quadrant strokes. ASCII curves use
+`/`, `\`, `-`, `:`, and `+`; an isolated sample uses `.`. If a bucket contains an unknown sample, the bucket stays
 unknown. Tower does not draw a bridge through that bucket or a detected outage.
+It connects known samples without smoothing their values. Fixed or zoomed
+vertical bounds clip a crossing line. A segment wholly outside those bounds stays
+blank instead of appearing as a flat measurement on the scale edge.
 
 <a id="feature-44"></a>
 
@@ -135,6 +250,27 @@ Tower compares measurements of the same metric. It does not combine CPU,
 memory, and GPU values into one scale. If a job has no measured samples, Tower
 shows that condition instead of drawing a curve.
 
+## Read GPU utilisation and busy mean
+
+Job Series can show a GPU utilisation curve and an observed busy-mean curve for each available device.
+Utilisation is the recorded busy percentage.
+The busy mean is the cumulative mean of valid utilisation observations in the retained series.
+It is an activity indicator, not FLOP efficiency, throughput, or the fraction of allocated devices used.
+Missing and invalid device readings remain gaps and do not enter the mean.
+
+Session telemetry identifies devices by `node:index` and retains utilisation, used memory, and total memory.
+An application's job trace uses `<WorkDir>/logs/gpu-util-<jobid>.csv` with rows
+`timestamp,index,utilisation_percent,memory_used_MiB`.
+Tower keeps that trace attached to the exact job.
+An index-only trace cannot establish which node or allocated device produced a reading.
+See [GPU trace](../reference.md#the-gpu-trace) for the producer procedure.
+
+The view shows at most four session devices and four trace indices.
+The corresponding stable graph IDs are `gpu:<node:index>:rate`,
+`gpu:<node:index>:busy-mean`, `gpu-trace:<index>:rate`, and `gpu-trace:<index>:busy-mean`.
+These graph identities remain stable as observations arrive or the glyph mode changes.
+Unavailable telemetry produces no invented utilisation or busy-mean measurement.
+
 <a id="feature-47"></a>
 
 ## Metric display
@@ -173,6 +309,9 @@ temporary sample interval after a restart.
 - A metric chart retains at most 10,000 points. A dashboard has at most 64 metrics.
 - An event picker has at most 512 observed events.
 - Plot dimensions are limited to 2,048 terminal columns and 128 rows.
+- The interaction registry holds at most 96 plots in one published frame.
+- Rectangular zoom retains at most 128 source keys and 16 undo steps per key.
+- Live retains at most 128 metric identities and uses only visible running-source controls.
 - Unknown and nonfinite values remain gaps. A measured zero remains a value.
 - Sampling outages remain visible after zooming or compression.
 - No rendering path loads a metric file or queries the scheduler.
@@ -211,7 +350,7 @@ file or process I/O. Use `Glyphs(True)` for ASCII output.
 | `time_axis(t0, t1, width, ...)` | Draw timestamp or elapsed-time labels. |
 | `vbar_chart(g, values, width, height, ...)` | Draw a filled area graph with scale labels and optional timestamps. |
 | `hbar_rows(g, items, width, ...)` | Draw horizontal bars with measured values. |
-| `braille_chart(g, values, width, height, ...)` | Draw a high-resolution Unicode curve or the ASCII area equivalent. |
+| `braille_chart(g, values, width, height, ...)` | Draw connected opaque Unicode quadrant strokes or equivalent ASCII strokes. The historical method name remains compatible. |
 | `heatmap(g, matrix, width, ...)` | Draw a shared-scale measured matrix. Mark unknown cells. |
 | `stacked_bar(g, items, width, ...)` | Draw a composition bar with a numeric legend. |
 | `histogram(g, values, bins, width, ...)` | Count values in specified bins and draw horizontal bars. |
@@ -222,6 +361,68 @@ file or process I/O. Use `Glyphs(True)` for ASCII output.
 Use `envelope=False` only when a mean representation is intended. Their optional
 `axis_formatter` formats plotted coordinates; their `sample_times` and
 `sample_interval` preserve actual time spacing and known sampling outages.
+
+### `tower.chart_interaction`
+
+The interaction layer reads published plot geometry. It performs no file or scheduler I/O.
+Renderers begin one outer frame, stage local plots, map them through the final layout,
+then publish the visible geometry. A `Rect` uses exclusive `(top, left, bottom, right)` edges.
+Zoom bounds use plotted coordinates; logarithmic vertical bounds remain base-10 logarithms.
+
+| Method | Purpose and result |
+| --- | --- |
+| `initialize(app)` | Create bounded transient pointer, capture, and zoom state. |
+| `key(app, metric, source, jid=None, ...)` | Identify the exact source, job, and run attempt without truncating paths. |
+| `begin_frame(app, width=None, height=None)` | Start the outer frame and clear pending geometry. |
+| `mark(app)` | Record the first pending plot for a nested renderer. |
+| `record(app, identity, metadata, ...)` | Stage the plot rectangle and axis bounds in local cells. |
+| `place_since(app, first, dy=0, dx=0, clip=None)` | Translate and clip the nested plots after layout. |
+| `take_since(app, first)` | Detach a layout candidate so discarded probes publish no plots. |
+| `put_records(app, records)` | Restore the selected layout candidate's geometry. |
+| `map_records(records, mapping, ...)` | Map plots through wrapping and sticky headers; reject disordered plot rows. |
+| `publish(app, width=None, height=None)` | Freeze the final visible geometry and validate capture. |
+| `hover(app, y, x)` | Update cosmetic pointer feedback from the published plots. |
+| `active(app)` | Report whether a rectangular drag is active. |
+| `tick(app, now=None)` | Cancel stale, blocked, or timed-out capture. |
+| `cancel(app)` | Discard an unfinished preview without changing completed zoom. |
+| `handle_mouse(app, y, x, button="left", shift=False)` | Apply plot press, motion, and valid-release controls. |
+| `bounds(app, identity, scale=None)` | Return completed source-specific display bounds. |
+| `undo(app, identity=None)` | Restore the previous rectangular view. |
+| `reset(app, identity=None)` | Remove rectangular zoom for the selected source. |
+| `handle_key(app, key)` | Apply cancellation, undo, and reset controls in plot context. |
+| `command_names()` | Return the interaction command names. |
+| `run_command(app, args)` | Apply `chartzoom undo` or `chartzoom reset`. |
+| `feedback(app, ascii_=None)` | Return the bounded crosshair or rectangle feedback overlay. |
+| `overlay(views, snap, app, width, height)` | Return no full modal overlay; feedback belongs to the current plot. |
+
+### `tower.metric_live`
+
+This layer uses published exact-job status and chart geometry.
+It changes display state without source reads or scheduler requests.
+A filled companion uses the same canonical identity as its resource curve.
+
+| Method | Purpose and result |
+| --- | --- |
+| `initialize(app)` | Create bounded, transient per-metric duration and control state. |
+| `canonical(identity)` | Share a resource area's Live identity with its source curve. |
+| `fraction(delta)`, `delta_at(value)` | Convert between durations and the logarithmic slider position. |
+| `format_delta(value)` | Format the duration in seconds or milliseconds. |
+| `set_running(app, identity, running)` | Publish exact source eligibility and stop a finished source. |
+| `window(app, identity, now=None)` | Return the active display interval, or the captured plot's fixed mapping. |
+| `enabled(app, identity)` | Check that Live is enabled for the current running source. |
+| `set_enabled(app, identity, value)` | Toggle Live and clear its rectangular zoom when enabling it. |
+| `stop_for_zoom(app, identity)` | Stop Live after a valid rectangular zoom. |
+| `set_delta(app, identity, value)` | Set a finite duration from 0.001 to 5 seconds. |
+| `controls(g, app, identity, width, ...)` | Render and stage the running metric's control row. |
+| `publish(app, records)` | Freeze controls after final layout transformation. |
+| `descriptors(app)` | Return visible toggle and slider actions for the control graph. |
+| `active(app)`, `cancel(app)`, `tick(app, now=None)` | Check capture, restore a cancelled duration, and reject stale capture. |
+| `handle_mouse(app, y, x, button="left", shift=False)` | Handle the toggle and slider press, drag, and release. |
+| `handle_key(app, key)` | Apply keyboard slider steps and cancellation. |
+| `command_names()`, `run_command(app, args)` | Expose and apply temporary-token Live and duration commands. |
+| `document_revision(app)`, `document_interval(app)` | Report changed display state and the active display-refresh deadline. |
+| `feedback(app, g)` | Return the small control-row overlay between document refreshes. |
+| `overlay(views, snap, app, width, height)` | Return no full modal overlay. |
 
 ### `tower.analysis_ui`
 

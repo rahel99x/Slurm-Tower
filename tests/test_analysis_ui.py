@@ -95,7 +95,12 @@ def test_crosshair_reports_original_precision_timestamp_step_and_unknown_value(a
     assert "value 3" in rendered and "step 1" in rendered and "1970-01-01" in rendered
     A.handle_key(app, "right")
     assert "value unavailable" in overlay(app, ascii_=ascii_)
-    assert any("yellow+bold" == style for _, _, row in A.overlay(SimpleNamespace(g=L.Glyphs(ascii_)), app.store.snapshot(), app, 110, 28) for _, style in row)
+    from tower import palette
+    theme = getattr(getattr(app, "views", None), "theme", "default")
+    assert any(palette.resolve(style, theme).foreground == palette.resolve("yellow", theme).foreground
+               and "bold" in palette.resolve(style, theme).flags
+               for _, _, row in A.overlay(SimpleNamespace(g=L.Glyphs(ascii_)), app.store.snapshot(), app, 110, 28)
+               for _, style in row)
     if ascii_:
         assert rendered.isascii()
 

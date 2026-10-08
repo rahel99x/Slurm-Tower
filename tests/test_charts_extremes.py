@@ -106,7 +106,7 @@ def test_extreme_clock_axes_and_timestamp_buckets_are_finite_and_bounded(times, 
     rows = charts.braille_chart(Glyphs(False), [-1e308, 1e308], 70, 5, lo=-1e308,
                                sample_times=times, elapsed=elapsed)
     assert all(vlen(row_text(row)) <= 70 for row in rows)
-    assert any("⠁" <= character <= "⣿" for row in rows for character in row_text(row))
+    assert any(character in charts.QUADRANTS[1:] for row in rows for character in row_text(row)[10:])
 
 
 def test_timestamp_bucket_mean_preserves_subnormals():

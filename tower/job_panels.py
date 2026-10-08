@@ -312,6 +312,7 @@ def _inspector(views, snap, app, job, width, state):
     """Reuse the unified inspector without changing its modal selection."""
     from .analysis_ui import SECTIONS, _inspector_rows
     proxy = copy.copy(app)
+    proxy.chart_interaction_state = getattr(app, "chart_interaction_state", None)
     proxy.analysis_state = dict(job=job.id, evidence_job=job.id)
     proxy.log_job, proxy.logs = job.id, SimpleNamespace(entries=list(state.get("entries", [])))
     proxy.research_evidence = state.get("evidence", {}) if state.get("evidence_job") == job.id else {}
@@ -503,7 +504,7 @@ def _analysis_settings(app):
     source = getattr(app, "analysis_state", {})
     return {key: copy.deepcopy(value) for key, value in source.items()
             if key in ("pinned", "hidden", "order", "expanded", "colors", "metric_display",
-                       "axis", "chart_events", "shared_scale", "metric_filter")}
+                       "axes", "chart_events", "shared_scale", "metric_filter")}
 
 
 def _scoped_app(app, job, state):
@@ -560,8 +561,11 @@ def _research(views, snap, app, job, width, height, state, header_rows):
             window = (max(0, min(raw) - previous["header"] - 16),
                       max(0, max(raw) - previous["header"] + 16))
     proxy.research_document_window = window or (0, max(32, (height or 24) + 32))
+    from . import chart_interaction
+    chart_mark = chart_interaction.mark(app)
     rows, hits = research_render(views, snap, proxy, width, MAX_ROWS)
     nav_rows = getattr(proxy, "research_nav_rows", 1)
+    chart_interaction.place_since(app, chart_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
     retained.update(cursor=proxy.cursor.get("research", 0), array_open=proxy.research_array_open,
                     task_offset=proxy.research_task_offset)
     state["document_headers"][( _view_key(state), width)] = header_rows + 1
@@ -575,6 +579,7 @@ def _research(views, snap, app, job, width, height, state, header_rows):
 
 def _analytics(views, snap, app, job, width, height, state):
     proxy, retained = _scoped_app(app, job, state)
+    proxy.analytics_document_mode = True
     scoped_views = copy.copy(views)
     # A finished job without session samples must never fall back to a running
     # job's chart. The ordinary Analytics workspace keeps its own cycling list.
@@ -586,10 +591,21 @@ def _analytics(views, snap, app, job, width, height, state):
         # the entire accounting history on every scrolling frame.
         scoped_views.analytics_advisor = lambda current, target, target_width, avail, days: _analytics_cards(
             views, current, target, None, width=target_width)
+    from . import chart_interaction
+    chart_mark = chart_interaction.mark(app)
     rows, hits = scoped_views.analytics_tab(snap, proxy, width, MAX_ROWS)
     nav_rows = getattr(proxy, "analytics_nav_rows", 1)
     if width < 120 and state["analytics_view"] == "compare":
+        original = rows
         rows = rows[:nav_rows + 1] + _analytics_cards(views, snap, proxy, rows[nav_rows + 1:])
+        # Replacing the compact comparison table with readable cards changes
+        # the source rows below it. Keep pointer coordinates on those rows.
+        cutoff = nav_rows + 3 + len(proxy.compare_ids[:6])
+        delta = len(rows) - len(original)
+        records = chart_interaction.take_since(app, chart_mark)
+        chart_interaction.put_records(app, chart_interaction.map_records(
+            records, lambda y: y + delta if y >= cutoff else None))
+    chart_interaction.place_since(app, chart_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
     scope = "selected job" if state["analytics_view"] == "job" else "selected job + comparison set" if state["analytics_view"] == "compare" else "accounting window"
     content = [[(clean(f" Job {job.id} / {job.name} / {scope}", views.g.ascii), "cyan+bold")]] + rows[nav_rows:]
     actions = [(y - nav_rows + 1, "job_panel_action", ((kind, value),
@@ -801,6 +817,8 @@ def _content_action(app, target):
 
 
 def render(views, snap, app, job, width, height=None):
+    from . import chart_interaction
+    chart_mark = chart_interaction.mark(app)
     state = initialize(app)
     rows, hits = _buttons(views.g, state, max(0, width))
     if state["job"] != getattr(job, "id", None):
@@ -840,4 +858,5 @@ def render(views, snap, app, job, width, height=None):
     else:
         content, content_hits = _inspector(views, snap, app, job, width, state)
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
+    chart_interaction.place_since(app, chart_mark, dy=len(rows), clip=(len(rows), 0, len(rows) + len(content), width))
     return rows + content, hits
