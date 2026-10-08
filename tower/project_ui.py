@@ -331,7 +331,6 @@ def tick(app, snap=None, *, force=False):
     automatic binding for that job until selection changes.
     """
     state = initialize(app)
-    snap = app.store.snapshot() if snap is None else snap
     target = _target_job(app)
     binding = state.get("binding")
     if binding and target != binding.get("job_id"):
@@ -345,9 +344,15 @@ def tick(app, snap=None, *, force=False):
         if state["auto_suppressed"] == target:
             return False
         state["auto_suppressed"] = None
-    jobs = list(snap.get("jobs", [])) + list(snap.get("finished", [])) + list(snap.get("departed_jobs", {}).values())
-    job = next((job for job in jobs if job.id == target), None)
-    details = snap.get("details", {}).get(target, {}) if target else {}
+    if snap is None:
+        job, details = app.store.record_context(target)
+    else:
+        # Explicit snapshots retain their caller's publication, including
+        # frozen/report views. Ordinary UI ticks only need one exact record.
+        job = next((job for records in (snap.get("jobs", []), snap.get("finished", []),
+                                       snap.get("departed_jobs", {}).values())
+                    for job in records if job.id == target), None)
+        details = snap.get("details", {}).get(target, {}) if target else {}
     workdir = details.get("WorkDir") or getattr(job, "workdir", "")
     registered = state.get("registered_root") or (state.get("root") if state.get("binding_origin") == "manual" else "")
     roots = tuple(projects.job_project_roots(workdir, registered))

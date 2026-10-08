@@ -8,6 +8,7 @@ remapped from source rows; IDs never depend on visible line text.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import copy
 import re
 from typing import Callable, Optional
 
@@ -44,6 +45,7 @@ class LayoutState:
     overlay_count: int = 0
     overlay_page: int = 1
     interactive_panels: dict = field(default_factory=dict)
+    reflow_cache: dict = field(default_factory=dict, repr=False)
 
 
 def initialize(app) -> LayoutState:
@@ -402,6 +404,32 @@ def _reflow(rows, hits, width: int, mapping=None):
     return result, remapped
 
 
+def _cached_reflow(state, panel, rows, hits, width, mapping):
+    """Reuse wrapping across scroll frames without caching published data.
+
+    Only the two current panels are retained. Immutable row text and a detached
+    hit map participate in equality, so changed evidence, paths, styles, or
+    column bounds invalidate even when a reader updates a result in place.
+    """
+    text = tuple(tuple(row) for row in rows)
+    entry = state.reflow_cache.get(panel)
+    if entry and entry["width"] == width and entry["input"] == text and entry["input_hits"] == hits:
+        mapping.update(entry["mapping"])
+        return [list(row) for row in entry["rows"]], list(entry["hits"])
+    result, remapped = _reflow(rows, hits, width, mapping)
+    try:
+        detached_hits, detached_output = copy.deepcopy(hits), copy.deepcopy(remapped)
+    except (TypeError, ValueError, RecursionError):
+        # Third-party renderers may publish an opaque target that cannot be
+        # copied. Their existing rendering contract remains available.
+        state.reflow_cache.pop(panel, None)
+    else:
+        state.reflow_cache[panel] = dict(width=width, input=text, input_hits=detached_hits,
+                                         rows=tuple(tuple(row) for row in result),
+                                         hits=detached_output, mapping=dict(mapping))
+    return result, remapped
+
+
 def _preserve_titles(fitted, original) -> None:
     originals = {}
     for row in original["rows"]:
@@ -462,7 +490,8 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         padding = 1 if (state.density == "comfortable" and rect.width >= 8 and rect.height >= 5
                         and not (native_jobs and panel == "main" and rect.height < 7)) else 0
         raw_mapping = {}
-        source, source_hits = _reflow(source, source_hits, max(0, rect.width - padding * 2), raw_mapping)
+        source, source_hits = _cached_reflow(state, panel, source, source_hits,
+                                            max(0, rect.width - padding * 2), raw_mapping)
         # Column headers are buttons, not selectable data rows. Header-only
         # tables must keep their normal panel-scrolling controls.
         drill_buttons = {"sort_header", "node_row", "node_cell", "partition_row", "user_drill", "control", "job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"}
@@ -640,6 +669,35 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         rects = geometry(app, width, height, has_details=True)
         detail_rect = rects.get("details")
         app.job_panel_target_height = max(1, detail_rect.height - 2) if detail_rect else max(1, height - 2)
+        # Rendering the whole Jobs source at terminal, Main, and Details widths
+        # rebuilt every chart and accounting aggregation three times. Resolve
+        # queue selection once, then construct the independent document only
+        # for the width where its rows will actually be displayed.
+        state = initialize(app)
+        def usable(rect):
+            padding = 1 if (state.density == "comfortable" and rect.width >= 8 and rect.height >= 5
+                            and not (rect is rects.get("main") and rect.height < 7)) else 0
+            return max(0, rect.width - padding * 2)
+        main_rect = rects.get("main")
+        main_width = usable(main_rect) if main_rect else width
+        previous_deferred = getattr(app, "job_panel_defer_content", False)
+        previous_canvas = getattr(app, "job_panel_source_canvas", False)
+        app.job_panel_defer_content = app.job_panel_source_canvas = True
+        try:
+            body, hits = default_renderer(main_width, max(height, MAX_SOURCE_ROWS))
+        finally:
+            app.job_panel_defer_content = previous_deferred
+            app.job_panel_source_canvas = previous_canvas
+        queue = partition(body, hits, "jobs")["main"]
+        groups = {"main": queue, "details": {"rows": [], "hits": []}}
+        if detail_rect:
+            from .job_panels import render as render_details
+            job = app.job_record(getattr(app, "selected_id", None), snap)
+            detail_rows, detail_hits = render_details(views, snap, app, job, usable(detail_rect),
+                                                      app.job_panel_target_height)
+            groups["details"] = {"rows": detail_rows, "hits": detail_hits}
+        return transform_body(app, body, hits, width, height,
+                              ascii_=getattr(views.g, "ascii", False), groups=groups)
     # Native tab renderers already limit their work to their requested height.
     # A larger bounded source keeps lower sections reachable rather than clipped.
     source_height = max(height, MAX_SOURCE_ROWS)

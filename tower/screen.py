@@ -24,6 +24,7 @@ INPUT_BATCH_LIMIT = 32
 INPUT_BATCH_SECONDS = .008
 POINTER_BATCH_LIMIT = 256
 POINTER_BATCH_SECONDS = .012
+MAINTENANCE_SECONDS = .2
 _NAVIGATION_ACTIONS = frozenset(("up", "down", "page_up", "page_down", "home", "end"))
 _INPUT_READERS = {}
 _ESCAPE_KEYS = {"\x1b[1;5D": "ctrl-left", "\x1b[1;5C": "ctrl-right",
@@ -358,6 +359,15 @@ def _navigation_context(app):
 
 
 def _batchable_input(app, event, curses):
+    name, mouse = event
+    # Passive movement has no document action, including over a modal. Keeping
+    # it outside the navigation whitelist avoids one modal render per report.
+    if (name == "mouse" and mouse is not None and
+            mouse[4] & getattr(curses, "REPORT_MOUSE_POSITION", 0) and
+            not mouse[4] & (getattr(curses, "BUTTON1_RELEASED", 0) |
+                            getattr(curses, "BUTTON4_PRESSED", 0) |
+                            getattr(curses, "BUTTON5_PRESSED", 0))):
+        return True
     mode = app.mode
     traversal = (mode in ("session_inbox", "log_tools_page", "log_tools_results", "log_tools_marks",
                           "jump_picker", "locations_picker", "value_peek", "field_explanation")
@@ -365,7 +375,6 @@ def _batchable_input(app, event, curses):
                  or mode == "table_tools" and getattr(app, "table_tools_state", {}).get("modal") in ("headers", "marks", "node", "actions"))
     if mode != "main" and not traversal:
         return False
-    name, mouse = event
     if name is None:
         return True  # An unsupported key or mouse motion has no controller action.
     if name != "mouse":
@@ -491,7 +500,7 @@ def _apply_input(app, event, hits, curses):
             app.handle("down")
 
 
-def _consume_input_batch(app, stdscr, curses, hits, first):
+def _consume_input_batch(app, stdscr, curses, hits, first, *, effects=None):
     """Preserve every event while sharing a bounded redraw for queued scrolling.
 
     Return the first nonnavigation event for the next, freshly painted frame.
@@ -505,6 +514,11 @@ def _consume_input_batch(app, stdscr, curses, hits, first):
     deadline = time.monotonic() + (POINTER_BATCH_SECONDS if pointer else INPUT_BATCH_SECONDS)
     count = 0
     motion = None
+
+    def apply(value):
+        if effects is not None:
+            effects.record(app, value, curses)
+        _apply_input(app, value, hits, curses)
 
     def is_motion(value):
         if value[0] != "mouse" or value[1] is None:
@@ -523,26 +537,177 @@ def _consume_input_batch(app, stdscr, curses, hits, first):
             motion = event
         else:
             if motion is not None:
-                _apply_input(app, motion, hits, curses)
+                apply(motion)
                 motion = None
                 if app.quit or _navigation_context(app) != context:
                     return event
-            _apply_input(app, event, hits, curses)
+            apply(event)
         count += 1
         if (not batchable or app.quit or _navigation_context(app) != context or
                 count >= limit or time.monotonic() >= deadline):
             if motion is not None:
-                _apply_input(app, motion, hits, curses)
+                apply(motion)
             return None
         stdscr.timeout(0)
         event = _read_input(stdscr, curses)
         if event is not None and not _batchable_input(app, event, curses):
             if motion is not None:
-                _apply_input(app, motion, hits, curses)
+                apply(motion)
             return event
     if motion is not None:
-        _apply_input(app, motion, hits, curses)
+        apply(motion)
     return None
+
+
+class _InputEffects:
+    """Separate cosmetic position updates from document-changing gestures."""
+
+    def __init__(self):
+        self.document = False
+
+    def record(self, app, event, curses):
+        name, mouse = event
+        if name is None:
+            return
+        state = mouse[4] if name == "mouse" and mouse is not None else 0
+        deliberate = (getattr(curses, "BUTTON1_PRESSED", 0) |
+                      getattr(curses, "BUTTON1_CLICKED", 0) |
+                      getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0) |
+                      getattr(curses, "BUTTON1_RELEASED", 0) |
+                      getattr(curses, "BUTTON3_PRESSED", 0) |
+                      getattr(curses, "BUTTON3_CLICKED", 0) |
+                      getattr(curses, "BUTTON4_PRESSED", 0) |
+                      getattr(curses, "BUTTON5_PRESSED", 0))
+        hover = name == "mouse" and bool(state & getattr(curses, "REPORT_MOUSE_POSITION", 0)) and not state & deliberate
+        toolbar = getattr(app, "toolbar_state", {}) or {}
+        selection = getattr(app, "job_selection_state", {}) or {}
+        # Some terminal drivers omit the held-button bit on position reports.
+        # A captured gesture must still rebuild its slider or selected rows.
+        capture = toolbar.get("dragging") or selection.get("capture")
+        if not hover or capture or app.mode == "terminal_probe":
+            self.document = True
+
+
+class _DifferentialPainter:
+    """Paint changed physical rows and retain every overlay's original order."""
+
+    def __init__(self, window, paint):
+        self.window, self.paint = window, paint
+        self.previous = None
+        self.geometry = None
+
+    def invalidate(self):
+        self.previous = None
+
+    def draw(self, rows, overlays, width, height, *, bar=None):
+        layers = [[(0, tuple(rows[y]) if y < len(rows) else ())] for y in range(max(0, height))]
+        for y, x, row in overlays:
+            if 0 <= y < height and x < width:
+                layers[y].append((x, tuple(row)))
+        if height > 0 and bar is not None:
+            # The complete toolbar masks any modal placed on row zero.
+            layers[0] = [(0, tuple(bar))]
+        current = tuple(tuple(layer) for layer in layers)
+        reset = self.previous is None or self.geometry != (width, height)
+        if reset:
+            self.window.erase()
+        changed = []
+        for y, layer in enumerate(current):
+            if not reset and layer == self.previous[y]:
+                continue
+            changed.append(y)
+            # Filling the base clears a previous menu/longer line without
+            # erasing untouched rows or relying on terminal erase attributes.
+            _, base = layer[0]
+            self.paint(y, 0, L.fill_row(base, width, ""), width, height)
+            for x, row in layer[1:]:
+                self.paint(y, x, row, width, height)
+        self.previous, self.geometry = current, (width, height)
+        return tuple(changed)
+
+
+def _toolbar_feedback_token(app):
+    state = getattr(app, "toolbar_state", {}) or {}
+    return tuple(state.get(key) for key in ("menu", "cursor", "top", "panel", "panel_scroll", "focus"))
+
+
+class _FrameCache:
+    """Retain a published document while cosmetic pointer feedback changes.
+
+    Maintenance and animation deadlines are independent of pointer traffic.
+    Every deliberate input still requests a complete, current document frame.
+    """
+
+    def __init__(self):
+        self.dirty = True
+        self.snapshot = None
+        self.rows, self.hits = [], []
+        self.welcome, self.content, self.toolbar = [], [], []
+        self.bar = []
+        self.geometry = None
+        self.next_maintenance = self.next_animation = 0.0
+        self.toolbar_token = None
+
+    def due(self, app, width, height, now=None):
+        now = time.monotonic() if now is None else now
+        return (self.dirty or self.geometry != (width, height) or
+                now >= self.next_maintenance or now >= self.next_animation)
+
+    def rebuild(self, app, views, store, actions, width, height):
+        from . import startup, toolbar
+        from .scrolling import begin_frame, finish_frame, timeout_ms
+        from .interaction import publish
+        app.tick()
+        snap = store.snapshot()
+        app.width = width
+        begin_frame(app)
+        options = {"feedback": False} if getattr(views, "feedback_options", False) else {}
+        rows, hits = views.compose(snap, app, width, height, actions, **options)
+        finish_frame(app)
+        welcome = startup.overlay(views, snap, app, width, height) or []
+        overlays = views.overlay(snap, app, width, height, **options) or []
+        self.rows = getattr(app, "frame_rows", rows)
+        self.hits, self.welcome = hits, welcome
+        if options:
+            self.content = getattr(app, "content_overlay_rows", []) or []
+            self.toolbar = getattr(app, "toolbar_overlay_rows", []) or []
+        else:
+            self.content, self.toolbar = overlays, []
+        self.bar = toolbar.render_bar(views, app, width) if height > 0 else []
+        app.last_hits = hits
+        publish(app, self.rows, hits, width, height, overlays=welcome + overlays)
+        self.snapshot, self.geometry = snap, (width, height)
+        self.toolbar_token = _toolbar_feedback_token(app)
+        now = time.monotonic()
+        self.next_maintenance = now + MAINTENANCE_SECONDS
+        idle = 100 if app.animations_enabled and app.completion.active else 200
+        if startup.active(app):
+            idle = min(idle, int(startup.FRAME_INTERVAL * 1000))
+        interval = timeout_ms(app, idle)
+        self.next_animation = now + interval / 1000 if interval < 200 else float("inf")
+        self.dirty = False
+
+    def feedback(self, app, views):
+        from .interaction import publish, decorate, decorate_overlays
+        from . import toolbar
+        width, height = self.geometry
+        token = _toolbar_feedback_token(app)
+        if token != self.toolbar_token:
+            # A menu cursor, switch, or pointer dismissal only changes this
+            # overlay. The underlying chart/report remains the same document.
+            self.toolbar = toolbar.overlay(views, self.snapshot, app, width, height) or []
+            self.bar = toolbar.render_bar(views, app, width) if height > 0 else []
+            publish(app, self.rows, self.hits, width, height,
+                    overlays=self.welcome + self.content + self.toolbar)
+            self.toolbar_token = _toolbar_feedback_token(app)
+        rows = decorate(app, self.rows)
+        overlays = self.welcome + decorate_overlays(app, self.content + self.toolbar)
+        bar = decorate(app, [self.bar])[0] if height > 0 else None
+        return rows, overlays, bar
+
+    def wait_ms(self, now=None):
+        now = time.monotonic() if now is None else now
+        return max(1, min(200, round(1000 * (min(self.next_maintenance, self.next_animation) - now))))
 
 
 def _mouse_reporting(enabled):
@@ -585,6 +750,7 @@ def run_curses(app, views, sampler, store, actions, cfg):
         _mouse_reporting(mouse_enabled)
         palette = CursesPalette(curses, cfg["color"])
         settings_generation = getattr(app, "terminal_settings_generation", 0)
+        painted_theme = app.theme
 
         def paint(y, x0, segs, width, height):
             x = x0
@@ -601,14 +767,22 @@ def run_curses(app, views, sampler, store, actions, cfg):
         hits = []
         rung = 0
         pending_input = None
+        cache = _FrameCache()
+        painter = _DifferentialPainter(stdscr, paint)
         app.views_ref = views
         from . import startup
         startup.begin(app)
         while not app.quit:
+            if painted_theme != app.theme:
+                painted_theme = app.theme
+                cache.dirty = True
+                painter.invalidate()
             current_settings = getattr(app, "terminal_settings_generation", 0)
             if settings_generation != current_settings:
                 palette = CursesPalette(curses, cfg["color"])
                 settings_generation = current_settings
+                cache.dirty = True
+                painter.invalidate()
             current_mouse = cfg.get("mouse", True) or app.mode == "terminal_probe"
             if current_mouse != mouse_enabled:
                 try:
@@ -617,45 +791,16 @@ def run_curses(app, views, sampler, store, actions, cfg):
                     pass
                 mouse_enabled = current_mouse
                 _mouse_reporting(mouse_enabled)
-            app.tick()
-            snap = store.snapshot()
             height, width = stdscr.getmaxyx()
-            app.width = width
-            from .scrolling import begin_frame, finish_frame, timeout_ms
-            begin_frame(app)
-            rows, hits = views.compose(snap, app, width, height, actions)
-            finish_frame(app)
-            idle_timeout = 100 if app.animations_enabled and app.completion.active else 200
-            if startup.active(app):
-                idle_timeout = min(idle_timeout, int(startup.FRAME_INTERVAL * 1000))
-            stdscr.timeout(timeout_ms(app, idle_timeout))
+            if cache.due(app, width, height):
+                cache.rebuild(app, views, store, actions, width, height)
+            rows, overlays, bar = cache.feedback(app, views)
+            hits, snap = cache.hits, cache.snapshot
+            stdscr.timeout(cache.wait_ms())
             reader = _INPUT_READERS.get(id(stdscr))
             if reader and (reader.escape or reader.pasting):
                 stdscr.timeout(5)
-            app.last_hits = hits
-            welcome = startup.overlay(views, snap, app, width, height) or []
-            ov = views.overlay(snap, app, width, height) or []
-            # Build feedback from the complete visible frame, including masks.
-            # Pristine rows remain available for exact text copying.
-            from .interaction import publish, decorate, decorate_overlays
-            frame = getattr(app, "frame_rows", rows)
-            publish(app, frame, hits, width, height, overlays=welcome + ov)
-            rows = decorate(app, frame)
-            ov = decorate_overlays(app, ov)
-            stdscr.erase()
-            for y, segs in enumerate(rows[:height]):
-                paint(y, 0, segs, width, height)
-            for y, x0, segs in welcome:
-                paint(y, x0, segs, width, height)
-            if ov:
-                for y, x0, segs in ov:
-                    paint(y, x0, segs, width, height)
-            if height > 0:
-                # A small terminal can put an ordinary modal on row zero.
-                # Global controls retain their visible and clickable geometry.
-                from .toolbar import render_bar
-                bar = decorate(app, [render_bar(views, app, width)])
-                paint(0, 0, bar[0], width, height)
+            painter.draw(rows, overlays, width, height, bar=bar)
             started = sum(1 for e in snap["events"] if e.get("kind") == "started" and not e.get("old"))
             if app.bell and started > rung:
                 curses.beep()
@@ -666,7 +811,12 @@ def run_curses(app, views, sampler, store, actions, cfg):
             pending_input = None
             if event is None:
                 continue
-            pending_input = _consume_input_batch(app, stdscr, curses, hits, event)
+            effects = _InputEffects()
+            before = (app.mode, app.tab, getattr(app, "selected_id", None))
+            pending_input = _consume_input_batch(app, stdscr, curses, hits, event, effects=effects)
+            cache.dirty = (effects.document or pending_input is not None
+                           or before != (app.mode, app.tab, getattr(app, "selected_id", None))
+                           or not getattr(views, "feedback_options", False))
             if getattr(app, "want_less", False):
                 app.want_less = False
                 files = views.files
@@ -680,6 +830,8 @@ def run_curses(app, views, sampler, store, actions, cfg):
                         _mouse_reporting(mouse_enabled)
                         stdscr.touchwin()
                         stdscr.refresh()
+                        painter.invalidate()
+                        cache.dirty = True
                 else:
                     app.say("no stdout file yet for this job")
 

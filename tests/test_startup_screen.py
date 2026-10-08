@@ -157,7 +157,8 @@ def test_welcome_expires_during_normal_frames_without_input_or_restart(terminal)
     assert "Any key continues" not in frame_text(terminal.window.frames[-1])
     assert not startup.active(terminal.app)
     assert terminal.app.startup_state["start"] == 100
-    assert terminal.window.timeouts[-1] == 200
+    # The last idle read consumed half of the fixed maintenance interval.
+    assert terminal.window.timeouts[-1] == 100
 
 
 def test_preview_paints_below_open_dropdown_without_closing_it(terminal, monkeypatch):

@@ -6,8 +6,10 @@ Activation delegates to the existing controller, preserving its confirmations.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import lru_cache
 from itertools import islice
+from types import MappingProxyType
 from . import layout as L
 
 MAX_CONTROLS = 4096
@@ -69,15 +71,43 @@ class Graph:
     height: int
     generation: int
     observed_geometry: tuple = ()
+    _identities: object = field(init=False, repr=False, compare=False)
+    _rows: object = field(init=False, repr=False, compare=False)
+    _spanning: tuple = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        identities, rows, spanning = {}, {}, []
+        for index, control in enumerate(self.controls):
+            identities.setdefault(control.id, control)
+            rect = control.rect
+            priority = (control.layer, control.button,
+                        -((rect.right - rect.left) * (rect.bottom - rect.top)), -index)
+            entry = (priority, control)
+            if rect.bottom == rect.top + 1:
+                rows.setdefault(rect.top, []).append(entry)
+            else:
+                # Multi-row controls do not multiply storage by screen height.
+                # Native buttons and table rows take the constant-time row path.
+                spanning.append(entry)
+        object.__setattr__(self, "_identities", MappingProxyType(identities))
+        object.__setattr__(self, "_rows", MappingProxyType({
+            y: tuple(sorted(entries, key=lambda entry: entry[0], reverse=True))
+            for y, entries in rows.items()}))
+        object.__setattr__(self, "_spanning", tuple(sorted(spanning, key=lambda entry: entry[0], reverse=True)))
 
     def get(self, identity):
-        return next((control for control in self.controls if control.id == identity), None)
+        try:
+            return self._identities.get(identity)
+        except TypeError:
+            return None
 
     def at(self, y, x):
         # Later / smaller controls win when a selectable row also contains a button.
-        candidates = (control for control in self.controls if control.rect.contains(y, x))
-        return max(candidates, key=lambda c: (c.layer, c.button,
-                   -((c.rect.right - c.rect.left) * (c.rect.bottom - c.rect.top))), default=None)
+        local = next((entry for entry in self._rows.get(y, ()) if entry[1].rect.contains(y, x)), None)
+        spanning = next((entry for entry in self._spanning if entry[1].rect.contains(y, x)), None)
+        if local is None:
+            return spanning[1] if spanning else None
+        return spanning[1] if spanning and spanning[0] > local[0] else local[1]
 
 
 def initialize(app):
@@ -211,8 +241,9 @@ def _row_rect(rows, y, width, height, *, overlays=None, main_right=None):
     if not 0 <= y < len(rows):
         return None
     text = L.row_text(rows[y])
-    right = min(width, L.vlen(text), width if main_right is None else main_right)
-    left = min(right, L.vlen(text) - L.vlen(text.lstrip()))
+    length = L.vlen(text)
+    right = min(width, length, width if main_right is None else main_right)
+    left = min(right, length - L.vlen(text.lstrip()))
     return Rect(y, left, y + 1, right).clip(width, height)
 
 
@@ -430,9 +461,14 @@ def publish(app, rows, hits, width, height, overlays=None, extra_controls=()):
                                control.enabled, control.reason, control.button, control.layer))
         identities.add(identity)
         primary_rects.setdefault(control.id, rect)
-    state["generation"] += 1
-    graph = Graph(tuple(visible), _context(app), width, height, state["generation"],
-                  (getattr(app, "width", None), getattr(app, "height", None)))
+    token = _context(app)
+    geometry = (getattr(app, "width", None), getattr(app, "height", None))
+    visible = tuple(visible)
+    graph = state["graph"]
+    if (graph is None or graph.token != token or graph.width != width or graph.height != height
+            or graph.observed_geometry != geometry or graph.controls != visible):
+        state["generation"] += 1
+        graph = Graph(visible, token, width, height, state["generation"], geometry)
     state["graph"] = graph
     if graph.get(state["focused"]) is None:
         state["focused"], state["active"] = None, False
@@ -611,6 +647,7 @@ def handle_mouse(app, y, x, button="left", shift=False, **kwargs):
     return _activate(app, target)
 
 
+@lru_cache(maxsize=512)
 def _feedback_style(style, feedback):
     # Preserve semantic foreground, replace selection backgrounds, and remove
     # dim so the actual hit region remains readable on every supported theme.
@@ -619,6 +656,23 @@ def _feedback_style(style, feedback):
 
 
 def _decorate_row(row, ranges):
+    if all(text.isascii() for text, _ in row):
+        output, position = [], 0
+        for text, style in row:
+            end = position + len(text)
+            edges = sorted({position, end} | {max(position, min(end, edge))
+                           for left, right, _ in ranges for edge in (left, right)})
+            for left, right in zip(edges, edges[1:]):
+                feedback = next((feedback for start, stop, feedback in reversed(ranges)
+                                 if left < stop and right > start), None)
+                painted_style = _feedback_style(style, feedback) if feedback else style
+                fragment = text[left - position:right - position]
+                if output and output[-1][1] == painted_style:
+                    output[-1] = (output[-1][0] + fragment, painted_style)
+                else:
+                    output.append((fragment, painted_style))
+            position = end
+        return output
     output, position, previous_style, pieces = [], 0, "", []
     for text, style in row:
         for char in text:
@@ -639,12 +693,11 @@ def _decorate_row(row, ranges):
     return output
 
 
-def decorate(app, rows, origin=(0, 0)):
-    """Return styled rows without changing text, width, or controller selection."""
+def _targets(app):
     state = initialize(app)
     graph = _current(app)
     if graph is None:
-        return rows
+        return ()
     targets = []
     hovered = graph.get(state["hovered"])
     focused = graph.get(state["focused"]) if state["active"] else None
@@ -652,16 +705,34 @@ def decorate(app, rows, origin=(0, 0)):
         targets.append((hovered, POINTER_STYLE))
     if focused:
         targets.append((focused, FOCUS_STYLE))
+    return targets
+
+
+def feedback_rows(app):
+    """Visible physical rows affected by the current pointer or button focus.
+
+    A painter can repaint the union of the previous and new sets to erase old
+    feedback and draw its replacement without rebuilding the document.
+    """
+    return frozenset(y for control, _ in _targets(app)
+                     for y in range(control.rect.top, control.rect.bottom))
+
+
+def decorate(app, rows, origin=(0, 0)):
+    """Return styled rows without changing text, width, or controller selection."""
+    targets = _targets(app)
     if not targets:
         return rows
     y0, x0 = origin
     output = list(rows)
-    for index, row in enumerate(rows):
+    indices = {y - y0 for control, _ in targets
+               for y in range(max(y0, control.rect.top), min(y0 + len(rows), control.rect.bottom))}
+    for index in sorted(indices):
         y = index + y0
         ranges = [(control.rect.left - x0, control.rect.right - x0, style)
                   for control, style in targets if control.rect.top <= y < control.rect.bottom]
         if ranges:
-            output[index] = _decorate_row(row, ranges)
+            output[index] = _decorate_row(rows[index], ranges)
     return output
 
 
@@ -669,4 +740,12 @@ def decorate_overlays(app, overlays):
     """Apply identical feedback to absolute overlay triples."""
     if overlays is None:
         return None
-    return [(y, x, decorate(app, [row], origin=(y, x))[0]) for y, x, row in overlays]
+    targets = _targets(app)
+    if not targets:
+        return overlays
+    output = []
+    for y, x, row in overlays:
+        ranges = [(control.rect.left - x, control.rect.right - x, style)
+                  for control, style in targets if control.rect.top <= y < control.rect.bottom]
+        output.append((y, x, _decorate_row(row, ranges) if ranges else row))
+    return output

@@ -69,6 +69,7 @@ def run_command(app, args):
 
 def overlay(views, snap, app, width, height):
     toolbar_rows = None
+    app.content_overlay_rows, app.toolbar_overlay_rows = [], []
     for feature in modules():
         if feature.__name__ == "tower.startup":
             # Welcome animation is painted beneath ordinary modals by curses.
@@ -76,9 +77,11 @@ def overlay(views, snap, app, width, height):
         rows = feature.overlay(views, snap, app, width, height)
         if feature.__name__ == "tower.toolbar":
             toolbar_rows = rows
+            app.toolbar_overlay_rows = rows or []
             continue
         if rows is not None:
             # A persistent menu keeps an underlying prompt/review visible.
             # The toolbar paints last and owns pointer input until dismissed.
+            app.content_overlay_rows = rows
             return rows + (toolbar_rows or [])
     return toolbar_rows

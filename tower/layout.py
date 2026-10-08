@@ -7,6 +7,7 @@ from __future__ import annotations
 import unicodedata
 import math
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 Seg = Tuple[str, str]
@@ -17,16 +18,33 @@ SPARK_ASCII = ".:-=+*#@"
 FRACTIONS = " ▏▎▍▌▋▊▉█"
 
 
-def vlen(s: str) -> int:
-    """Display width (wide East-Asian characters count 2, combining marks 0)."""
-    if s.isascii():
-        return len(s)
+@lru_cache(maxsize=4096)
+def _character_width(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def _unicode_width(s: str) -> int:
     n = 0
     for ch in s:
-        if unicodedata.combining(ch):
-            continue
-        n += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        n += 1 if ch.isascii() else _character_width(ch)
     return n
+
+
+_short_unicode_width = lru_cache(maxsize=2048)(_unicode_width)
+
+
+def vlen(s: str) -> int:
+    """Display width, with bounded reuse for repeated terminal labels.
+
+    Long log lines bypass the string cache; its retained keys are limited to
+    2,048 strings of at most 512 characters. Wide and combining cells use the
+    same Unicode rules regardless of whether a value is cached.
+    """
+    if s.isascii():
+        return len(s)
+    return _short_unicode_width(s) if len(s) <= 512 else _unicode_width(s)
 
 
 def cut(text, width: int, ascii_: bool = False) -> str:
@@ -76,14 +94,15 @@ def fit_columns(cols: Sequence[Column], rows: Iterable[dict], width: int, gap: i
     flexible columns shrink to ``floor``.  Returns (widths, columns kept)."""
     rows = list(rows)
     kept = list(cols)
+    natural = {}
+    for column in kept:
+        natural[id(column)] = max(vlen(column.title),
+                                 max((vlen(str(row.get(column.key, ""))) for row in rows), default=0))
 
     def shrink(lo_of):
         w = {}
         for c in kept:
-            n = vlen(c.title)
-            for r in rows:
-                n = max(n, vlen(str(r.get(c.key, ""))))
-            w[c.key] = max(lo_of(c), min(c.hi, n))
+            w[c.key] = max(lo_of(c), min(c.hi, natural[id(c)]))
         excess = sum(w.values()) + gap * (len(kept) - 1) - width
         while excess > 0:
             flex = [c for c in kept if c.flex and w[c.key] > lo_of(c)]

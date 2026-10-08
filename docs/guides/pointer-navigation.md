@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Live workbench](live-workbench.md)
 
-Use this guide for Tower 4.3's mouse feedback, button navigation, scrolling, and startup display.
+Use this guide for Tower 4.3.1's mouse feedback, button navigation, scrolling, and startup display.
 All controls remain inside the terminal.
 
 ## Check terminal mouse support
@@ -18,6 +18,11 @@ All controls remain inside the terminal.
 Hover feedback requires a terminal that reports pointer movement.
 Clicks and drag reports also depend on the terminal's mouse support.
 The `mouse` configuration field must be `true`.
+
+Tower updates cosmetic pointer feedback from the last published page.
+It paints changed rows while data, actions, and resize still refresh the page.
+Continuous movement does not postpone live results.
+See [Display and input performance](ui-performance.md) for validation and connection limits.
 
 Run `:terminaldoctor` to inspect terminal settings and connection evidence.
 Check the terminal emulator and any intervening SSH or tmux session when events are missing.

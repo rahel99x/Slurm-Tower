@@ -206,26 +206,37 @@ def fingerprint(app, tab):
 
 
 def matches(app, tab, record, snap):
-    facets = dict(facets_fingerprint(app, tab))
-    get = record.get if isinstance(record, dict) else lambda key, default="": getattr(record, key, default)
-    values = {"state": get("state", ""), "partition": get("partition", ""),
-              "name": get("name", ""), "id": get("id", ""), "user": get("user", "") or "?",
-              "tag": " ".join(snap.get("tags", {}).get(get("id", ""), {}).get("tags", []))}
-    if get("id", "") in snap.get("departed_jobs", {}):
-        values["state"] = "ACCOUNTING"
-    for field, expected in facets.items():
-        actual = str(values.get(field, "")).casefold()
-        choices = [part.casefold() for part in str(expected).split(",")]
-        if field in ("state", "partition", "id", "user"):
-            if actual not in choices:
+    facets = getattr(app, "table_state", {}).get("facets", {}).get(tab, {})
+    rules = getattr(app, "table_tools_state", {}).get("numeric", {}).get(tab, ())
+    active_numeric = isinstance(rules, (list, tuple)) and bool(rules)
+    # Most table passes have no field filters. Read current settings directly
+    # so in-place changes take effect, without preparing unused record fields
+    # or sorting a fingerprint for every row in a large accounting window.
+    if isinstance(facets, dict) and facets:
+        get = record.get if isinstance(record, dict) else lambda key, default="": getattr(record, key, default)
+        for field, expected in facets.items():
+            if field == "tag":
+                value = " ".join(snap.get("tags", {}).get(get("id", ""), {}).get("tags", []))
+            elif field == "state":
+                value = "ACCOUNTING" if get("id", "") in snap.get("departed_jobs", {}) else get("state", "")
+            elif field == "user":
+                value = get("user", "") or "?"
+            else:
+                value = get(field, "") if field in FIELDS else ""
+            actual = str(value).casefold()
+            choices = [part.casefold() for part in str(expected).split(",")]
+            if field in ("state", "partition", "id", "user"):
+                if actual not in choices:
+                    return False
+            elif field == "tag":
+                if not any(choice in actual.split() for choice in choices):
+                    return False
+            elif not any(choice in actual for choice in choices):
                 return False
-        elif field == "tag":
-            if not any(choice in actual.split() for choice in choices):
-                return False
-        elif not any(choice in actual for choice in choices):
-            return False
-    from .table_tools import numeric_matches
-    return numeric_matches(app, tab, record, snap)
+    if active_numeric:
+        from .table_tools import numeric_matches
+        return numeric_matches(app, tab, record, snap)
+    return True
 
 
 def chips(app, tab, width, ascii_=False):

@@ -5,10 +5,11 @@ files are read through the existing background worker, never while drawing.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from contextlib import nullcontext
 from itertools import islice
 import math
+import os
 import statistics
 import time
 
@@ -19,8 +20,11 @@ from .research import clean
 MAX_METRICS = 64
 MAX_POINTS = 10000
 MAX_EVENTS = 512
+MAX_CARD_CACHE = 8
+MAX_CARD_CACHE_POINTS = MAX_POINTS * MAX_CARD_CACHE
 COLORS = ("cyan", "magenta", "green", "yellow", "blue", "red")
 SECTIONS = ("Overview", "Resources", "Steps", "Files", "Evidence")
+_NEGATIVE_ZERO = ("negative-zero",)
 
 
 def initialize(app):
@@ -277,9 +281,65 @@ def _highlight_interval(rows, width, height, selected, times, ascii_=False):
     return output
 
 
+def _source_row(g, source, metadata):
+    latest, visible, total, gaps = metadata
+    age = max(0, clock.now() - latest) if latest is not None else None
+    return [(clean(f" Source: {source} | {visible}/{total} samples | latest {short_duration(age)} ago | gaps {gaps}", g.ascii), "dim")]
+
+
+def _card_value(value):
+    if not _finite(value):
+        return None
+    # Numeric equality equates signed zero, but the exact summary formatter
+    # displays its sign. Keep that distinction in the cache's content key.
+    return _NEGATIVE_ZERO if value == 0 and math.copysign(1, value) < 0 else value
+
+
 def chart_rows(g, app, points, width, height, name, source, *, interactive=True, snapshot=None):
+    """Cache pure dashboard cards while preserving exact interactive charts.
+
+    A content scan detects edits anywhere in the retained series, including
+    corrections published into the same list or dictionary. The bounded cache
+    skips normalization, sorting, cadence analysis, and rasterization only for
+    unchanged noninteractive cards. Source identity and age are rendered fresh.
+    """
+    if interactive:
+        return _render_chart_rows(g, app, points, width, height, name, source,
+                                  interactive=True, snapshot=snapshot)
     state = initialize(app)
-    full = _points(points)
+    content = tuple((point["t"], _card_value(point.get("value")))
+                    for point in points[-MAX_POINTS:]
+                    if isinstance(point, dict) and _finite(point.get("t")))
+    label, unit, precision = chart_tools.display(state, name)
+    axis = state["axes"].get(name, {"mode": "auto"})
+    color = state["colors"].get(name, COLORS[sum(ord(char) for char in name) % len(COLORS)])
+    # The timestamp axis uses libc local time. A session timezone change must
+    # invalidate the raster even when its source values remain unchanged.
+    zone = (os.environ.get("TZ"), time.tzname, time.timezone, time.daylight)
+    glyphs = (g.ascii, g.spark, g.box, g.dot, g.rule)
+    key = (name, width, height, glyphs, label, unit, (type(precision), precision), color,
+           axis.get("mode"), repr(axis.get("low")), repr(axis.get("high")), zone, content)
+    cache = state.setdefault("chart_card_cache", OrderedDict())
+    entry = cache.get(key)
+    if entry is not None:
+        cache.move_to_end(key)
+        return [list(row) for row in entry["rows"]] + [_source_row(g, source, entry["metadata"])]
+    full = sorted(({"t": timestamp, "value": -0.0 if value is _NEGATIVE_ZERO else value, "step": None}
+                   for timestamp, value in content), key=lambda point: point["t"])
+    metadata = {}
+    rows = _render_chart_rows(g, app, points, width, height, name, source, interactive=False,
+                              snapshot=snapshot, normalized_points=full, cache_metadata=metadata)
+    cache[key] = {"rows": tuple(tuple(row) for row in rows[:-1]),
+                  "metadata": metadata["source"], "points": len(content)}
+    while len(cache) > MAX_CARD_CACHE or sum(value["points"] for value in cache.values()) > MAX_CARD_CACHE_POINTS:
+        cache.popitem(last=False)
+    return rows
+
+
+def _render_chart_rows(g, app, points, width, height, name, source, *, interactive=True,
+                       snapshot=None, normalized_points=None, cache_metadata=None):
+    state = initialize(app)
+    full = _points(points) if normalized_points is None else normalized_points
     visible, times = viewport(full, state if interactive else {}, normalized=True)
     if interactive:
         state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
@@ -336,10 +396,12 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
         rows.append([(clean(f" P05 {formatting(stats['p05'])} | P95 {formatting(stats['p95'])} | P99 {formatting(stats['p99'])}", g.ascii), "cyan")])
         coverage = f"{stats['time_coverage']:.1%}" if stats['time_coverage'] is not None else "unavailable"
         rows.append([(clean(f" Coverage: samples {stats['sample_coverage']:.1%} | observed time {coverage} | missing {stats['missing']}; no gap filling", g.ascii), "dim")])
-    age = max(0, clock.now() - full[-1]["t"]) if full else None
     gaps = sum(1 for p in visible if p["value"] is None)
     outages = sum(b["t"] - a["t"] > cadence * 2.5 for a, b in zip(visible, visible[1:])) if cadence else 0
-    rows.append([(clean(f" Source: {source} | {len(visible)}/{len(full)} samples | latest {short_duration(age)} ago | gaps {gaps + outages}", g.ascii), "dim")])
+    metadata = (full[-1]["t"] if full else None, len(visible), len(full), gaps + outages)
+    rows.append(_source_row(g, source, metadata))
+    if cache_metadata is not None:
+        cache_metadata["source"] = metadata
     if interactive and state.get("chart_events") and getattr(app, "store", None):
         events = chart_events(app, snapshot if snapshot is not None else app.store.snapshot(), times)
         state["chart_event_items"] = events

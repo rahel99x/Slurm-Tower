@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
+from functools import lru_cache
 from typing import Any, Deque, Dict, List, Optional, Sequence
 
 from . import clock
@@ -16,6 +17,17 @@ from . import clock
 # ------------------------------------------------------------------------------------------------ parsing helpers
 def secs(s: Optional[str]) -> Optional[float]:
     """[DD-]HH:MM:SS[.f] | MM:SS | 'UNLIMITED' -> seconds (None if unknown)."""
+    if type(s) is str and len(s) <= 256:
+        return _cached_secs(s)
+    return _parse_secs(s)
+
+
+@lru_cache(maxsize=8192)
+def _cached_secs(s):
+    return _parse_secs(s)
+
+
+def _parse_secs(s):
     if not s or s in ("UNLIMITED", "N/A", "INVALID", "Unknown", "-", "NOT_SET", "PARTITION_TIME_LIMIT"):
         return None
     d = 0
@@ -112,6 +124,22 @@ def fint(s) -> int:
 
 def stamp(s: Optional[str]) -> Optional[float]:
     """Slurm time 'YYYY-MM-DDTHH:MM:SS' -> epoch seconds."""
+    if type(s) is str and len(s) <= 256:
+        # mktime interprets scheduler dates in the current local timezone.
+        # Include both TZ and the effective libc/Python timezone state so
+        # tzset or a runtime environment change cannot reuse old epochs.
+        zone = (os.environ.get("TZ"), time.tzname, time.timezone,
+                getattr(time, "altzone", time.timezone), time.daylight)
+        return _cached_stamp(s, zone)
+    return _parse_stamp(s)
+
+
+@lru_cache(maxsize=8192)
+def _cached_stamp(s, zone):
+    return _parse_stamp(s)
+
+
+def _parse_stamp(s):
     try:
         return time.mktime(time.strptime(s, "%Y-%m-%dT%H:%M:%S"))
     except (TypeError, ValueError):
@@ -807,13 +835,35 @@ class Store:
                     return j
         return None
 
+    def record_context(self, jid: Optional[str], *, include_group: bool = False):
+        """Read one exact job and its scheduler paths without copying histories.
+
+        The record has the same shallow-copy semantics as ``snapshot``. The
+        details dictionary is copied while holding the lock, so a reader sees
+        one publication and cannot alter the store's path mapping. This lookup
+        deliberately keeps no cache: departures, accounting corrections and
+        changed working directories are visible on the next call.
+        """
+        with self.lock:
+            record = None
+            if jid:
+                for records in (self.jobs, self.finished):
+                    record = next((job for job in records if job.id == jid), None)
+                    if record is not None:
+                        break
+                if record is None:
+                    record = self.departed_jobs.get(jid)
+                if record is None and include_group:
+                    record = next((job for job in self.group if job.id == jid), None)
+            return record, dict(self.details.get(jid, {})) if jid else {}
+
     def snapshot(self) -> dict:
         with self.lock:
             return dict(jobs=list(self.jobs), live=dict(self.live), gpu=dict(self.gpu), nodes=dict(self.nodes), partitions=list(self.partitions),
                         gpu_inventory=dict(self.gpu_inventory), finished=list(self.finished), share=list(self.share), account=dict(self.account),
                         departed_jobs=dict(self.departed_jobs), job_transitions=[dict(e) for e in self.job_transitions],
                         history_revision=self.history_revision,
-                        details=dict(self.details), health={k: Health(**asdict(v)) for k, v in self.health.items()}, events=list(self.events),
+                        details=dict(self.details), health={k: replace(v) for k, v in self.health.items()}, events=list(self.events),
                         group=list(self.group), weather=list(self.weather), pending_ahead=dict(self.pending_ahead), budget=dict(self.budget),
                         nodemap=dict(self.nodemap), steps=dict(self.steps), fin_steps=dict(self.fin_steps), trace=dict(self.trace),
                         tags={k: dict(v) for k, v in self.tags.items()},

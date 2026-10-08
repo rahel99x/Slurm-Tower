@@ -7,7 +7,7 @@ the window: the runs aggregated, with the core-hours the over-request wasted."""
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence
 
 from .model import Finished, Job, Live, hms, human, secs
@@ -15,6 +15,9 @@ from .model import Finished, Job, Live, hms, human, secs
 MEM_HEADROOM = 1.25            # suggested memory = peak × this, rounded up to a round number
 TIME_HEADROOM = 1.3            # suggested limit = the longest run × this, rounded up to 15 minutes
 CPU_TARGET = 0.7               # suggested cores = cpu time / (elapsed × this)
+
+MAX_HISTORY_CACHE_ENTRIES = 2
+MAX_HISTORY_CACHE_RECORDS = 50_000
 
 
 def round_mem(b: float) -> str:
@@ -166,3 +169,91 @@ def advise_names(finished: Sequence[Finished]) -> List[Advice]:
         out.append(a)
     out.sort(key=lambda a: -a.wasted_core_hours)
     return out
+
+
+@dataclass
+class _HistoryAdviceEntry:
+    key: tuple
+    groups: dict
+    advice: Optional[tuple] = None
+
+
+class HistoryAdviceCache:
+    """Reuse advice for exact accounting content, without retaining job objects.
+
+    Callers still filter their accounting window on every frame. Keys include
+    record order, every field consumed by the advisor, and suggestion settings,
+    so corrections and equal-time tie choices cannot reuse an older result.
+    Only two entries and 50,000 records in total may be retained. Larger inputs
+    use the ordinary uncached calculation.
+    """
+
+    def __init__(self, max_entries=MAX_HISTORY_CACHE_ENTRIES, max_records=MAX_HISTORY_CACHE_RECORDS):
+        self.max_entries = max(0, min(MAX_HISTORY_CACHE_ENTRIES, int(max_entries)))
+        self.max_records = max(0, min(MAX_HISTORY_CACHE_RECORDS, int(max_records)))
+        self._entries = []
+        self._record_count = 0
+
+    @property
+    def entry_count(self):
+        return len(self._entries)
+
+    @property
+    def record_count(self):
+        return self._record_count
+
+    def _entry(self, finished):
+        count = len(finished)
+        if not self.max_entries or count > self.max_records:
+            return None
+        key = ((MEM_HEADROOM, TIME_HEADROOM, CPU_TARGET), tuple(
+            (f.id, f.name, f.state, f.end, f.elapsed, f.cpus, f.cpu_time, f.req_mem, f.rss, f.limit)
+            for f in finished))
+        # Two exact-content entries do not need repeated hashes of every record.
+        # Moving a hit to the end keeps the bounded list in LRU order.
+        for index, entry in enumerate(self._entries):
+            if entry.key == key:
+                if index != len(self._entries) - 1:
+                    self._entries.append(self._entries.pop(index))
+                return entry
+        grouped = {}
+        for index, record in enumerate(key[1]):
+            grouped.setdefault(record[1], []).append(index)
+        entry = _HistoryAdviceEntry(key, {name: tuple(indices) for name, indices in grouped.items()})
+        while self._entries and (len(self._entries) >= self.max_entries
+                                 or self._record_count + count > self.max_records):
+            self._record_count -= len(self._entries.pop(0).key[1])
+        self._entries.append(entry)
+        self._record_count += count
+        return entry
+
+    def names(self, finished: Sequence[Finished]) -> List[Advice]:
+        """Return fresh advice and notes, reusing only the private calculation."""
+        entry = self._entry(finished)
+        if entry is None:
+            return advise_names(finished)
+        if entry.advice is None:
+            # Capture trusted dataclass fields rather than a mutable source
+            # reference. An accounting correction during calculation cannot
+            # attach a changed result to the preceding exact-content key.
+            captured = [Finished(id=value[0], name=value[1], state=value[2], end=value[3],
+                                 elapsed=value[4], cpus=value[5], cpu_time=value[6],
+                                 req_mem=value[7], rss=value[8], limit=value[9])
+                        for value in entry.key[1]]
+            entry.advice = tuple(advise_names(captured))
+        return [replace(advice, notes=list(advice.notes)) for advice in entry.advice]
+
+    def groups(self, finished: Sequence[Finished]) -> Dict[str, tuple]:
+        """Group current records once so running jobs inspect only their name.
+
+        Cached groups contain indices. Every returned record comes from this
+        call's sequence, including equal-value objects from a newer snapshot.
+        """
+        entry = self._entry(finished)
+        if entry is not None:
+            return {name: tuple(finished[index] for index in indices)
+                    for name, indices in entry.groups.items()}
+        grouped = {}
+        for record in finished:
+            grouped.setdefault(record.name, []).append(record)
+        return {name: tuple(records) for name, records in grouped.items()}

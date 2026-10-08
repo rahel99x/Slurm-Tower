@@ -125,6 +125,12 @@ The graph follows visible geometry and updates after layout and page changes.
 Hover does not change the selected job or file.
 Use [Mouse and button navigation](guides/pointer-navigation.md) for focus, dragging, menus, and terminal support.
 
+Tower retains the published document for cosmetic pointer feedback and paints changed terminal rows.
+Data, actions, resize, and animation deadlines still refresh the document.
+Pointer traffic does not postpone scheduled publication.
+Bounded Advisor, chart-data, and Details reflow caches update when their inputs change.
+See [Display and input performance](guides/ui-performance.md) for checks and connection limits.
+
 Mouse-wheel scrolling targets the latest requested viewport position.
 The bounded PID controller combines wheel movement without replaying stale steps at an edge.
 It clamps acceleration, avoids overshooting the target, and discards accumulated motion after a direction change.

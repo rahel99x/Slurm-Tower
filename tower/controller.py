@@ -231,8 +231,11 @@ class App:
 
     def job_record(self, jid, snap=None):
         """Resolve an exact ID across queue and accounting records, without another-job fallback."""
-        snap = self.store.snapshot() if snap is None else snap
-        return next((j for j in snap["jobs"] + snap["finished"] + list(snap.get("departed_jobs", {}).values()) + snap.get("group", []) if j.id == jid), None)
+        if snap is None:
+            return self.store.record_context(jid, include_group=True)[0]
+        return next((j for records in (snap["jobs"], snap["finished"],
+                                      snap.get("departed_jobs", {}).values(), snap.get("group", []))
+                     for j in records if j.id == jid), None)
 
     def log_target(self, snap=None):
         from .project_ui import selected_binding
@@ -249,8 +252,31 @@ class App:
         """The same sorted/filtered accounting records drive rendering and every row action."""
         from .table_tools import snapshot, filter_text, history_matches, recent_matches, recent_limit
         snap = snapshot(self, self.store.snapshot()) if snap is None else snap
-        fin = list(snap["finished"])
         from .table_ui import matches
+        if recent:
+            limit = recent_limit(self)
+            if type(limit) is int and limit > 0:
+                # Recents retain accounting order before their own displayed
+                # subset is sorted. Stop once that subset is complete instead
+                # of filtering an entire history window on each scroll frame.
+                active = {job.id for job in snap["jobs"]}
+                flt = filter_text(self, "recent").lower()
+                fin = []
+                for record in snap["finished"]:
+                    if not matches(self, "recent", record, snap) or not recent_matches(self, record):
+                        continue
+                    if record.id in active:
+                        continue
+                    if flt.startswith("#"):
+                        if flt[1:] not in [tag.lower() for tag in snap.get("tags", {}).get(record.id, {}).get("tags", [])]:
+                            continue
+                    elif flt and not any(flt in value.lower() for value in (record.name, record.id, record.state, record.partition)):
+                        continue
+                    fin.append(record)
+                    if len(fin) == limit:
+                        break
+                return fin
+        fin = list(snap["finished"])
         fin = [record for record in fin if matches(self, "recent" if recent else "history", record, snap)
                and (recent_matches(self, record) if recent else history_matches(self, record))]
         if recent:
@@ -368,7 +394,9 @@ class App:
         if self.tab != "log" or self.logs.browser:
             return ""
         if self.views_ref is not None:
-            snap = self.store.snapshot()
+            jid = self.log_job or self.selected_id
+            record, details = self.store.record_context(jid, include_group=True)
+            snap = {"jobs": [record] if record is not None else [], "finished": []}
             job = self.log_target(snap)
             if job is None:
                 from .project_ui import selected_binding, resolve_log_entry
@@ -376,7 +404,7 @@ class App:
                     entry = resolve_log_entry(self)
                     return entry.get("path", "") if entry else ""
                 return ""
-            return self.views_ref.log_path(self, job, snap["details"].get(job.id, {}))[0]
+            return self.views_ref.log_path(self, job, details)[0]
         return self.logs.path
 
     def prepare_log(self):

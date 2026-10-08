@@ -128,6 +128,8 @@ def stdout_path(job, kv: dict, files=None, which: str = "StdOut", *, probe: bool
 
 
 class Views:
+    feedback_options = True
+
     def __init__(self, glyphs: Glyphs, cfg, files=None, plugins=None):
         self.g, self.cfg = glyphs, cfg
         self.th = cfg["thresholds"]
@@ -135,6 +137,7 @@ class Views:
         self.files = files or LocalFiles()
         self._preview_cache = OrderedDict()
         self._preview_pending = set()
+        self.history_advice_cache = advisor.HistoryAdviceCache()
         self.plugins = plugins                             # PluginAPI or None: extra tabs and flags
         self.extra_tabs: Dict[str, object] = {}
         for key, title, render in (plugins.tabs if plugins else []):
@@ -1758,7 +1761,7 @@ class Views:
         now = clock.now()
         t_lo = now - days * 86400
         fin = [f for f in snap["finished"] if (stamp(f.end) or now) >= t_lo]
-        advices = advisor.advise_names(fin)
+        advices = self.history_advice_cache.names(fin)
         out: List[Row] = [rule(g, width, f"advisor: what the jobs of the last {days:g} day{'s' if days != 1 else ''} should have asked for ({len(advices)} job names)")]
         wasted = sum(a.wasted_core_hours for a in advices)
         out.append([(f"   {wasted:.1f} core-hours spent on idle cores over the window (1 - efficiency, times core-hours); suggestions keep {int(100 * (advisor.MEM_HEADROOM - 1))}% memory headroom and {int(100 * (advisor.TIME_HEADROOM - 1))}% time headroom over the worst run", "dim")])
@@ -1782,9 +1785,10 @@ class Views:
         running = [j for j in snap["jobs"] if not j.pending]
         if running:
             out.append(rule(g, width, "running jobs so far"))
+            by_name = self.history_advice_cache.groups(snap["finished"])
             for j in running[:8]:
                 lv = snap["live"].get(j.id)
-                adv = advisor.advise_running(j, lv, app.store.series_of(j.id), snap["finished"])
+                adv = advisor.advise_running(j, lv, app.store.series_of(j.id), by_name.get(j.name, ()))
                 text = adv.summary(g.dot) or "nothing to change yet"
                 out.append([(f"   {j.id} ", "cyan"), (pad(cut(j.name, 20, g.ascii), 20), "bold"), (" " + cut(text, width - 36, g.ascii), "")])
         if avail is not None:
@@ -2025,7 +2029,7 @@ class Views:
             out.append([("   " + cut(f"{t}  {e.get('text', '')}", width - 4, self.g.ascii), col)])
         return out
 
-    def compose(self, snap: dict, app, width: int, height: Optional[int], actions=None) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
+    def compose(self, snap: dict, app, width: int, height: Optional[int], actions=None, *, feedback=True) -> Tuple[List[Row], List[Tuple[int, str, str]]]:
         width = max(0, width)
         app.width = width
         if height is not None:
@@ -2039,8 +2043,10 @@ class Views:
         snap = snapshot(app, snap)
         if height is not None and height <= 0:
             app.tab_hits, app.last_rows, app.last_hits = [], [], []
-            from .interaction import publish
-            publish(app, [], [], width, height)
+            app.frame_rows = []
+            if feedback:
+                from .interaction import publish
+                publish(app, [], [], width, height)
             return [], []
         head = self.header(snap, app, width)
         app.body_origin = len(head)
@@ -2098,6 +2104,8 @@ class Views:
         app.tab_hits = [hit for hit in app.tab_hits if hit[0] < height - 1 and hit[1] < hit[2]]
         output = rows + [L.clip_row(self.footer(app, width), width)]
         app.frame_rows = output
+        if not feedback:
+            return output, hits
         from .interaction import publish, decorate
         publish(app, output, hits, width, height)
         return decorate(app, output), hits
@@ -2130,13 +2138,30 @@ class Views:
         from .research_views import render
         return render(self, snap, app, width, height)
 
-    def overlay(self, snap: dict, app, width: int, height: int):
+    def overlay(self, snap: dict, app, width: int, height: int, *, feedback=True):
+        app.content_overlay_rows, app.toolbar_overlay_rows = [], []
+        rows = self._overlay_content(snap, app, width, height)
+        if rows is not None and not app.content_overlay_rows and not app.toolbar_overlay_rows:
+            app.content_overlay_rows = rows
+        if rows is not None and feedback:
+            from .interaction import publish, decorate_overlays
+            publish(app, getattr(app, "frame_rows", getattr(app, "last_rows", [])),
+                    getattr(app, "last_hits", []), width, height, overlays=rows)
+            return decorate_overlays(app, rows)
+        return rows
+
+    def _overlay_content(self, snap: dict, app, width: int, height: int):
         from .workbench import overlay
         enhanced = overlay(self, snap, app, width, height)
-        if enhanced is not None:
-            from .interaction import publish, decorate_overlays
-            publish(app, getattr(app, "last_rows", []), getattr(app, "last_hits", []), width, height, overlays=enhanced)
-            return decorate_overlays(app, enhanced)
+        if enhanced is not None and app.content_overlay_rows:
+            return enhanced
+        legacy = self._legacy_overlay(snap, app, width, height)
+        if legacy is not None:
+            app.content_overlay_rows = legacy
+            return legacy + app.toolbar_overlay_rows
+        return enhanced
+
+    def _legacy_overlay(self, snap: dict, app, width: int, height: int):
         g = self.g
         if app.mode == "confirm" and app.confirm.get("action") == "submit":
             from .research import clean

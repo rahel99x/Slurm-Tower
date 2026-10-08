@@ -15,13 +15,14 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.3 |
+| Release | Tower 4.3.1 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
 [Fedora desktop setup](docs/DESKTOP.md) ·
 [Live workbench](docs/guides/live-workbench.md) ·
 [Mouse and button navigation](docs/guides/pointer-navigation.md) ·
+[Display and input performance](docs/guides/ui-performance.md) ·
 [Controls](docs/CONTROLS.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
@@ -466,6 +467,7 @@ See [Documentation style](docs/DOCUMENTATION_STYLE.md) for terminology and proce
 | Find a key, command, CLI option, or mouse action | [Controls](docs/CONTROLS.md) |
 | Use the toolbar, inline job panels, and update-rate slider | [Live workbench](docs/guides/live-workbench.md) |
 | Use hover feedback, mouse dragging, button focus, and smooth scrolling | [Mouse and button navigation](docs/guides/pointer-navigation.md) |
+| Diagnose delayed highlights or long-view scrolling | [Display and input performance](docs/guides/ui-performance.md) |
 | Find any of the 50 quality-of-life changes | [Improvement index](docs/QUALITY_OF_LIFE.md) |
 | Sort, filter, mark, and inspect table records | [Table guide](docs/guides/tables.md) |
 | Read older log content or search complete files | [Log search guide](docs/guides/log-search.md) |

@@ -568,9 +568,16 @@ def _analytics(views, snap, app, job, width, height, state):
     # A finished job without session samples must never fall back to a running
     # job's chart. The ordinary Analytics workspace keeps its own cycling list.
     scoped_views.analytics_jobs = lambda current, target: [job.id]
+    narrow_advisor = width < 120 and state["analytics_view"] == "advisor"
+    if narrow_advisor:
+        # The native table and the vertical cards need the same aggregation.
+        # Building the clipped table before replacing it doubled the work over
+        # the entire accounting history on every scrolling frame.
+        scoped_views.analytics_advisor = lambda current, target, target_width, avail, days: _analytics_cards(
+            views, current, target, None, width=target_width)
     rows, hits = scoped_views.analytics_tab(snap, proxy, width, MAX_ROWS)
     nav_rows = getattr(proxy, "analytics_nav_rows", 1)
-    if width < 120 and state["analytics_view"] in ("advisor", "compare"):
+    if width < 120 and state["analytics_view"] == "compare":
         rows = rows[:nav_rows + 1] + _analytics_cards(views, snap, proxy, rows[nav_rows + 1:])
     scope = "selected job" if state["analytics_view"] == "job" else "selected job + comparison set" if state["analytics_view"] == "compare" else "accounting window"
     content = [[(clean(f" Job {job.id} / {job.name} / {scope}", views.g.ascii), "cyan+bold")]] + rows[nav_rows:]
@@ -581,7 +588,7 @@ def _analytics(views, snap, app, job, width, height, state):
     return content[:MAX_ROWS], actions
 
 
-def _analytics_cards(views, snap, proxy, body):
+def _analytics_cards(views, snap, proxy, body, *, width=120):
     """Keep every requested/measured value when a wide table cannot fit."""
     from . import advisor, clock
     from .model import human, hms, secs, stamp
@@ -590,10 +597,19 @@ def _analytics_cards(views, snap, proxy, body):
         now = clock.now()
         finished = [item for item in snap.get("finished", [])
                     if (stamp(item.end) or now) >= now - proxy.analytics_days_value() * 86400]
-        advice = advisor.advise_names(finished)
-        if not advice:
+        advice = views.history_advice_cache.names(finished)
+        if not advice and body is not None:
             return body
-        rows = body[:2]
+        if body is None:
+            days = proxy.analytics_days_value()
+            wasted = sum(item.wasted_core_hours for item in advice)
+            rows = [L.rule(views.g, width,
+                           f"advisor: what the jobs of the last {days:g} day{'s' if days != 1 else ''} should have asked for ({len(advice)} job names)"),
+                    row(f"   {wasted:.1f} core-hours spent on idle cores over the window (1 - efficiency, times core-hours); suggestions keep {int(100 * (advisor.MEM_HEADROOM - 1))}% memory headroom and {int(100 * (advisor.TIME_HEADROOM - 1))}% time headroom over the worst run", "dim")]
+        else:
+            rows = body[:2]
+        if not advice:
+            rows.append(row("   nothing finished in the window", "dim"))
         for item in advice[:128]:
             rows.append(row(f" {item.name} / {item.id} runs", "bold"))
             rows.append(row(f" Memory peak {human(item.mem_peak) if item.mem_peak else '?'} / requested {human(item.mem_req) if item.mem_req else '?'} / suggested {item.mem_suggest or 'unchanged'}"))
@@ -606,8 +622,9 @@ def _analytics_cards(views, snap, proxy, body):
         running = [item for item in snap.get("jobs", []) if not item.pending]
         if running:
             rows.append(row(" Running jobs so far", "heading+bold"))
+            by_name = views.history_advice_cache.groups(snap.get("finished", []))
             for item in running[:8]:
-                observed = advisor.advise_running(item, snap.get("live", {}).get(item.id), proxy.store.series_of(item.id), snap.get("finished", []))
+                observed = advisor.advise_running(item, snap.get("live", {}).get(item.id), proxy.store.series_of(item.id), by_name.get(item.name, ()))
                 rows.append(row(f" {item.id} / {item.name}: {observed.summary(views.g.dot) or 'nothing to change yet'}", "cyan"))
         return rows
     ids = proxy.compare_ids[:6]
@@ -708,6 +725,11 @@ def render(views, snap, app, job, width, height=None):
         layout_state(app).scroll["jobs:details"] = 0
         if state["session"]:
             state["session"].top = None
+    if getattr(app, "job_panel_defer_content", False):
+        # The queue renderer resolves selection once before the independent
+        # Details pane renders at its actual width. This placeholder neither
+        # requests data nor constructs a second copy of its source document.
+        return rows, hits
     if state["mode"] == "off":
         return rows, hits
     if job is None:
