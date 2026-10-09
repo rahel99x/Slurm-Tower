@@ -244,6 +244,10 @@ class Views:
         if running is not None and not filled:
             controls, _ = metric_live.controls(self.g, app, plot_key, width, running=running,
                                                row=row, column=column)
+        from .metric_sampling import cadence as polling_cadence, format_interval, source as polling_source
+        polling = polling_cadence(app, plot_key) if running else None
+        if polling is not None and polling_source(plot_key) != "trace":
+            options["sample_interval"] = polling
         live_window = metric_live.window(app, plot_key, now=clock.now())
         if live_window:
             options["times"] = live_window
@@ -290,7 +294,9 @@ class Views:
             timestamps = [timestamp for timestamp in sample_times or () if charts._finite(timestamp) is not None]
             age = compact(max(0.0, clock.now() - max(timestamps))) if timestamps else "unavailable"
             cadence = options.get("sample_interval")
-            note = f" Source age {age}; sampling {cadence:g}s" if cadence else f" Source age {age}"
+            note = f" Source age {age}; sampling {format_interval(cadence, ascii_=self.g.ascii)}" if cadence else f" Source age {age}"
+            if polling is not None and polling_source(plot_key) == "trace":
+                note += f"; read every {format_interval(polling, ascii_=self.g.ascii)}"
             if live_window and visible_values is not None and not any(value is not None for value in visible_values):
                 note += "; no observations in live window"
             rows.append(L.clip_row([(note, "dim")], width))

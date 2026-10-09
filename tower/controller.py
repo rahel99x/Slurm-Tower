@@ -1846,6 +1846,15 @@ class App:
         if export_active(self):
             export_mouse(self, y, x, button=button, shift=shift)
             return
+        if button == "right":
+            # Interval controls own reset gestures before generic selection
+            # clearing. A reset must preserve marked jobs and selected text.
+            from .toolbar import handle_interval_reset as toolbar_reset
+            from .metric_live import handle_mouse as live_mouse
+            if toolbar_reset(self, y, x):
+                return
+            if live_mouse(self, y, x, button=button, shift=shift):
+                return
         from .job_selection import context_click
         if button == "right":
             from .text_selection import clear as clear_text

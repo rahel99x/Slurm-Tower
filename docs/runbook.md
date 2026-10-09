@@ -97,7 +97,8 @@ The desktop profile clears configured host, user, account, and partition restric
 It uses local commands and normal identity detection.
 Cluster includes reported idle CPU-only partitions.
 Jobs samples every 2 seconds, live resources every 5 seconds, and accounting every 10 seconds.
-It disables live GPU sampling, queue forecast probes, and allocation-budget queries.
+It enables GPU sampling for detected running GPU allocations.
+Queue forecast probes and allocation-budget queries remain disabled.
 The desktop profile also uses a separate state namespace.
 Desktop preferences, log bookmarks, tags, and recorded resource samples stay separate from existing CARC state.
 See [Desktop state](DESKTOP.md#keep-desktop-state-separate) for the directory layout.
@@ -375,10 +376,12 @@ Release the mouse button before opening cancellation review with `c`.
 Check every target job ID before you confirm.
 
 The top-right update control remains available on every page.
-Press and drag its track to adjust the requested multiplier.
-Use `:rate` to inspect the multiplier and effective Jobs interval.
+Press and drag its track to adjust the fetching interval.
+Its labels show the effective Jobs polling interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
+Use `:rate` to inspect that interval.
 Use `:rate 5` to request five times the configured fetching frequency.
-Use `:rate reset` to restore 1x.
+The command accepts request factors from one to 50.
+Use `:rate reset` or right-click the update control to restore the default request.
 Source minimum intervals, timeouts, and retry backoff remain active.
 Inspect Sources for the effective cadences.
 See [Live workbench](guides/live-workbench.md) for the toolbar and complete panel controls.

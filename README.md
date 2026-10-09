@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.7.1 |
+| Release | Tower 4.8.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -29,6 +29,15 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.8.0
+
+- Each running metric has two adjacent sliders: a display window from five seconds to one millisecond, and a sampling interval control. Sampling labels show effective time intervals in seconds, milliseconds, or microseconds.
+- Right-click either slider to restore its default: five seconds for the window, or the default sampling request. The other control and graph selection stay unchanged.
+- Sampling requests apply to the exact job and source. Metrics that share a probe use the fastest requested rate. Source limits and retry backoff remain active.
+- The graph footer shows the effective sampling interval. Published application metrics and CSV traces remain limited by how often the job writes them.
+
+See [chart controls](docs/guides/charts.md#follow-a-running-metric) for mouse, keyboard, commands, and sampling limits.
 
 ## Changes in Tower 4.7.1
 
@@ -151,7 +160,8 @@ tower
 The desktop profile uses local Slurm commands and normal user detection.
 It samples Jobs every two seconds and accounting every ten seconds.
 Cluster shows reported local partitions, including idle CPU-only partitions.
-GPU sampling, forecast probes, and allocation-budget queries remain disabled.
+GPU sampling is enabled for detected running GPU allocations.
+Forecast probes and allocation-budget queries remain disabled.
 The desktop alias ignores `CARC_ACCOUNT`.
 Use `SLURM_TOWER_ACCOUNT` when you need an explicit desktop account override.
 Desktop preferences, bookmarks, tags, and recorded resource samples use separate state from CARC.
@@ -254,7 +264,7 @@ Removing one sort rule preserves the other rules.
 The toolbar occupies the first display row.
 Click its `x` control to quit.
 The top-right update control remains visible above pages and overlays.
-Press and drag its track to adjust the multiplier.
+Press and drag its track to adjust the fetching interval.
 Menu choices remain available while the pointer stays inside the dropdown.
 See [Live workbench](docs/guides/live-workbench.md) for every menu choice and slider control.
 See [Mouse and button navigation](docs/guides/pointer-navigation.md) for input procedures and terminal support.
@@ -329,11 +339,14 @@ Choose a subview and scroll its content vertically.
 Each inline view fits the available width without horizontal panning.
 See [Live workbench](docs/guides/live-workbench.md) for panel navigation and live updates.
 
-For a running job, each metric has a Live button and a time-window slider.
+For a running job, each metric has a Live button and two adjacent sliders.
 Use these controls on Analytics → Job series or Jobs → Details → Analytics → Job series.
-Set the window from five seconds to one millisecond.
+Set the first slider's window from five seconds to one millisecond.
 Live follows the current time and displays recorded observations within that window.
-The display limit does not change the source sampling interval.
+Drag the second slider to request more frequent reads for that exact job and source, subject to source limits.
+Its label shows the effective interval in `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
+Right-click the window slider to restore five seconds, or the sampling slider to restore its default request.
+Sampling requests also apply while Live is off.
 Read the source age and sampling interval when the window is empty.
 
 GPU charts show each observed device's utilization rate and its sampled-mean efficiency proxy.
@@ -557,8 +570,9 @@ Use `--no-state` to disable normal state reads and writes.
 The [configuration reference](docs/reference.md#configuration) describes every section.
 The [navigation guide](docs/guides/navigation.md) describes interactive settings and key bindings.
 
-Use the always-visible update control to request a fetching rate from 1x to 50x.
-Use `:rate N` for the equivalent command, or `:rate reset` to restore 1x.
+Use the always-visible update control to request a fetching interval.
+Its value and endpoints show time units rather than multiplier labels.
+Use `:rate N` to set its request factor from one to 50, or `:rate reset` to restore the default request.
 Source minimum intervals and retry backoff remain in effect.
 Sources shows the effective intervals.
 

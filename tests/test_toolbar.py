@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tower import layout as L, refresh_rate as R, screen, toolbar as T
+from tower import layout as L, metric_sampling as M, refresh_rate as R, screen, toolbar as T
 from tower.config import Config
 from tower.controller import App
 from tower.model import Job, Store
@@ -50,8 +50,9 @@ def test_toolbar_fits_every_width_with_nonoverlapping_exact_hits(width, rate, as
     assert all(0 <= x0 < x1 <= width and y == 0 for y, x0, x1, _, _ in app.toolbar_state["hits"])
     spans = [(x0, x1) for _, x0, x1, _, _ in app.toolbar_state["hits"]]
     assert all(left[1] <= right[0] for left, right in zip(spans, spans[1:]))
-    if width >= len(str(rate)) + 2:
-        assert str(rate) + "x" in L.row_text(row)
+    actual = M.format_interval(R.cadence(app, "jobs"), ascii_=ascii_)
+    if width >= L.vlen(actual) + 2:
+        assert actual in L.row_text(row)
     if width:
         assert target(app, "quit")[1] == 0
     if width >= 8:
@@ -152,7 +153,7 @@ def test_mouse_minus_plus_and_partial_bar_value_remain_keyboard_operable():
     assert click(app, target(app, "rate"))
     assert T.handle_key(app, "end") and R.multiplier(app) == 50
     T.render_bar(views(True), app, 8)
-    assert "50x" in L.row_text(T.render_bar(views(True), app, 8))
+    assert "500ms" in L.row_text(T.render_bar(views(True), app, 8))
     assert T.handle_key(app, "tab") and not app.toolbar_state["focus"]
 
 
@@ -634,8 +635,9 @@ def test_every_width_retains_rate_value_across_responsive_layout_thresholds():
             row = T.render_bar(views(True), app, width)
             text = L.row_text(row)
             assert L.vlen(text) == width
-            if width >= len(str(rate)) + 2:
-                assert str(rate) + "x" in text, (width, rate, text)
+            actual = M.format_interval(R.cadence(app, "jobs"), ascii_=True)
+            if width >= L.vlen(actual) + 2:
+                assert actual in text, (width, rate, text)
 
 
 def test_rate_digit_changes_keep_slider_and_menu_geometry_fixed_at_every_width():
@@ -666,6 +668,81 @@ def test_rate_crossing_ten_keeps_capture_and_drag_bounds_in_place():
     assert app.toolbar_state["dragging"]
     T.handle_mouse(app, 0, first[1], button="release")
     assert R.multiplier(app) == 1 and not app.toolbar_state["dragging"]
+
+
+@pytest.mark.parametrize("base,rate,label", [(2.0, 1, "2s"), (2.0, 3, "667ms"),
+    (2.0, 50, "500ms"), (.0005, 1, "500µs"), (.0005, 100 // 2, "500µs"),
+    (.005, 1, "5ms"), (0.0, 50, "0s")])
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_global_slider_displays_actual_safe_cadence_and_character_mode(base, rate, label, ascii_):
+    app = instance()
+    app.cfg.set("intervals", {"jobs": base})
+    R.set_multiplier(app, rate)
+    row = T.render_bar(views(ascii_), app, 100)
+    text = L.row_text(row)
+    label = label.replace("µ", "u") if ascii_ else label
+    assert label in text
+    assert f"{rate}x" not in text
+    assert L.vlen(text) == 100
+    assert any(label in item["label"] for item in T.control_descriptors(app))
+
+
+def test_toolbar_uses_live_sampler_queue_cadence_not_stale_configuration():
+    app = instance()
+    app.sampler = SimpleNamespace(intervals={"jobs": 10.0},
+                                  effective_interval=lambda source: 0.75)
+    text = L.row_text(T.render_bar(views(), app, 100))
+    assert "750ms" in text
+    reset = next(item for item in T.menu_items(app, "View") if item.key == "rate-reset")
+    assert reset.label == "Reset queue polling to 10s"
+    help_text = T._rate_help(app)
+    assert "Home 10s" in help_text and "End 500ms" in help_text
+    assert "1x" not in help_text and "50x" not in help_text
+
+
+@pytest.mark.parametrize("kind", ["track", "rate", "minus", "plus"])
+def test_global_slider_right_click_resets_without_changing_jobs_or_modal(kind):
+    app = instance()
+    app.mode = "confirm"
+    app.marks = {"41", "42"}
+    R.set_multiplier(app, 50)
+    T.render_bar(views(), app, 120)
+    assert click(app, target(app, kind), "right")
+    assert R.multiplier(app) == 1
+    assert app.mode == "confirm" and app.marks == {"41", "42"}
+    assert app.selected_id == "41" and not app.commands_seen
+    assert not app.toolbar_state["dragging"] and not app.toolbar_state["pressed"]
+    assert app.messages == ["Queue polling reset to 2s."]
+
+
+def test_global_slider_right_click_ends_drag_without_late_release_mutation():
+    app = instance()
+    T.render_bar(views(), app, 100)
+    assert click(app, target(app, "track", -1), "press")
+    assert R.multiplier(app) == 50 and app.toolbar_state["dragging"]
+    assert click(app, target(app, "track", -1), "right")
+    assert R.multiplier(app) == 1 and not app.toolbar_state["dragging"]
+    assert not T.handle_mouse(app, 10, 999, button="release")
+    assert not T.handle_mouse(app, 10, 999, button="motion")
+    assert R.multiplier(app) == 1
+
+
+@pytest.mark.parametrize("base", [0, 2, .005, .0005, 15, 9999])
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_interval_units_keep_captured_slider_geometry_fixed(base, ascii_):
+    app = instance()
+    app.cfg.set("intervals", {"jobs": base})
+    for width in (8, 20, 40, 60, 100):
+        geometry = None
+        for rate in (1, 2, 3, 10, 50):
+            R.set_multiplier(app, rate)
+            row = T.render_bar(views(ascii_), app, width)
+            assert L.vlen(L.row_text(row)) == width
+            painted = [(left, right, kind, key) for _, left, right, kind, key
+                       in app.toolbar_state["hits"] if kind in ("menu", "track", "plus", "minus")]
+            if geometry is None:
+                geometry = painted
+            assert geometry == painted
 
 
 def test_actual_curses_paint_keeps_global_bar_visible_above_tiny_confirmation(terminal_dashboard, monkeypatch):
@@ -718,6 +795,6 @@ def test_actual_curses_paint_keeps_global_bar_visible_above_tiny_confirmation(te
     # a two-row terminal. The renderer must repaint the actual global controls
     # last; this verifies the final cells, rather than only renderer call order.
     top = "".join(window.rows[0])
-    assert "File" in top and "Edit" in top and "1x" in top
+    assert "File" in top and "Edit" in top and "2s" in top
     assert top.lstrip().startswith("x")
     assert not app.command_state["confirm_controls_visible"]

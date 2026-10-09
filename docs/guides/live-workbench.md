@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Project standard](../PROJECT_STANDARD.md)
 
-Use this guide for Tower 4.3's toolbar, inline job inspection, and update-rate control.
+Use this guide for Tower 4.8's toolbar, inline job inspection, and update-rate control.
 All controls run inside the terminal.
 Use the current job ID and source path to check the identity of displayed evidence.
 
@@ -247,32 +247,33 @@ See [Mouse and button navigation](pointer-navigation.md) for mouse support and d
 
 ## Set the update rate
 
-The top-right update control requests a rate from 1x to 50x.
-At 1x, Tower uses the configured source intervals.
-Higher values request more frequent updates.
-The multiplier applies to fetching; it does not change recorded timestamps or metric values.
+The top-right update control shows the effective Jobs polling interval.
+Its value and endpoints use `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
+Move right to request shorter intervals. Move left to return toward the configured intervals.
+The control uses a bounded request factor from one to 50 internally.
+It changes fetching intervals without changing recorded timestamps or metric values.
 
 1. Click the slider track to choose a rate.
 2. Keep the left mouse button pressed and drag horizontally to adjust the rate.
-3. Click `[-]` or `[+]` to change the multiplier by one.
+3. Click `[-]` or `[+]` to change the request factor by one.
 4. Use the mouse wheel over the control for one-step changes.
-5. Click the multiplier label to focus keyboard controls.
-6. Use arrows or `-` / `+` to adjust the multiplier.
-7. Press Home for 1x or End for 50x.
+5. Click the interval label to focus keyboard controls.
+6. Use arrows or `-` / `+` to adjust the request.
+7. Press Home for the default request or End for the fastest permitted request.
 8. Press Esc to return input to the current page.
 
-**Expected result:** The multiplier label and effective source cadences update during the session.
+**Expected result:** The interval label and effective source cadences update during the session.
 View → Focus update-rate slider provides keyboard entry.
 Enter or Tab also releases slider focus.
 Release the mouse button to finish dragging.
-The pointer position stays bounded to the 1x–50x track.
+The pointer position stays inside the track.
 Use a track click or `:rate N` if the terminal cannot report drag events.
 
 | Command | Function |
 | --- | --- |
-| `:rate` | Show the requested multiplier and effective Jobs interval |
+| `:rate` | Show the effective Jobs polling interval |
 | `:rate N` | Request a whole-number multiplier from 1 to 50 |
-| `:rate reset` | Restore 1x |
+| `:rate reset` | Restore the default request factor of one |
 
 For example, `:rate 5` requests a Jobs interval of two seconds from a ten-second base interval.
 The same multiplier applies to scheduler sources, plugin sources, and supported file readers.
@@ -289,19 +290,47 @@ Tower keeps each base interval unchanged, so repeated adjustments do not compoun
 | Remote file readers | 1.5 seconds |
 
 An explicitly configured base interval below a minimum keeps its existing faster interval.
-At 1x, every source retains its configured base interval.
+At the default request factor, every source retains its configured base interval.
 Source errors retain their existing retry backoff.
 A higher multiplier does not start overlapping reads or increase the worker count.
 Disabled sources remain disabled.
 
 Sources shows effective fetching intervals.
 Use that page to verify the actual cadence.
-The requested multiplier can exceed the speed permitted by a source's minimum interval.
+The requested factor can exceed the speed permitted by a source's minimum interval.
+Several slider positions can therefore show the same effective interval.
 The preference persists with normal UI state and follows the selected state namespace.
 Use the top-level `polling_multiplier` configuration field to set a launch default.
 A valid saved multiplier overrides that default.
 Use `tower --rate N` to override the saved multiplier at launch.
-Use `:rate reset` to restore 1x in the active session.
+Use `:rate reset` to restore the default request in the active session.
+
+### Set one metric's interval
+
+A running metric has a display-window slider and a separate polling slider.
+Use them on Analytics → Job series or Jobs → Details → Analytics → Job series.
+The first sets a window from five seconds to one millisecond.
+The second requests faster reads for that exact job and source, using factors from one to 100 internally.
+It shows effective time intervals rather than multiplier labels.
+
+Right-click the first slider to restore five seconds.
+Right-click the second to restore its default sampling request.
+These resets preserve the other slider, Live state, graph zoom, and job selection.
+Sampling requests apply while Live is off and can remain active after the graph moves offscreen.
+They reset when Tower restarts or the exact job attempt ends.
+
+The per-metric request combines with the global request from the configured base interval.
+CPU and memory share one job probe. GPU curves share another.
+The fastest request for a shared probe applies; other jobs retain their own requests.
+A per-metric GPU request permits intervals down to one second, while the global control alone keeps its five-second GPU limit.
+Ordinary live probes retain a half-second minimum.
+Application file reads retain a quarter-second local minimum or a 1.5-second remote minimum.
+Command duration and retry backoff still apply.
+
+The sampling control changes how often Tower reads an application metrics file or CSV trace.
+It cannot increase how often the producing job writes that file.
+Read the effective polling interval and source age below the graph before interpreting an empty window.
+See [Charts](charts.md#follow-a-running-metric) for commands, keyboard controls, and limits.
 
 ## Use the terminal toolbar
 
@@ -333,7 +362,7 @@ Unavailable choices appear dimmed.
 Their activation reports the required job, project, file, or page context.
 Close an unfinished job-action review before starting another reviewed action.
 The toolbar remains above overlays.
-On narrow terminals, it abbreviates menu labels and compresses the slider to its multiplier.
+On narrow terminals, it abbreviates menu labels and compresses the slider to its interval label.
 F10 keeps all four menus accessible.
 Move the pointer over a menu choice to highlight it without activating it.
 Direct choices leave the dropdown open while the pointer remains inside it.
@@ -426,8 +455,8 @@ See [Tables](tables.md), [Log display](log-view.md), and [Navigation](navigation
 | Pause / follow current log | Change follow mode on the full Logs page |
 | Wrap / unwrap current log | Change wrapping on the full Logs page |
 | Refresh all sources now | Request an immediate source refresh |
-| Focus update-rate slider | Focus the multiplier's keyboard controls |
-| Reset update rate to 1x | Restore the configured base fetching intervals |
+| Focus update-rate slider | Focus the polling control's keyboard controls |
+| Reset queue polling to INTERVAL | Restore the default global fetching request; the label shows the resulting Jobs interval |
 | Navigate buttons with arrow keys (F8) | Focus visible buttons and links for directional navigation |
 | Enable / Disable smooth scrolling | Toggle mouse-wheel viewport smoothing |
 | Enable / Disable startup animation | Toggle the interactive welcome display |

@@ -109,14 +109,17 @@ See [Graph interaction](charts.md#zoom-a-time-interval) for keyboard commands, s
 
 1. Press the left mouse button on the top-right slider track.
 2. Keep the button pressed and move the pointer horizontally.
-3. Release the button at the required multiplier.
+3. Release the button at the required interval.
 
-**Expected result:** The multiplier follows the pointer between 1x and 50x.
+**Expected result:** The label follows the effective Jobs polling interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
+With default configuration, the endpoints are two seconds and 500 milliseconds.
 Dragging changes the requested fetching rate during the session.
 It keeps source minimum intervals and retry backoff.
+Right-click the update control to restore its default request without clearing the selected job or lines.
 
 Use a direct track click when the terminal does not report dragging.
 Use the wheel, `[-]` and `[+]`, or `:rate N` for exact one-step or numeric control.
+The command accepts request factors from one to 50; the visible control shows intervals.
 See [Update rate](live-workbench.md#set-the-update-rate) for source limits and saved preferences.
 
 ## Resize a panel by dragging

@@ -3,9 +3,9 @@
 Tower draws charts with terminal characters.
 Unicode curves use continuous Braille strokes with two horizontal and four vertical positions per cell.
 ASCII curves use directional strokes. Filled area graphs retain their block presentation.
-Both modes use the
-same samples, time windows, and scale limits. No chart control starts a job or
-requests extra scheduler data.
+Both modes use the same samples, time windows, and scale limits.
+Chart display controls do not change source data.
+The separate polling control requests more frequent background measurements for an existing running job.
 
 ## Open a chart
 
@@ -70,39 +70,64 @@ Use `:terminaltest` when movement reports are missing.
 
 ## Follow a running metric
 
-A running job can show a Live control and a time-window slider above each metric.
-Each metric has its own setting. A curve and its filled companion share one setting.
+A running job can show a Live control and two adjacent sliders above each metric.
+The first slider selects the display window. The second selects the sampling interval.
+Each metric has its own request. A curve and its filled companion share the same controls.
 
 1. Open the exact running job's metric view.
 2. Click **Live off** to enable Live.
-3. Drag the slider toward the left for five seconds, or toward the right for one millisecond.
-4. Read the duration beside the toggle. Wider rows label it `Δ`, or `dt` in ASCII mode.
-5. Click **Live ON** to return to the ordinary retained view.
+3. Drag the first slider toward the left for five seconds, or toward the right for one millisecond.
+4. Read the duration beside the toggle. Wider rows label the first slider **Delta**.
+5. Drag the second slider to request the required sampling interval. Left restores the default request; right requests faster reads.
+6. Read the effective polling interval beside that slider and below the graph.
+7. Click **Live ON** to return to the ordinary retained view.
 
 **Expected result:** Live displays the interval from the dashboard's current time minus the chosen duration to its current time.
 The slider uses logarithmic steps between `5s` and `1ms`.
 Subsecond axes show fractional seconds in their timestamp labels.
 Selected time intervals use relative offsets with adaptive `s`, `ms`, or `us` units and an exact start-time anchor.
 Labels use available terminal space and do not imply a finer source cadence.
-Each metric retains its own duration. A completed job has no active Live control.
-The control row needs at least 24 available terminal columns.
-Compact rows use `○ Live` and `● Live`, or `o Live` and `+ Live` in ASCII mode.
-The empty symbol is off; the filled symbol is on. Both slider endpoints remain labelled.
+Each metric retains its own duration and sampling request. A completed job has no active Live or polling controls.
+Control rows adapt to the available terminal width.
+Compact rows use `○` and `●`, or `o` and `+` in ASCII mode.
+The empty symbol is off; the filled symbol is on.
+The polling value and endpoints show effective time intervals in `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
+An interval label describes a polling request. It does not establish the spacing of measurements produced by the job.
 
 Select the slider with the mouse or directional button focus.
-Use Left and Right for one slider step, Page Up and Page Down for five steps,
-Home for five seconds, and End for one millisecond.
+Use Left and Right for one slider step, Page Up and Page Down for larger steps,
+Home for the left endpoint, and End for the right endpoint.
+The window endpoints are five seconds and one millisecond.
+The polling endpoints are the default request and the fastest permitted request.
 Press Enter or Esc to leave slider focus.
-Press Esc during a drag to restore its previous duration.
+Press Esc during a drag to restore that slider's previous value.
 A page, source, geometry, or terminal-size change also discards an unfinished drag.
+Right-click the window slider to restore five seconds.
+Right-click the polling slider to restore the default sampling request.
+Each reset preserves the other slider, Live state, selected job, and graph zoom.
+Right-click inside the graph retains its separate full-view reset behavior.
 
 The control graph assigns a temporary token such as `m1` to each visible source.
-Use `:metric-live TOKEN on|off|toggle` and `:metric-window TOKEN SECONDS`
-with that visible token, or `:metric-window TOKEN focus` for keyboard adjustment.
-Tokens are session controls, not project metric IDs. Commands reject a hidden or nonrunning source.
-Live preferences do not survive a restart.
+Use these commands with that visible token:
 
-Live changes the displayed interval. It does not increase Slurm polling or create measurements.
+| Command | Function |
+| --- | --- |
+| `:metric-live TOKEN on\|off\|toggle` | Change the moving display window state |
+| `:metric-window TOKEN SECONDS` | Set a duration from 0.001 to 5 seconds |
+| `:metric-window TOKEN focus` | Focus the window slider |
+| `:metric-window TOKEN reset` | Restore a five-second window |
+| `:metric-sampling TOKEN N` | Set a whole-number sampling request factor from 1 to 100 |
+| `:metric-sampling TOKEN focus` | Focus the polling slider |
+| `:metric-sampling TOKEN reset` | Restore the default request factor of one |
+
+Tokens are session controls, not project metric IDs. Commands reject a hidden or nonrunning source.
+Previously set sampling requests remain active when their graphs move offscreen.
+They belong to the exact job, source, and run attempt; completion, departure, or a changed attempt invalidates them.
+Tower retains at most 128 metric identities. An evicted request returns to its default.
+Live and sampling preferences do not survive a restart.
+
+Live and the first slider change only the displayed interval.
+The polling slider changes background read requests even when Live is off.
 The Live clock requests at most ten scheduled display refreshes per second while an uncaptured Live plot is visible.
 Input and scrolling animations can request other display refreshes.
 A one-millisecond window can therefore contain no recorded observations.
@@ -119,6 +144,35 @@ Automatic sample updates and changing data limits do not cancel the drag.
 Cancelling the selection resumes Live.
 Committing a valid time selection turns Live off and keeps its selected interval.
 Enabling Live again clears that metric's completed rectangular zoom.
+
+### Read the sampling limits
+
+The polling slider uses a request factor from one to 100 internally.
+Tower combines that request with the top-right global update setting using the configured base interval.
+Repeated adjustments do not compound or change the configured base.
+The display shows the effective interval after source limits are applied.
+
+| Source | Minimum interval for a faster metric request |
+| --- | --- |
+| Live CPU and memory probe | 0.5 seconds |
+| Live GPU probe | 1 second |
+| Local application metrics or CSV traces | 0.25 seconds |
+| Remote application metrics or CSV traces | 1.5 seconds |
+
+CPU and memory measurements share one job probe, so the fastest request for either metric sets that probe's interval.
+GPU utilization and busy-mean curves share a GPU probe and use their fastest request.
+The request does not speed up another job.
+Reported application metrics can share a file reader; their fastest request sets the reader's interval for that exact run.
+Reading that file more often cannot make the application write measurements more often.
+The same limit applies to job-produced CSV traces.
+
+An explicitly configured base interval below a minimum retains its existing faster interval.
+The global control alone retains its existing five-second GPU minimum.
+A per-metric GPU request can lower that minimum to one second.
+Source errors retain retry backoff. Command duration, worker limits, and disabled-source settings still apply.
+Tower does not overlap reads to meet a shorter requested interval.
+The graph footer reports the effective polling interval, source age, and any relevant producer limits.
+Missing observations stay gaps. A short display window can be empty even when polling is enabled.
 
 <a id="zoom-a-rectangular-area"></a>
 
@@ -366,7 +420,7 @@ temporary sample interval after a restart.
 - Plot dimensions are limited to 2,048 terminal columns and 128 rows.
 - The interaction registry holds at most 96 plots in one published frame.
 - Rectangular zoom retains at most 128 source keys and 16 undo steps per key.
-- Live retains at most 128 metric identities and uses only visible running-source controls.
+- Live and sampling requests retain at most 128 exact metric identities. Controls act on visible running sources; accepted sampling requests can remain active offscreen.
 - Unknown and nonfinite values remain gaps. A measured zero remains a value.
 - Sampling outages remain visible after zooming or compression.
 - No rendering path loads a metric file or queries the scheduler.
@@ -474,31 +528,58 @@ The helper's general default does not delay whole-cell pointer movement.
 ### `tower.metric_live`
 
 This layer uses published exact-job status and chart geometry.
-It changes display state without source reads or scheduler requests.
+It changes display state and publishes bounded polling requests without performing source reads or scheduler I/O.
 A filled companion uses the same canonical identity as its resource curve.
 
 | Method | Purpose and result |
 | --- | --- |
-| `initialize(app)` | Create bounded, transient per-metric duration and control state. |
+| `initialize(app)` | Create bounded, transient per-metric duration, polling, and control state. |
 | `canonical(identity)` | Share a resource area's Live identity with its source curve. |
 | `fraction(delta)`, `delta_at(value)` | Convert between durations and the logarithmic slider position. |
 | `format_delta(value)` | Format the duration in seconds or milliseconds. |
+| `rate_fraction(value)`, `rate_at(value)` | Convert between integer sampling request factors and the second slider's linear position. |
 | `set_running(app, identity, running)` | Publish exact source eligibility and stop a finished source. |
 | `window(app, identity, now=None)` | Return the active display interval, or the captured plot's fixed mapping. |
 | `enabled(app, identity)` | Check that Live is enabled for the current running source. |
 | `set_enabled(app, identity, value)` | Toggle Live and clear its rectangular zoom when enabling it. |
 | `stop_for_zoom(app, identity)` | Stop Live after a valid rectangular zoom. |
 | `set_delta(app, identity, value)` | Set a finite duration from 0.001 to 5 seconds. |
+| `set_rate(app, identity, value)` | Set an integer request factor from one to 100 and publish the changed background sampling demand. |
 | `controls(g, app, identity, width, ...)` | Render and stage the running metric's control row. |
 | `publish(app, records)` | Freeze controls after final layout transformation. |
-| `descriptors(app)` | Return visible toggle and slider actions for the control graph. |
-| `active(app)`, `cancel(app)`, `tick(app, now=None)` | Check capture, restore a cancelled duration, and reject stale capture. |
-| `handle_mouse(app, y, x, button="left", shift=False)` | Handle the toggle and slider press, drag, and release. |
+| `descriptors(app)` | Return visible toggle and both slider actions for the control graph. |
+| `active(app)`, `cancel(app)`, `tick(app, now=None)` | Check capture, restore the captured slider's cancelled value, and reject stale capture. |
+| `handle_mouse(app, y, x, button="left", shift=False)` | Handle the toggle, both slider gestures, and each slider's right-click reset. |
 | `handle_key(app, key)` | Apply keyboard slider steps and cancellation. |
-| `command_names()`, `run_command(app, args)` | Expose and apply temporary-token Live and duration commands. |
+| `command_names()`, `run_command(app, args)` | Expose and apply temporary-token Live, duration, and sampling commands. |
 | `document_revision(app)`, `document_interval(app)` | Report changed display state and the active display-refresh deadline. |
 | `feedback(app, g)` | Return the small control-row overlay between document refreshes. |
 | `overlay(views, snap, app, width, height)` | Return no full modal overlay. |
+
+### `tower.metric_sampling`
+
+This layer maps exact metric identities to shared background collectors.
+Its validation and interval calculations perform no scheduler or file I/O.
+
+| Method | Purpose and result |
+| --- | --- |
+| `validate_rate(value)` | Validate an integer request factor from one to 100. Reject Boolean, nonfinite, and fractional values. |
+| `interval(base, global_rate=1, metric_rate=1, ...)` | Apply global and metric requests once to the original base interval, with the source's lower limit. |
+| `format_interval(value, ascii_=False)` | Format seconds, milliseconds, or microseconds; return `?` for an invalid interval. |
+| `source(identity)` | Map a metric to its live resource, GPU, trace, or application-file collector. |
+| `attempt(job)`, `matches(identity, job)` | Identify and validate the exact running scheduler attempt. |
+| `research_matches(identity, context)` | Validate a reported metric's exact job, project, run, and published generation. |
+| `sync(app)` | Publish a bounded replacement request snapshot to the background collectors when demands change. |
+| `cadence(app, identity, rate=None)` | Return the effective shared collector interval, or an endpoint interval for a supplied request factor. |
+
+`Sampler.set_metric_sampling(requests)` validates and replaces at most 128 exact metric requests.
+`Sampler.sampling_interval(name, jid, attempt=None)` returns the safe interval for one job's shared source.
+The sampler schedules those probes separately from jobs that have no faster request.
+
+`ResearchHub.set_metric_sampling(requests)` replaces bounded application-file requests.
+`ResearchHub.refresh_interval(context=None)` returns the interval for the current exact run context.
+`ResearchHub.sampling_interval(identity)` reports that run's shared file-reader interval.
+These methods change requests without reading files immediately.
 
 ### `tower.analysis_ui`
 

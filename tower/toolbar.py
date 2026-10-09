@@ -41,6 +41,47 @@ def initialize(app):
     return state
 
 
+def _polling_base(app):
+    """Read the queue cadence without source work or changing its settings."""
+    sampler = getattr(app, "sampler", None)
+    intervals = getattr(sampler, "intervals", None)
+    if not isinstance(intervals, dict):
+        cfg = getattr(app, "cfg", None)
+        intervals = cfg.get("intervals", {}) if cfg else {}
+    return intervals.get("jobs", 2.0)
+
+
+def _polling_label(app, value=None, *, ascii_=None):
+    from . import refresh_rate
+    from .metric_sampling import format_interval, interval
+    if ascii_ is None:
+        cfg = getattr(app, "cfg", None)
+        ascii_ = initialize(app).get("ascii", cfg.get("ascii", False) if cfg else False)
+    seconds = (refresh_rate.cadence(app, "jobs") if value is None else
+               interval(_polling_base(app), value, metric_rate=1, source="jobs"))
+    return format_interval(seconds, ascii_=ascii_)
+
+
+def _polling_field_width(app, ascii_):
+    """Keep capture geometry stable as interval labels change their units."""
+    state = initialize(app)
+    token = (_polling_base(app), bool(ascii_))
+    cached = state.get("polling_label_width")
+    if cached is None or cached[0] != token:
+        # Compute only when configuration or character mode changes. Labels
+        # between the endpoints can need more cells than either endpoint.
+        size = max(L.vlen(_polling_label(app, value, ascii_=ascii_)) for value in range(1, 51))
+        cached = (token, max(3, size))
+        state["polling_label_width"] = cached
+    return cached[1]
+
+
+def _rate_help(app):
+    slowest, fastest = _polling_label(app, 1), _polling_label(app, 50)
+    return (f"Update slider: arrows change one step; Home {slowest}; End {fastest}; "
+            f"right-click resets to {slowest}; Esc returns.")
+
+
 def command_names():
     return ["menu", "about"]
 
@@ -129,7 +170,7 @@ def menu_items(app, menu):
             Item("wrap", "Wrap / unwrap current log", "wrap", context="log"),
             Item("refresh", "Refresh all sources now", "refresh"),
             Item("rate", "Focus update-rate slider", local="rate"),
-            Item("rate-reset", "Reset update rate to 1x", "rate reset"),
+            Item("rate-reset", "Reset queue polling to " + _polling_label(app, 1), "rate reset"),
             Item("smooth-scroll", "Disable smooth scrolling" if smoothscroll_enabled(app) else "Enable smooth scrolling", "smoothscroll toggle"),
             Item("startup-toggle", "Disable startup animation" if startup_enabled(app) else "Enable startup animation", "startup toggle"),
             Item("startup-preview", "Preview startup animation", "startup preview"),
@@ -183,11 +224,11 @@ def _open(app, menu=0, source="keyboard"):
                            menu_rect=None, menu_source=source, menu_disabled={}, drag_width=None)
 
 
-def _rate(app, value=None, delta=None):
+def _rate(app, value=None, delta=None, *, announce=True):
     from . import refresh_rate
     before = refresh_rate.multiplier(app)
     after = refresh_rate.adjust(app, delta) if delta is not None else refresh_rate.set_multiplier(app, value)
-    if before != after:
+    if announce and before != after:
         app.say(refresh_rate.cadence_summary(app))
     return after
 
@@ -212,7 +253,7 @@ def _activate(app, item):
     elif action == "rate":
         _close(app)
         initialize(app)["focus"] = "rate"
-        app.say("Update slider: Left/Right changes 1x; Home 1x; End 50x; Esc returns.")
+        app.say(_rate_help(app))
     elif action == "clear-selection":
         from .text_selection import clear
         clear(app)
@@ -245,10 +286,11 @@ def render_bar(views, app, width, y=0):
         # Resize changes the coordinate space. Cancel capture instead of
         # interpreting an old terminal coordinate against a newly moved track.
         state.update(dragging=False, drag_width=None)
-    state.update(width=width, bar_y=y, hits=[])
+    state.update(width=width, bar_y=y, hits=[], ascii=bool(views.g.ascii))
     if width == 0:
         return []
-    value = str(refresh_rate.multiplier(app)) + "x"
+    value = _polling_label(app, ascii_=views.g.ascii)
+    field_width = _polling_field_width(app, views.g.ascii)
     row = []
     x = 0
 
@@ -273,10 +315,11 @@ def render_bar(views, app, width, y=0):
             append(" " * (width - x))
         return row
     forms = [(" x ", [" File ", " Edit ", " View ", " Help "]),
-             ("x", [" F ", " E ", " V ", " H "]), ("x", [" M "])]
-    # Reserve the widest value (50x) before choosing a responsive menu form.
+             ("x", [" F ", " E ", " V ", " H "]), ("x", [" M "]),
+             ("x", ["M"])]
+    # Reserve the widest effective interval before choosing a menu form.
     # Changing the requested rate must never move menu labels or the track.
-    minimum_slider = 4 + (9 if width >= 30 else 0)
+    minimum_slider = field_width + 1 + (9 if width >= 44 else 0)
     quit_label, labels = next((form for form in forms if len(form[0]) + sum(map(len, form[1])) <= width - minimum_slider), forms[-1])
     append(quit_label, "danger+bold+bg:surface-raised", "quit")
     for index, label in enumerate(labels):
@@ -294,10 +337,10 @@ def render_bar(views, app, width, y=0):
     elif width - x >= 4 + minimum_slider:
         append(" [C]" if destination == "copy" else " [Y]", "accent+bold+bg:surface-sunken", "copy-mode")
     space = width - x
-    rate_field = value.rjust(3)
+    rate_field = value.rjust(field_width)
     if space < len(rate_field) + 14:
         append(" " * max(0, space - len(value) - 1))
-        append(" " + value, "accent+bold+bg:surface-sunken" if state["focus"] == "rate" else "accent+bold+bg:surface-raised", "rate")
+        append((" " if space > len(value) else "") + value, "accent+bold+bg:surface-sunken" if state["focus"] == "rate" else "accent+bold+bg:surface-raised", "rate")
         return row
     caption = " Updates " if space >= 27 else " "
     suffix = " [+] " + rate_field + " "
@@ -380,6 +423,17 @@ def _menu_corridor(state, y, x):
     return bool(labels and y == state["bar_y"] and labels[0][1] <= x < labels[-1][2])
 
 
+def handle_interval_reset(app, y, x):
+    """Claim only a right-click on a published polling control."""
+    state = getattr(app, "toolbar_state", {})
+    if not isinstance(state, dict):
+        return False
+    if not any(hit[0] == y and hit[1] <= x < hit[2]
+               and hit[3] in ("track", "rate", "minus", "plus") for hit in state.get("hits", ())):
+        return False
+    return handle_mouse(app, y, x, button="right")
+
+
 def handle_mouse(app, y, x, button="left", shift=False):
     state = initialize(app)
     if button == "release":
@@ -428,6 +482,14 @@ def handle_mouse(app, y, x, button="left", shift=False):
         state["pressed"] = bool(hit or state["menu"] is not None or state["panel"])
     if hit:
         kind, key = hit[3:]
+        if button == "right" and kind in ("track", "rate", "minus", "plus"):
+            # A reset ends an in-flight drag and never falls through to job
+            # deselection or the underlying modal.
+            _close(app)
+            state["pressed"] = False
+            _rate(app, 1, announce=False)
+            app.say("Queue polling reset to " + _polling_label(app) + ".")
+            return True
         if button in ("wheel-up", "wheel-down"):
             if kind in ("track", "rate", "minus", "plus"):
                 _close(app)
@@ -462,7 +524,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
                 state["dragging"] = button == "press"
                 state["drag_width"] = state["width"] if state["dragging"] else None
             else:
-                app.say("Update slider: Left/Right changes 1x; Home 1x; End 50x; Esc returns.")
+                app.say(_rate_help(app))
         return True
     if state["menu"] is not None:
         if button in ("wheel-up", "wheel-down"):
@@ -501,6 +563,10 @@ def control_descriptors(app):
     controls = []
     track = []
     rate_hits = [hit for hit in state["hits"] if hit[3] == "rate"]
+    polling_label = _polling_label(app)
+    labels = {"quit": "Quit", "rate": "Queue polling: " + polling_label,
+              "minus": "Increase polling interval", "plus": "Decrease polling interval",
+              "copy-mode": "Switch clipboard copy / editor yank"}
     for y, left, right, kind, key in state["hits"]:
         if kind == "track":
             track.append((y, left, right))
@@ -509,12 +575,12 @@ def control_descriptors(app):
             # The descriptive Updates caption invokes the same rate focus as
             # the value; it does not need a duplicate keyboard focus stop.
             continue
-        label = MENUS[key] if kind == "menu" else {"quit": "Quit", "rate": "Update rate", "minus": "Decrease update rate", "plus": "Increase update rate", "copy-mode": "Switch clipboard copy / editor yank"}.get(kind, kind)
+        label = MENUS[key] if kind == "menu" else labels.get(kind, kind)
         controls.append(dict(id="toolbar:" + kind + (":" + str(key) if key is not None else ""),
                              label=label, rect=(y, left, y + 1, right),
                              action=(kind, key), disabled=False, reason=""))
     if track:
-        controls.append(dict(id="toolbar:track", label="Update rate slider",
+        controls.append(dict(id="toolbar:track", label="Queue polling slider: " + polling_label,
                              rect=(track[0][0], track[0][1], track[-1][0] + 1, track[-1][2]),
                              action=("track", None), disabled=False, reason=""))
     if state["menu"] is not None:
@@ -537,10 +603,10 @@ def _about_lines(app):
         [(" Menus: F10; Left/Right changes menu; Up/Down chooses; Enter opens.", "text")],
         [(" Mouse menus stay open for repeated choices; move outside or Esc closes.", "text")],
         [(" Slider: click or drag the track; +/- or wheel changes one step.", "text")],
-        [(" Slider focus: arrows adjust; Home sets 1x; End sets 50x; Esc returns.", "text")],
+        [(" " + _rate_help(app), "text")],
         [(" " + refresh_rate.cadence_summary(app), "warning")],
         [(" Faster polling retains source minimum intervals and error backoff.", "dim")],
-        [(" 50x requests a shorter source interval; it does not speed up jobs.", "dim")],
+        [(" Shorter polling intervals update observations; job execution is unchanged.", "dim")],
         [(" Menu browsing never submits, cancels, or changes a scheduler job.", "dim")],
         [(" Parameterized actions open an editable command before execution.", "dim")],
         [(" Project run conventions: docs/PROJECT_STANDARD.md in the repository.", "dim")],
@@ -553,7 +619,7 @@ def overlay(views, snap, app, width, height):
     state = initialize(app)
     if state["menu"] is None and not state["panel"]:
         return None
-    state.update(menu_hits=[], menu_rect=None, menu_disabled={})
+    state.update(menu_hits=[], menu_rect=None, menu_disabled={}, ascii=bool(views.g.ascii))
     width, capacity = max(0, int(width)), max(0, int(height) - 1)
     if width == 0 or capacity == 0:
         return []

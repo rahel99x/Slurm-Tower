@@ -90,10 +90,11 @@ def test_wheel_cancels_chart_and_live_previews_before_scrolling_and_preserves_po
     app, _, _, hits = dashboard
     y, x = content_cell(app)
     app.chart_interaction_state["capture"] = {"preview": "uncommitted"}
-    identity = ("resource-series", "900", "cpu-rate", "%", "attempt")
+    identity = ("resource-series", "900", "cpu-rate", "%", "|")
     live = M.initialize(app)
-    live["entries"][identity] = {"delta": .01}
-    live["capture"] = {"control": SimpleNamespace(key=identity), "original": 5.0}
+    entry = M.set_running(app, identity, True)
+    assert M.set_delta(app, identity, .01)
+    live["capture"] = {"control": SimpleNamespace(key=identity, token=entry["token"]), "original": 5.0}
     app.interaction_state.update(active=True, focused="job:900")
     wheel(app, hits, y, x)
     assert app.chart_interaction_state["capture"] is None

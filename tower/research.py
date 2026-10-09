@@ -80,6 +80,7 @@ class ResearchHub:
         self.closed = False
         self.cache = OrderedDict()
         self.generation = 0
+        self.metric_sampling = {}
         self.reader = None
         self.plan = None
         self.passport = None
@@ -97,6 +98,7 @@ class ResearchHub:
         with self.lock:
             self.settings.update(values)
             self.generation += 1
+            self.metric_sampling.clear()
             self.cache.clear()
             self.planning_source = None
             self.planning_choices = None
@@ -107,9 +109,36 @@ class ResearchHub:
         with self.lock:
             self.polling_multiplier = value
 
-    def refresh_interval(self):
-        from .refresh_rate import file_interval
-        return file_interval(self.interval, self.polling_multiplier, remote=bool(getattr(self.files, "remote", False)))
+    def set_metric_sampling(self, requests):
+        """Replace bounded metric-file polling demands without starting reads."""
+        from .metric_sampling import MAX_REQUESTS, source, validate_rate
+        accepted = {}
+        if not isinstance(requests, dict) or len(requests) > MAX_REQUESTS:
+            raise ValueError("Metric sampling requests must be a bounded dictionary")
+        for identity, value in requests.items():
+            rate = validate_rate(value)
+            if source(identity) == "research" and len(identity) == 8 and identity[7] == self.generation and rate > 1:
+                accepted[identity] = rate
+        with self.lock:
+            self.metric_sampling = accepted
+
+    def refresh_interval(self, context=None):
+        from .metric_sampling import interval, research_matches
+        with self.lock:
+            rate = max((value for identity, value in self.metric_sampling.items()
+                        if context and context.get("view") == "experiment" and research_matches(identity, context)), default=1)
+            return interval(self.interval, self.polling_multiplier, rate, source="research", file=True,
+                            remote=bool(getattr(self.files, "remote", False)))
+
+    def sampling_interval(self, identity):
+        """Display the shared file-reader cadence, separate from producer timing."""
+        from .metric_sampling import interval
+        with self.lock:
+            rate = max((value for key, value in self.metric_sampling.items()
+                        if key[1] == identity[1] and key[4:] == identity[4:]
+                        and key[7] == self.generation), default=1)
+            return interval(self.interval, self.polling_multiplier, rate, source="research", file=True,
+                            remote=bool(getattr(self.files, "remote", False)))
 
     def start_task(self, fn, completion):
         """Explicit UI commands share the single worker, without an unbounded queue."""
@@ -191,7 +220,7 @@ class ResearchHub:
                 if self.pending:
                     return self.current(context)
                 entry = self.cache.get(self._key(context))
-                if not force and entry and time.monotonic() - entry[0] < self.refresh_interval():
+                if not force and entry and time.monotonic() - entry[0] < self.refresh_interval(context):
                     self.cache.move_to_end(self._key(context))
                     return entry[1]
                 if self.future is None or self.future.done():

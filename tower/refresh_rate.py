@@ -136,7 +136,8 @@ def cadence(app, source, base=None):
 
 
 def cadence_summary(app):
-    return (f"Update rate {multiplier(app)}x; jobs every {cadence(app, 'jobs'):g}s; "
+    from .metric_sampling import format_interval
+    return (f"Jobs poll every {format_interval(cadence(app, 'jobs'), ascii_=True)}; "
             "source floors and error backoff still apply")
 
 

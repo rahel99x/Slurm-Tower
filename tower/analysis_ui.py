@@ -373,7 +373,7 @@ def _highlight_interval(rows, width, height, selected, times, ascii_=False, plot
     return output
 
 
-def _source_row(g, source, metadata):
+def _source_row(g, source, metadata, *, app=None, identity=None):
     latest, visible, total, gaps, *extra = metadata
     age = clock.now() - latest if latest is not None else None
     stamp = "latest " + short_duration(abs(age) if _finite(age) else None) + (" ahead of clock" if _finite(age) and age < 0 else " ago")
@@ -381,7 +381,15 @@ def _source_row(g, source, metadata):
     if extra:
         from .metric_live import format_delta
         cadence = " | observed cadence " + (format_delta(extra[0]) if _finite(extra[0]) else "unknown")
-    return [(clean(f" Source: {source} | {visible}/{total} samples | {stamp} | gaps {gaps}{cadence}", g.ascii), "dim")]
+    polling = ""
+    if app is not None and identity is not None:
+        from . import metric_live, metric_sampling
+        if metric_live._eligible(app, metric_live.canonical(identity)):
+            seconds = metric_sampling.cadence(app, identity)
+            if seconds is not None:
+                kind = "read every" if metric_sampling.source(identity) == "research" else "poll every"
+                polling = " | " + kind + " " + metric_sampling.format_interval(seconds, ascii_=g.ascii)
+    return [(clean(f" Source: {source} | {visible}/{total} samples | {stamp} | gaps {gaps}{cadence}{polling}", g.ascii), "dim")]
 
 
 def _card_value(value):
@@ -486,7 +494,7 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
             metadata.clear()
             metadata.update(entry["plot_metadata"])
             metadata["key"] = zoom_key
-        return [list(row) for row in entry["rows"]] + [_source_row(g, source, entry["metadata"])]
+        return [list(row) for row in entry["rows"]] + [_source_row(g, source, entry["metadata"], app=app, identity=zoom_key)]
     full = sorted(({"t": timestamp, "value": -0.0 if value is _NEGATIVE_ZERO else value, "step": None}
                    for timestamp, value in content), key=lambda point: point["t"])
     cache_metadata, plot_metadata = {}, {}
@@ -610,7 +618,7 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
     metadata = (full[-1]["t"] if full else None, len(visible), len(full), gaps + outages)
     if live_window:
         metadata += (cadence,)
-    rows.append(_source_row(g, source, metadata))
+    rows.append(_source_row(g, source, metadata, app=app, identity=zoom_key))
     if cache_metadata is not None:
         cache_metadata["source"] = metadata
     if interactive and state.get("chart_events") and getattr(app, "store", None):

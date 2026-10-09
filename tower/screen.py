@@ -457,9 +457,9 @@ def _apply_input(app, event, hits, curses):
     button = ("wheel-up" if bstate & getattr(curses, "BUTTON4_PRESSED", 0) else
               "wheel-down" if bstate & getattr(curses, "BUTTON5_PRESSED", 0) else
               "release" if bstate & getattr(curses, "BUTTON1_RELEASED", 0) else
+              "right" if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)) else
               "drag" if bstate & getattr(curses, "REPORT_MOUSE_POSITION", 0) and bstate & getattr(curses, "BUTTON1_PRESSED", 0) else
               "motion" if bstate & getattr(curses, "REPORT_MOUSE_POSITION", 0) else
-              "right" if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)) else
               "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED) else
               "press" if bstate & curses.BUTTON1_PRESSED else "motion")
     from .scrolling import note_input, handle_wheel
@@ -476,6 +476,13 @@ def _apply_input(app, event, hits, curses):
     if export_active(app):
         export_mouse(app, my, mx, button=button, shift=shift)
         return
+    if button == "right":
+        from .toolbar import handle_interval_reset as toolbar_reset
+        from .metric_live import handle_mouse as live_mouse
+        if toolbar_reset(app, my, mx):
+            return
+        if live_mouse(app, my, mx, button=button, shift=shift):
+            return
     from .job_selection import context_click
     if button == "right":
         from .text_selection import clear as clear_text

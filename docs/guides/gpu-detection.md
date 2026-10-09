@@ -27,7 +27,21 @@ Tower refreshes that evidence once per GPU polling round.
 Changed job attempts or resource settings invalidate the cached count.
 Failed discovery cannot extend it indefinitely: its lifetime is twice the effective GPU interval, bounded from 10 to 120 seconds.
 The cache retains at most 10,000 current running jobs.
-The Live graph slider changes the displayed time window; it does not increase the measurement cadence.
+The first graph slider changes only the displayed time window.
+The adjacent polling slider requests more frequent NVIDIA measurements for that exact running job.
+Its value and endpoints show effective intervals in `s`, `ms`, or `µs`; ASCII mode uses `us`.
+GPU utilization and busy-mean curves share a probe, so the fastest request for either curve applies.
+The sampling request remains active while Live is off and can remain active when the graph moves offscreen.
+It resets when Tower restarts or the job attempt ends.
+
+Per-metric GPU requests have a one-second minimum.
+The global update control alone retains its five-second GPU minimum.
+Command duration and source retry backoff can delay measurements further.
+Read the effective polling interval and source age below the graph.
+Right-click the window slider to restore five seconds, or the polling slider to restore its default sampling request.
+Both resets preserve the other slider and graph selection.
+For a CSV trace, a faster polling request increases file reads; it cannot increase the job's trace-writing cadence.
+See [chart controls](charts.md#follow-a-running-metric) for commands, shared-probe behavior, and source limits.
 
 Use `:gpu off` or `--no-gpu` when you want sampling disabled.
 The saved toggle belongs to the connection's state scope.

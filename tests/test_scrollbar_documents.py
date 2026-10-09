@@ -136,7 +136,7 @@ def test_fitting_24_cell_research_metric_keeps_live_controls_and_full_width(app,
     item = pane(application, "research:document")
     assert item.limit == 0 and not S.descriptors(application)
     assert metric_live.initialize(application)["records"]
-    assert any("Live" in L.row_text(row) for row in rows)
+    assert any("5s" in L.row_text(row) and "1ms" in L.row_text(row) for row in rows)
     assert all(L.vlen(L.row_text(row)) <= 24 for row in rows if "Live" in L.row_text(row))
 
 

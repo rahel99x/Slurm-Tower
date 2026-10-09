@@ -124,13 +124,18 @@ Preview leaves that preference unchanged.
 The reader theme and `animations = false` skip the welcome.
 One-frame, JSON, scripted, and ANSI watch output also skip it.
 
-Running metric plots can show a per-metric Live toggle and a logarithmic display-window slider.
-The slider spans five seconds at the left to one millisecond at the right.
+Running metric plots can show a per-metric Live toggle and two adjacent sliders.
+The first is a logarithmic display-window slider, from five seconds at the left to one millisecond at the right.
+The second requests a sampling interval for that exact job and source.
+It uses request factors from one to 100 internally and shows the effective interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
 Live displays the interval ending at the dashboard's current time, using retained observations.
-It does not change Slurm sampling or synthesize values for a short interval.
+Changing the display window alone does not change Slurm sampling or create new measurements.
+The separate sampling request applies even when Live is off.
+Right-click the first slider to restore five seconds, or the second to restore its default sampling request.
+Each reset preserves the other slider, Live state, and graph selection.
 The Live clock requests at most ten scheduled display refreshes per second; input and animations can request other refreshes.
 A valid rectangular zoom turns Live off; cancellation resumes it.
-Completed jobs cannot enable Live.
+Completed jobs have no active Live or sampling controls.
 See [Live metric windows](guides/charts.md#follow-a-running-metric) for mouse, keyboard, and temporary-token commands.
 
 ## Workbench navigation and layout
@@ -390,7 +395,10 @@ Drag through visible job rows to mark a range in the current table order.
 Shift adds the dragged range to existing marks.
 Esc during capture restores the earlier marks.
 Release completes the marked range; supported bulk actions use their existing confirmation.
-Drag the top-right slider to change the requested update multiplier between 1x and 50x.
+Drag the top-right slider to change the fetching interval.
+Its labels show the effective Jobs interval; default configuration spans two seconds down to 500 milliseconds.
+Use `:rate N` to select a request factor from one to 50.
+Right-click the update control to restore its default request.
 
 Click any visible **column heading**, including **JOBID**, to cycle ascending,
 descending, then off. Cascades follow the order in which you activate columns:
@@ -707,13 +715,19 @@ within one `jobs` round.
 
 The intervals above are unmodified defaults.
 Profiles can set different base intervals.
-The top-right update slider and `:rate N` request a multiplier from 1x to 50x.
-The effective interval is the base interval divided by the multiplier, subject to source limits.
+The top-right update slider shows effective Jobs polling intervals.
+The command `:rate N` requests a whole-number global factor from one to 50.
+The effective interval is the base interval divided by that factor, subject to source limits.
 Ordinary sources retain a 0.5-second minimum.
-GPU sampling retains a 5-second minimum; weather and budget retain 30-second minimums.
+GPU sampling with the global control alone retains a 5-second minimum; weather and budget retain 30-second minimums.
 Local and remote file readers retain 0.25-second and 1.5-second minimums respectively.
 An existing explicit base interval below a minimum remains unchanged by that minimum.
-At 1x, Tower uses each base interval exactly.
+With the default global request and no faster metric request, Tower uses each base interval exactly.
+Use `:rate reset` or right-click the update control to restore that global request.
+Per-metric sampling requests use factors from one to 100 and combine with the global factor from the unchanged base interval.
+CPU and memory share a job probe. GPU curves share a GPU probe. Each uses its fastest requested rate for the exact job.
+A faster per-metric GPU request permits a one-second minimum.
+Reported application metrics and CSV traces retain their job-produced measurement cadence; faster polling only reads their files more often.
 Failure backoff, source timeouts, and worker limits remain in effect.
 See [Update rate](guides/live-workbench.md#set-the-update-rate) for controls and persistence.
 
@@ -853,12 +867,13 @@ tower/
   job_selection.py exact job-ID range capture for existing marked-job actions and confirmation
   scrolling.py   bounded PID viewport motion, immediate selection, and saved smooth-scroll preferences
   startup.py     short interruptible Unicode welcome and static ASCII fallback
-  toolbar.py     persistent mouse menus, editable command entry, and captured update-slider dragging
+  toolbar.py     persistent mouse menus, editable command entry, captured update-slider dragging, and interval-control reset routing
   controller.py  the application state and every key, mouse click and confirmation; no curses, so tests drive it;
                  the line selection, the command palette, exports and the clipboard
   charts.py      continuous Braille curves, eight-level area bars, axes, histograms, heatmaps, and Gantt rows
   chart_interaction.py final plot geometry, thin theme-colored crosshairs, buffered exact-source time or XY zoom, cancellation, undo, and reset
-  metric_live.py per-running-metric logarithmic display windows and captured mouse or keyboard sliders
+  metric_live.py per-running-metric display windows and sampling sliders with independent mouse, keyboard, and reset controls
+  metric_sampling.py exact-source requests, shared probe intervals, source limits, and adaptive interval labels
   analytics_document.py bounded native Job Series document scrolling and visible metric cards
   logs.py        bounded incremental log buffers, logical keyboard cursors, raw line ranges, and selection
   log_catalog.py bounded grouped file discovery and explicit tower.logs/v1 manifests on the selected backend

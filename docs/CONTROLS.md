@@ -133,13 +133,14 @@ Menu actions use the same commands and reviews as their keyboard equivalents.
 | Click `x` | Exit Tower |
 | Click Copy / Yank | Switch between clipboard copying and a running local Vim/Neovim target |
 | Edit → Switch to Vim/Neovim yanking / Switch to clipboard copying | Change the same copy destination |
-| Click or drag the update track | Choose a requested multiplier from 1x to 50x |
-| Click `[-]` / `[+]`, or use the wheel over the update control | Decrease or increase the multiplier by one |
-| Click the multiplier, or View → Focus update-rate slider | Focus slider keyboard controls |
-| Arrows, `-` / `+` with slider focus | Adjust the multiplier by one |
-| Home / End with slider focus | Select 1x or 50x |
+| Click or drag the update track | Request a fetching interval; the label shows the effective Jobs interval |
+| Right-click the update track, interval, or step buttons | Restore the default polling request and preserve selections |
+| Click `[-]` / `[+]`, or use the wheel over the update control | Decrease or increase the request factor by one |
+| Click the interval, or View → Focus update-rate slider | Focus slider keyboard controls |
+| Arrows, `-` / `+` with slider focus | Adjust the request factor by one |
+| Home / End with slider focus | Select the default or fastest permitted request |
 | Esc / Enter / Tab with slider focus | Return input to the page |
-| `:rate [N\|reset]` | Inspect the multiplier, set 1–50, or restore 1x |
+| `:rate [N\|reset]` | Inspect the effective Jobs interval, set a factor from 1 to 50, or restore the default request |
 | `:about` | Open version and toolbar instructions |
 
 A menu choice ending in `...` opens an editable command prompt.
@@ -690,7 +691,11 @@ See [Operations](guides/operations.md) for precise persistence, limits, and trou
 | `:chartzoom undo`, `:chartzoom reset` | Undo or reset rectangular zoom for the last selected or zoomed metric graph |
 | `:metric-live TOKEN on\|off\|toggle` | Control Live for a currently visible running metric; TOKEN is its session control token |
 | `:metric-window TOKEN SECONDS` | Set that metric's display window from 0.001 to 5 seconds |
-| `:metric-window TOKEN focus` | Enter its slider keyboard controls |
+| `:metric-window TOKEN focus` | Enter its window-slider keyboard controls |
+| `:metric-window TOKEN reset` | Restore that metric's five-second window |
+| `:metric-sampling TOKEN N` | Request a sampling multiplier from 1 to 100 for that exact running metric |
+| `:metric-sampling TOKEN focus` | Enter its sampling-slider keyboard controls |
+| `:metric-sampling TOKEN reset` | Restore that metric's default sampling request factor of one |
 | `:series-scroll up\|down\|page-up\|page-down\|home\|end` | Scroll the compact native Analytics Job Series metric document |
 | `:chart axis auto` | Fit the axis to available measurements |
 | `:chart axis fixed LOW HIGH` | Apply fixed numeric bounds |
@@ -749,14 +754,24 @@ Use arrows or click a row to select again before opening an event or starting a 
 Click an event's visible text or source row to open that exact painted citation.
 Chart Events and Timeline links also support F8 navigation and Enter activation.
 Display labels and precision do not change recorded values.
-A running metric can show **Live off/ON** and a logarithmic window slider.
+A running metric can show **Live off/ON** and two adjacent sliders.
 Compact rows use empty/filled Live symbols, or `o`/`+` in ASCII mode.
-Drag left for five seconds or right for one millisecond.
+The first slider controls the display window. Drag left for five seconds or right for one millisecond.
+The second slider controls polling. Drag left for the default request, or right for faster reads.
+Its value and endpoints show effective intervals in `s`, `ms`, or `µs`; ASCII mode uses `us`.
+The request scale runs from factors one to 100. Source limits can make several slider positions show the same interval.
+Right-click the first slider to restore five seconds. Right-click the second to restore factor one.
+Each reset preserves the other control, Live state, job selection, and graph zoom.
 While the slider has focus, use Left/Right, Page Up/Page Down, Home, and End.
-Enter or Esc leaves slider focus. Esc during a drag restores its previous duration.
-Live displays `[current time - duration, current time]`; it does not change source polling.
+Home and End select that slider's minimum and maximum endpoint positions.
+Enter or Esc leaves slider focus. Esc during a drag restores that slider's previous value.
+Live displays `[current time - duration, current time]`. Changing the window alone does not change source polling.
+The sampling slider requests more frequent source reads, even while Live is off.
+The effective interval below the graph accounts for source limits and the global update multiplier.
+Shared probes use the fastest requested rate: CPU and memory share a resource probe, and GPU curves share a GPU probe.
+Another job keeps its own sampling request. Job-produced files retain their own writing cadence.
 A valid rectangular zoom turns Live off. A cancelled rectangle resumes it.
-Completed jobs cannot enable Live.
+Completed jobs have no active Live or sampling controls. Metric preferences reset when Tower restarts.
 
 See [Charts](guides/charts.md) for coverage, axis restrictions, and declared units.
 
@@ -812,7 +827,7 @@ Job-changing commands open a review; scripted changes require `--yes`.
 | Completion and alert delivery | `inbox`, `alerts` | [Operations](guides/operations.md) |
 | Terminal diagnostics | `terminaldoctor`, `terminaltest` | [Operations](guides/operations.md) |
 | Project and run selection | `project`, `runs`, `run`, `outputs`, `artifact` | [Project standard](PROJECT_STANDARD.md) |
-| Application measurements | `metrics`, `metric`, `metricdisplay`, `dashboard`, `chart`, `timeline`, `diff` | [Charts](guides/charts.md) |
+| Application measurements | `metrics`, `metric`, `metricdisplay`, `metric-live`, `metric-window`, `metric-sampling`, `dashboard`, `chart`, `timeline`, `diff` | [Charts](guides/charts.md) |
 | Output contracts | `artifacts`, `validate` | [Research](RESEARCH.md) |
 | Provenance | `passport` | [Research](RESEARCH.md) |
 | Submission preparation | `prepare`, `preflight`, `submit`, `array` | [Research](RESEARCH.md) |

@@ -20,6 +20,7 @@ HISTORY_FAST_ATTEMPTS = 5
 GPU_ALLOCATION_CACHE_MAX = 10000
 GPU_ALLOCATION_CACHE_MIN_AGE = 10.0
 GPU_ALLOCATION_CACHE_MAX_AGE = 120.0
+METRIC_SAMPLING_MAX = 128
 
 
 class Sampler(threading.Thread):
@@ -47,6 +48,16 @@ class Sampler(threading.Thread):
         self.gpu_workers = min(workers, 4)
         self.gpu_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.gpu_workers, thread_name_prefix="tower-gpu")
         self._schedule_lock = threading.RLock()
+        # Metric demand changes never edit configured source intervals. Keep
+        # only exact current attempts and completion marks for accelerated jobs.
+        self._metric_requests = {}
+        self._metric_jobs = {}
+        self._metric_jobs_ref = None
+        self._metric_rates = {}
+        self._metric_completed = {}
+        self._baseline_completed = {}
+        self._metric_scheduled_sources = set()
+        self._sampling_context = threading.local()
         self.stop = threading.Event()
         self.kick = threading.Event()
         self.want_detail: Optional[str] = None
@@ -97,7 +108,159 @@ class Sampler(threading.Thread):
         return value
 
     def effective_interval(self, name):
-        return source_interval(self.intervals.get(name, 30.0), self.polling_multiplier, source=name)
+        from .metric_sampling import interval
+        with self._schedule_lock:
+            rate = max(self._active_metric_rates_locked(name).values(), default=1)
+            return interval(self.intervals.get(name, 30.0), self.polling_multiplier, rate, source=name,
+                            file=name == "trace" and rate > 1, remote=bool(getattr(self.files, "remote", False)))
+
+    @staticmethod
+    def _metric_attempt(job):
+        return "|".join(str(getattr(job, field, None) or "") for field in ("submit", "start"))
+
+    def set_metric_sampling(self, requests, *, _expected=None):
+        """Replace bounded exact-attempt demands without probing any source.
+
+        Unsupported readers belong to their own sampling service. A stale,
+        completed or pending job cannot transfer a rate to a reused ID.
+        """
+        from .metric_sampling import source, validate_rate
+        if not isinstance(requests, dict) or len(requests) > METRIC_SAMPLING_MAX:
+            raise ValueError("metric sampling requests must be a mapping of at most 128 metrics")
+        validated = [(identity, validate_rate(value), source(identity)) for identity, value in requests.items()]
+        with self._schedule_lock:
+            previous_jobs, previous_requests = dict(self._metric_jobs), dict(self._metric_requests)
+        wanted = {str(identity[1]) for identity, _, name in validated
+                  if name in ("live", "gpu", "trace") and isinstance(identity, tuple) and len(identity) > 4}
+        with self.store.lock:
+            jobs_ref = self.store.jobs
+            current = {j.id: (j, self._metric_attempt(j), self.store.job_attempt(j.id))
+                       for j in self.store.jobs if j.id in wanted and j.state == "RUNNING"}
+        accepted, rates, jobs = {}, {}, {}
+        for identity, value, name in validated:
+            if name not in ("live", "gpu", "trace") or not isinstance(identity, tuple) or len(identity) <= 4:
+                continue
+            jid = str(identity[1])
+            record = current.get(jid)
+            if record is None:
+                continue
+            if (identity in previous_requests and jid in previous_jobs
+                    and previous_jobs[jid][2] != record[2]):
+                continue
+            attempt = identity[4]
+            if attempt not in (record[1], "scheduler:" + record[1]):
+                continue
+            if value > 1:
+                accepted[identity] = value
+                jobs[jid] = record
+                rates.setdefault(name, {})[jid] = max(value, rates.get(name, {}).get(jid, 1))
+        with self._schedule_lock:
+            if _expected is not None and (self._metric_requests != _expected
+                    or {jid: record[1:] for jid, record in self._metric_jobs.items()}
+                    != {jid: record[1:] for jid, record in previous_jobs.items()}):
+                return len(self._metric_requests)
+            changed = (accepted != self._metric_requests
+                       or {jid: record[1:] for jid, record in jobs.items()}
+                       != {jid: record[1:] for jid, record in self._metric_jobs.items()})
+            self._metric_requests, self._metric_jobs, self._metric_rates = accepted, jobs, rates
+            self._metric_jobs_ref = jobs_ref
+            self._metric_scheduled_sources.update(rates)
+            valid = {(name, jid, record[1], record[2])
+                     for name, values in rates.items() for jid in values
+                     for record in (jobs[jid],)}
+            self._metric_completed = {key: value for key, value in self._metric_completed.items() if key in valid}
+        if changed:
+            self.kick.set()
+        return len(accepted)
+
+    def _active_metric_rates_locked(self, name):
+        # This reads only the bounded Job references published by set/jobs. It
+        # avoids Store.lock while the scheduler lock is held.
+        if self.store.jobs is not self._metric_jobs_ref:
+            return {}
+        return {jid: rate for jid, rate in self._metric_rates.get(name, {}).items()
+                if self._metric_jobs[jid][0].state == "RUNNING"
+                and self._metric_jobs[jid][1] == self._metric_attempt(self._metric_jobs[jid][0])}
+
+    def _metric_rate_locked(self, name, jid):
+        record = self._metric_jobs.get(jid)
+        if (self.store.jobs is not self._metric_jobs_ref or record is None
+                or record[0].state != "RUNNING" or record[1] != self._metric_attempt(record[0])):
+            return 1
+        return self._metric_rates.get(name, {}).get(jid, 1)
+
+    def sampling_interval(self, name, jid, attempt=None):
+        """Return the actual safe cadence for one job's shared metric source."""
+        from .metric_sampling import interval
+        jid = str(jid)
+        with self._schedule_lock:
+            record = self._metric_jobs.get(jid)
+            rate = self._metric_rate_locked(name, jid)
+            if attempt is not None and (record is None or attempt not in (record[1], "scheduler:" + record[1], record[2])):
+                rate = 1
+            return interval(self.intervals.get(name, 30.0), self.polling_multiplier, rate, source=name,
+                            file=name == "trace" and rate > 1, remote=bool(getattr(self.files, "remote", False)))
+
+    def _sampling_targets(self, name, jobs):
+        """Gate scheduled probes; direct source calls retain their old behavior."""
+        context = getattr(self._sampling_context, "current", None)
+        if context is None or context["source"] != name:
+            return jobs
+        now = time.monotonic()
+        with self._schedule_lock:
+            rates = self._active_metric_rates_locked(name)
+            base = source_interval(self.intervals.get(name, 30.0), self.polling_multiplier, source=name)
+            last = self._baseline_completed.get(name)
+            baseline_due = last is None or now - last >= base
+            # No active per-job override preserves existing source scheduling,
+            # including --once, zero intervals and manual refresh behavior.
+            context["baseline"] = not rates or baseline_due
+            if not rates:
+                return jobs
+            selected = []
+            for job in jobs:
+                jid = str(getattr(job, "id", job))
+                record = self._metric_jobs.get(jid)
+                if jid not in rates or record is None:
+                    if baseline_due:
+                        selected.append(job)
+                    continue
+                key = (name, jid, record[1], record[2])
+                completed = self._metric_completed.get(key, last)
+                cadence = self.sampling_interval(name, jid, record[1])
+                if completed is None or now - completed >= cadence:
+                    selected.append(job)
+                    context["targets"][jid] = key
+            return selected
+
+    def _sampling_complete(self, name, jid):
+        context = getattr(self._sampling_context, "current", None)
+        if context is None or context["source"] != name:
+            return
+        key = context["targets"].get(str(jid))
+        if key is not None:
+            with self._schedule_lock:
+                record = self._metric_jobs.get(str(jid))
+                if (self.store.jobs is self._metric_jobs_ref and record is not None
+                        and key[2:] == record[1:] and record[0].state == "RUNNING"
+                        and record[1] == self._metric_attempt(record[0])):
+                    self._metric_completed[key] = time.monotonic()
+
+    def _metric_source_due(self, name):
+        """Next completion deadline, including unchanged jobs after a reset."""
+        now = time.monotonic()
+        with self._schedule_lock:
+            last = self._baseline_completed.get(name)
+            baseline = source_interval(self.intervals.get(name, 30.0), self.polling_multiplier, source=name)
+            if last is None or now - last >= baseline:
+                return True
+            for jid in self._active_metric_rates_locked(name):
+                record = self._metric_jobs[jid]
+                key = (name, jid, record[1], record[2])
+                completed = self._metric_completed.get(key, last)
+                if now - completed >= self.sampling_interval(name, jid, record[1]):
+                    return True
+        return False
 
     def emit(self, events: List[dict]) -> None:
         for ev in events:
@@ -133,6 +296,8 @@ class Sampler(threading.Thread):
         if name == "fin_details" and not self.want_fin:
             return False
         regular = now - self.last_run[name] >= self.effective_interval(name) + h.backoff
+        if name in self._metric_scheduled_sources and h.calls and not h.backoff:
+            regular = self._metric_source_due(name)
         if name == "details" and not regular:
             request = self._details_refresh
             return bool(request and request[0] == self.want_detail and not h.backoff and
@@ -158,6 +323,9 @@ class Sampler(threading.Thread):
 
     def run_source(self, name: str):
         h = self.health(name)
+        previous_context = getattr(self._sampling_context, "current", None)
+        context = {"source": name, "targets": {}, "baseline": False}
+        self._sampling_context.current = context
         t0 = time.perf_counter()
         h.last_try = time.time()
         try:
@@ -181,6 +349,10 @@ class Sampler(threading.Thread):
                 h.error = f"{type(e).__name__}: {e}"
                 h.backoff = min(300.0, max(self.intervals.get(name, 30.0), 2 * h.backoff))
         finally:
+            if context["baseline"] and name in ("live", "gpu", "trace"):
+                with self._schedule_lock:
+                    self._baseline_completed[name] = time.monotonic()
+            self._sampling_context.current = previous_context
             with self.store.lock:
                 h.inflight = False
 
@@ -212,10 +384,15 @@ class Sampler(threading.Thread):
     def run(self):
         while not self.stop.is_set():
             self.round()
-            self.kick.wait(0.5)
+            # Local metric files can safely request a quarter-second cadence.
+            # Avoid spinning or changing the ordinary half-second wakeup.
+            self.kick.wait(min(0.5, max(0.05, self.effective_interval("trace"))))
             self.kick.clear()
 
     def refresh_all(self):
+        with self._schedule_lock:
+            self._metric_completed.clear()
+            self._baseline_completed.clear()
         for name in self.last_run:
             self.last_run[name] = 0.0
             self.health(name).backoff = 0.0
@@ -235,6 +412,10 @@ class Sampler(threading.Thread):
             returning = {job.id for job in jobs} & self.store.preserved_detail_ids()
             events = self.store.apply_jobs(jobs)
             self._gpu_cache_reapply_locked(time.monotonic())
+        with self._schedule_lock:
+            requests = dict(self._metric_requests)
+        if requests:
+            self.set_metric_sampling(requests, _expected=requests)
         for jid in returning:
             self._historical_details.pop(jid, None)
             with self._schedule_lock:
@@ -283,16 +464,26 @@ class Sampler(threading.Thread):
         now = clock.now()
         with self.store.lock:
             jobs = [j for j in self.store.jobs if not j.pending]
+            attempts = {j.id: self.store.job_attempt(j.id) for j in jobs}
+            identities = {j.id: self._gpu_identity(j) for j in jobs}
+            previous = {j.id: self.store.prev_cpu.get(j.id) for j in jobs}
+        jobs = self._sampling_targets("live", jobs)
         failures = []
         for job in jobs:
             if self.stop.is_set():
                 break
             try:
-                lv, keep, steps = self.slurm.live(job, self.store.prev_cpu.get(job.id), now)
+                lv, keep, steps = self.slurm.live(job, previous[job.id], now)
             except CommandError as exc:
                 failures.append(str(exc))
                 continue
+            finally:
+                self._sampling_complete("live", job.id)
             with self.store.lock:
+                current = self.store.job(job.id)
+                if (current is None or self.store.job_attempt(job.id) != attempts[job.id]
+                        or self._gpu_identity(current) != identities[job.id]):
+                    continue
                 self.store.prev_cpu[job.id] = keep
                 self.store.apply_live(job.id, lv)
                 self.store.steps[job.id] = steps
@@ -341,15 +532,16 @@ class Sampler(threading.Thread):
             self._gpu_cache_reapply_locked(time.monotonic())
             running = [j for j in self.store.jobs if j.state == "RUNNING"]
             attempts = {j.id: self.store.job_attempt(j.id) for j in running}
+            identities = {j.id: self._gpu_identity(j) for j in running}
         failures, discovery_error = [], ""
         discover = getattr(self.slurm, "gpu_allocations", None)
         if running and callable(discover):
             try:
                 allocations = discover()
+                age = max(GPU_ALLOCATION_CACHE_MIN_AGE, min(GPU_ALLOCATION_CACHE_MAX_AGE, self.effective_interval("gpu") * 2))
                 with self.store.lock:
                     current = {j.id: j for j in self.store.jobs}
                     now = time.monotonic()
-                    age = max(GPU_ALLOCATION_CACHE_MIN_AGE, min(GPU_ALLOCATION_CACHE_MAX_AGE, self.effective_interval("gpu") * 2))
                     for j in running:
                         if current.get(j.id) is not j:
                             continue
@@ -379,7 +571,7 @@ class Sampler(threading.Thread):
                     self._gpu_cache_reapply_locked(now)
             except CommandError as exc:
                 discovery_error = f"GPU allocation discovery: {exc}"
-        jobs = [j for j in running if j.gpus]
+        jobs = self._sampling_targets("gpu", [j for j in running if j.gpus])
         if not jobs:
             if discovery_error:
                 raise CommandError(discovery_error)
@@ -405,10 +597,12 @@ class Sampler(threading.Thread):
                     samples, error = fut.result(), None
                 except CommandError as exc:
                     samples, error = None, str(exc)
+                finally:
+                    self._sampling_complete("gpu", job.id)
                 with self.store.lock:
                     current = self.store.job(job.id)
                     if (current is None or self.store.job_attempt(job.id) != attempts[job.id]
-                            or self._gpu_identity(current) != self._gpu_identity(job)):
+                            or self._gpu_identity(current) != identities[job.id]):
                         continue
                     self.store.apply_gpu(job.id, samples)
                     if error:
@@ -522,35 +716,51 @@ class Sampler(threading.Thread):
             want = [j.id for j in self.store.jobs if not j.pending and j.gpus]
         if self.want_trace and self.want_trace not in want:
             want.append(self.want_trace)
-        traces, statuses, failures = {}, {}, []
-        for jid in want:
-            path = self.trace_path(jid)
-            status = {"path": path, "state": "missing_workdir", "reason": "The exact job has no valid absolute WorkDir.", "rows": 0}
-            statuses[jid] = status
-            if not path:
-                continue
+        selected = self._sampling_targets("trace", want)
+        with self.store.lock:
+            contexts = {jid: self._trace_context_locked(jid) for jid in selected}
+        traces, failures = {}, []
+        statuses = {}
+        for jid in selected:
             try:
+                path = self.trace_path(jid)
+                status = {"path": path, "state": "missing_workdir", "reason": "The exact job has no valid absolute WorkDir.", "rows": 0}
+                statuses[jid] = status
+                if not path:
+                    continue
                 if not self.files.exists(path):
                     status.update(state="missing_file", reason="The job's optional NVIDIA trace file does not exist.")
                     continue
                 rows = self.slurm.gpu_trace(path, self.files)
+                if rows:
+                    traces[jid] = rows
+                    status.update(state="ready", reason="", rows=len(rows))
+                else:
+                    status.update(state="empty", reason="The trace is empty or contains no valid NVIDIA timestamp/index rows.")
             except (OSError, CommandError) as exc:
                 status.update(state="error", reason=str(exc)[:400])
                 failures.append(f"job {jid}: {status['reason']}")
-                continue
-            if rows:
-                traces[jid] = rows
-                status.update(state="ready", reason="", rows=len(rows))
-            else:
-                status.update(state="empty", reason="The trace is empty or contains no valid NVIDIA timestamp/index rows.")
+            finally:
+                self._sampling_complete("trace", jid)
         with self.store.lock:
-            self.trace_status = statuses
+            valid = {jid for jid in selected if contexts[jid] == self._trace_context_locked(jid)}
+            retained = {jid: status for jid, status in self.trace_status.items() if jid in want}
+            retained.update({jid: status for jid, status in statuses.items() if jid in valid})
+            self.trace_status = retained
             for jid, rows in traces.items():
-                self.store.trace[jid] = rows
-            for k in [k for k in self.store.trace if k not in traces]:
+                if jid in valid:
+                    self.store.trace[jid] = rows
+            # A fast tick for one requested job must retain untouched traces
+            # and statuses for the other jobs on their original cadence.
+            for k in [k for k in self.store.trace if k not in want or k in valid and k not in traces]:
                 del self.store.trace[k]
         if failures:
             raise CommandError(f"GPU trace read failed for {len(failures)}/{len(want)} jobs: {failures[0]}")
+
+    def _trace_context_locked(self, jid):
+        record, _ = self.store.record_context(jid)
+        return (self.store.job_attempt(jid), type(record), self._metric_attempt(record),
+                getattr(record, "state", None), self.trace_path(jid))
 
     def src_fin_details(self):
         jid = self.want_fin

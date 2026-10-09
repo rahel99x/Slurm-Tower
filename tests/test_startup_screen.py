@@ -115,7 +115,7 @@ def test_actual_loop_starts_once_draws_welcome_and_keeps_toolbar(terminal, monke
     for frame in terminal.window.frames:
         assert frame["rows"][0].lstrip().startswith("x")
         assert "File" in frame["rows"][0] and "View" in frame["rows"][0]
-        assert "1x" in frame["rows"][0]
+        assert "2s" in frame["rows"][0] and "1x" not in frame["rows"][0]
 
 
 @pytest.mark.parametrize("reason", ["noninteractive", "disabled", "reader", "reduced-motion"])

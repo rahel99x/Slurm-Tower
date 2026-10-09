@@ -206,7 +206,7 @@ def test_preference_restores_to_all_available_readers_and_future_reader_config()
         assert logs.catalog.polling_multiplier == 12
         assert rate.save(model) == {"multiplier": 12}
         assert rate.cadence(model, "jobs") == .5
-        assert "12x" in rate.cadence_summary(model) and "0.5s" in rate.cadence_summary(model)
+        assert "500ms" in rate.cadence_summary(model) and "12x" not in rate.cadence_summary(model)
         saved = rate.save(model)
         restarted = app()
         rate.restore(restarted, saved)
@@ -247,7 +247,7 @@ def test_command_query_reset_and_clamped_adjustments_with_no_workers():
     assert rate.adjust(model, 10**1000) == 50
     assert rate.run_command(model, ["rate", "reset"])
     assert rate.run_command(model, ["rate"])
-    assert "1x" in model.messages[-1] and "2s" in model.messages[-1]
+    assert "2s" in model.messages[-1] and "1x" not in model.messages[-1]
     assert rate.multiplier(SimpleNamespace()) == 1
     assert not rate.handle_key(model, "x")
     assert not rate.handle_mouse(model, 0, 0)
@@ -323,7 +323,7 @@ def test_real_app_command_restores_rate_from_scoped_ui_preferences(tmp_path):
         model = App(store, worker, None, Config(), "alice")
         assert "rate" in model.commands()
         model.run_command("rate 20")
-        assert model.command_ok and "20x" in model.message
+        assert model.command_ok and "500ms" in model.message and "20x" not in model.message
         assert worker.effective_interval("jobs") == .5
         model.save()
         restored = App(Store(state_dir=state_root), None, None, Config(), "alice")

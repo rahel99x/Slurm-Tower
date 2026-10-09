@@ -81,7 +81,7 @@ def test_controls_always_fit_one_row_with_two_labeled_ends(app, ascii_, width):
     rows, hits = draw(app, width=width, ascii_=ascii_, column=0)
     assert len(rows) == 1 and L.vlen(L.row_text(rows[0])) == width
     assert "5s" in L.row_text(rows[0]) and "1ms" in L.row_text(rows[0])
-    assert len(hits) == 2
+    assert len(hits) == 3
     if ascii_:
         assert L.row_text(rows[0]).isascii()
     assert all(0 <= hit[2]["left"] < hit[2]["right"] <= width for hit in hits)
@@ -772,3 +772,381 @@ def test_same_length_inplace_job_slot_replacement_uses_new_actual_attempt(app):
     assert len(rows) == 1 and M.set_enabled(app, fresh, True)
     assert M.window(app, fresh, now=100.0) == (95.0, 100.0)
     assert M.initialize(app)["job_map"]["101"] is fresh_job
+
+
+def test_sampling_control_has_independent_geometry_and_graph_neighbor(app):
+    _, hits = draw(app)
+    control = current(app)
+    assert control.slider_full.right <= control.rate_slider_full.left
+    assert control.rate_slider.right <= control.rect.right
+    assert [hit[2]["id"] for hit in hits] == [
+        "metric-live:" + control.token,
+        "metric-window:" + control.token,
+        "metric-sampling:" + control.token,
+    ]
+    canvas = [[(" " * 120, "")] for _ in range(40)]
+    I.publish(app, canvas, [], 120, 40, extra_controls=M.descriptors(app))
+    assert M.run_command(app, ["metric-window", control.token, "focus"])
+    M.handle_key(app, "down")
+    I.initialize(app).update(focused="metric-window:" + control.token, active=True)
+    assert I.handle_key(app, "right")
+    assert I.initialize(app)["focused"] == "metric-sampling:" + control.token
+    assert I.handle_key(app, "enter")
+    assert M.initialize(app)["focus_kind"] == "sampling"
+    assert M.handle_key(app, "right")
+    assert M.initialize(app)["entries"][key()]["rate"] == 2
+    assert M.initialize(app)["entries"][key()]["delta"] == M.MAX_DELTA
+
+
+@pytest.mark.parametrize("rate", [1, 2, 25, 50, 99, 100])
+def test_sampling_fraction_round_trips_integer_endpoints(rate):
+    assert M.rate_at(M.rate_fraction(rate)) == rate
+    assert M.rate_at(-10) == 1 and M.rate_at(10) == 100
+
+
+@pytest.mark.parametrize("value", [True, False, None, "50", 0, -1, 101, 1.1,
+                                  float("nan"), float("inf"), 10**1000])
+def test_invalid_sampling_values_do_not_change_a_valid_request(app, value):
+    draw(app)
+    assert M.set_rate(app, key(), 50)
+    revision = M.document_revision(app)
+    assert not M.set_rate(app, key(), value)
+    assert M.initialize(app)["entries"][key()]["rate"] == 50
+    assert M.document_revision(app) == revision
+
+
+@pytest.mark.parametrize("kind", ["window", "sampling"])
+def test_right_reset_only_changes_its_slider_and_keeps_live_zoom_and_marks(app, kind):
+    control = enable(app)
+    assert M.set_delta(app, key(), .1) and M.set_rate(app, key(), 50)
+    app.marks = {"101", "102"}
+    app.sel_anchor, app.sel_end = 2, 8
+    C.initialize(app)["zoom"][key()] = {
+        "x": (1.0, 2.0), "y": (3.0, 4.0), "scale": "linear", "undo": [],
+    }
+    slider = control.slider if kind == "window" else control.rate_slider
+    assert M.handle_mouse(app, slider.top, slider.left, button="right")
+    entry = M.initialize(app)["entries"][key()]
+    assert entry["delta"] == (5.0 if kind == "window" else .1)
+    assert entry["rate"] == (1 if kind == "sampling" else 50)
+    assert entry["enabled"]
+    assert app.marks == {"101", "102"} and (app.sel_anchor, app.sel_end) == (2, 8)
+    assert C.bounds(app, key()) is not None
+
+
+def test_rate_drag_publishes_only_changed_snapshots_and_escape_restores_backend(app):
+    requests = []
+    app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)),
+                                  intervals={"live": 30.0})
+    control = enable(app)
+    assert M.set_rate(app, key(), 50)
+    assert requests[-1] == {key(): 50}
+    y, right = control.rate_slider.top, control.rate_slider_full.right - 1
+    assert M.handle_mouse(app, y, right, button="press")
+    assert M.active(app) and requests[-1] == {key(): 100}
+    request_count = len(requests)
+    for _ in range(50):
+        assert M.handle_mouse(app, y, right + 100, button="motion")
+    assert len(requests) == request_count
+    assert M.handle_key(app, "esc")
+    assert not M.active(app) and requests[-1] == {key(): 50}
+    assert M.initialize(app)["entries"][key()]["rate"] == 50
+    assert M.enabled(app, key())
+
+
+@pytest.mark.parametrize("change", ["geometry", "timeout", "outside", "tab", "source"])
+def test_rate_drag_cancellation_restores_original_request_and_consumes_release(app, change):
+    requests = []
+    app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)))
+    control = enable(app)
+    assert M.set_rate(app, key(), 17)
+    y, x = control.rate_slider.top, control.rate_slider.right - 1
+    assert M.handle_mouse(app, y, x, button="press")
+    assert requests[-1] == {key(): 100}
+    if change == "geometry":
+        C.begin_frame(app, 120, 40)
+        draw(app, width=60)
+    elif change == "timeout":
+        M.tick(app, now=M.initialize(app)["capture"]["last"] + M.CAPTURE_TIMEOUT + 1)
+    elif change == "outside":
+        M.handle_mouse(app, y + 3, x, button="release")
+    elif change == "tab":
+        app.tab = "jobs"
+        M.tick(app)
+    else:
+        C.begin_frame(app, 120, 40)
+        draw(app, key(metric="memory"))
+    assert not M.active(app)
+    assert M.initialize(app)["entries"][key()]["rate"] == 17
+    assert requests[-1].get(key()) == 17
+    assert M.handle_mouse(app, y, x, button="release")
+
+
+def test_rate_slider_keyboard_uses_integer_steps_home_end_and_pages(app):
+    draw(app)
+    control = current(app)
+    assert M.run_command(app, ["metric-sampling", control.token, "focus"])
+    assert M.initialize(app)["focus_kind"] == "sampling"
+    for input_key, expected in (("end", 100), ("left", 99), ("pgup", 89),
+                                ("pgdn", 99), ("right", 100), ("right", 100),
+                                ("home", 1), ("left", 1), ("pgup", 1)):
+        assert M.handle_key(app, input_key)
+        assert M.initialize(app)["entries"][key()]["rate"] == expected
+    assert M.initialize(app)["entries"][key()]["delta"] == 5.0
+    assert M.handle_key(app, "esc")
+    assert M.initialize(app)["focus"] is None
+
+
+def test_sampling_and_delta_commands_reset_without_live_or_source_actions(app):
+    control = enable(app)
+    assert M.run_command(app, ["metric-sampling", control.token, "50"])
+    assert M.initialize(app)["entries"][key()]["rate"] == 50
+    assert "polling interval" in app.messages[-1] and "50x" not in app.messages[-1]
+    for invalid in ("0", "101", "nan", "inf", "2.5", "bad", "1.0"):
+        assert M.run_command(app, ["metric-sampling", control.token, invalid])
+        assert M.initialize(app)["entries"][key()]["rate"] == 50
+    assert M.run_command(app, ["metric-window", control.token, "0.001"])
+    assert M.run_command(app, ["metric-window", control.token, "reset"])
+    assert M.run_command(app, ["metric-sampling", control.token, "reset"])
+    entry = M.initialize(app)["entries"][key()]
+    assert entry["delta"] == 5.0 and entry["rate"] == 1 and entry["enabled"]
+
+
+@pytest.mark.parametrize("change", ["completed", "removed", "attempt", "replacement"])
+def test_nonlive_rate_request_removed_on_ineligible_job_without_any_source_read(app, change):
+    requests = []
+    job = Job("101", "running", "cpu", "RUNNING", submit="s", start="r")
+    app.store = SimpleNamespace(jobs=[job])
+    app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)),
+                                  refresh_all=lambda: pytest.fail("unexpected scheduler refresh"))
+    identity = key(attempt="s|r")
+    draw(app, identity)
+    assert M.set_rate(app, identity, 100)
+    assert not M.enabled(app, identity) and requests[-1] == {identity: 100}
+    if change == "completed":
+        job.state = "COMPLETED"
+    elif change == "removed":
+        app.store.jobs = []
+    elif change == "attempt":
+        job.start = "new-start"
+    else:
+        replacement = key(attempt="s|r", scope="resource-series")
+        replacement = (*replacement[:4], "new", *replacement[5:])
+        M.set_running(app, replacement, True)
+    M.tick(app)
+    assert requests[-1] == {}
+    assert not M.set_rate(app, identity, 50)
+
+
+def test_shared_source_current_interval_uses_fastest_metric_request(app):
+    app.cfg = Config({"intervals": {"live": 30.0}})
+    first, second = key(metric="cpu"), key(metric="memory")
+    draw(app, first)
+    draw(app, second, row=4)
+    assert M.set_rate(app, first, 100)
+    assert M.set_rate(app, second, 1)
+    C.begin_frame(app, 120, 40)
+    rows, _ = draw(app, second, width=120)
+    text = L.row_text(rows[0])
+    assert "Poll 500ms" in text and "30s" in text
+    assert "100x" not in text and "1x" not in text
+    assert M.initialize(app)["entries"][second]["rate"] == 1
+
+
+@pytest.mark.parametrize("ascii_", [False, True])
+@pytest.mark.parametrize("width", [24, 25, 36, 63, 64, 120])
+def test_feedback_and_actual_interval_labels_preserve_geometry_during_rate_changes(app, ascii_, width):
+    app.cfg = Config({"intervals": {"live": 30.0}})
+    draw(app, width=width, column=0, ascii_=ascii_)
+    initial = current(app)
+    for rate in (1, 2, 17, 100):
+        assert M.set_rate(app, key(), rate)
+        C.begin_frame(app, 120, 40)
+        rows, _ = draw(app, width=width, column=0, ascii_=ascii_)
+        control = current(app)
+        assert control.slider_full == initial.slider_full
+        assert control.rate_slider_full == initial.rate_slider_full
+        assert L.vlen(L.row_text(rows[0])) == width
+        assert "1x" not in L.row_text(rows[0]) and "100x" not in L.row_text(rows[0])
+        feedback = M.feedback(app, L.Glyphs(ascii_))
+        assert len(feedback) == 1 and L.vlen(L.row_text(feedback[0][2])) == width
+
+
+@pytest.mark.parametrize("modal", [False, True])
+def test_sampling_palette_focus_and_rate_restore_exact_main_or_modal(palette_dashboard, modal):
+    dashboard = palette_dashboard
+    if modal:
+        control = open_reported_modal(dashboard)
+    else:
+        palette_frame(dashboard)
+        control = current(dashboard.app)
+    type_palette_command(dashboard, "metric-sampling " + control.token + " focus")
+    state = M.initialize(dashboard.app)
+    assert state["focus_kind"] == "sampling" and state["pending_focus"]
+    dashboard.app.tick()
+    palette_frame(dashboard)
+    assert state["focus_kind"] == "sampling" and state["pending_focus"] is None
+    dashboard.app.handle("right")
+    assert state["entries"][control.key]["rate"] == 2
+    assert state["entries"][control.key]["delta"] == 5.0
+
+
+@pytest.mark.parametrize("kind", ["window", "sampling"])
+@pytest.mark.parametrize("modal", [False, True])
+def test_actual_app_right_reset_does_not_clear_selected_jobs_or_text(palette_dashboard, kind, modal):
+    from tower import text_selection
+    dashboard = palette_dashboard
+    if modal:
+        control = open_reported_modal(dashboard)
+    else:
+        palette_frame(dashboard)
+        control = current(dashboard.app)
+    app = dashboard.app
+    assert M.set_enabled(app, control.key, True)
+    assert M.set_delta(app, control.key, .1) and M.set_rate(app, control.key, 50)
+    app.marks = {"7", "8"}
+    app.sel_anchor, app.sel_end = 3, 9
+    selected_lines = {"anchor": "preserved sentinel"}
+    text_selection.initialize(app)["selection"] = selected_lines
+    slider = control.slider if kind == "window" else control.rate_slider
+    app.click(slider.top, slider.left, [], button="right")
+    entry = M.initialize(app)["entries"][control.key]
+    assert entry["delta"] == (5.0 if kind == "window" else .1)
+    assert entry["rate"] == (1 if kind == "sampling" else 50)
+    assert entry["enabled"] and app.marks == {"7", "8"}
+    assert (app.sel_anchor, app.sel_end) == (3, 9)
+    assert text_selection.initialize(app)["selection"] is selected_lines
+    assert app.mode == ("analysis" if modal else "main")
+
+
+@pytest.mark.parametrize("change", ["page", "job", "attempt", "finished", "resize", "scroll", "split"])
+def test_sampling_palette_command_rejects_stale_published_control(palette_dashboard, change):
+    dashboard = palette_dashboard
+    palette_frame(dashboard)
+    control = current(dashboard.app)
+
+    def change_document(value):
+        app = value.app
+        if change == "page":
+            app.tab = "jobs"
+        elif change == "job":
+            app.selected_id = app.analytics_job = "8"
+        elif change == "attempt":
+            value.store.jobs[0].start = "new-start"
+        elif change == "finished":
+            value.store.jobs[0].state = "COMPLETED"
+        elif change == "resize":
+            palette_frame(value, width=130)
+        elif change == "scroll":
+            app.analytics_document_state["top"] += 3
+        else:
+            app.layout_state.ratio += 5
+
+    type_palette_command(dashboard, "metric-sampling " + control.token + " 100",
+                         before_enter=change_document)
+    assert M.initialize(dashboard.app)["entries"][control.key]["rate"] == 1
+    assert "visible Live control" in dashboard.app.message
+
+
+@pytest.mark.parametrize("observed_departure", [False, True])
+def test_store_generation_reuse_resets_hidden_rate_window_and_live_without_dates(app, observed_departure):
+    requests = []
+    store = Store(persist=False)
+    store.apply_jobs([Job("101", "old attempt", "cpu", "RUNNING")])
+    app.store = store
+    app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)))
+    identity = key(attempt="|")
+    old_control = enable(app, identity)
+    assert M.set_rate(app, identity, 100) and M.set_delta(app, identity, .001)
+    assert M.initialize(app)["entries"][identity]["generation"] == (id(store), 0)
+    # The metric can be hidden while a job leaves and reuses the same ID; its
+    # absent submit/start fields do not supply a distinct canonical chart key.
+    C.begin_frame(app, 120, 40)
+    C.publish(app, 120, 40)
+    store.apply_jobs([])
+    if observed_departure:
+        M.tick(app)
+        assert M.initialize(app)["entries"][identity]["rate"] == 1
+    store.apply_jobs([Job("101", "new attempt", "cpu", "RUNNING")])
+    assert store.job_attempt("101") > 0
+    C.begin_frame(app, 120, 40)
+    draw(app, identity)
+    fresh = current(app)
+    entry = M.initialize(app)["entries"][identity]
+    assert fresh.token != old_control.token
+    assert entry["rate"] == 1 and entry["delta"] == 5.0 and not entry["enabled"]
+    assert requests[-1] == {}
+    M.run_command(app, ["metric-sampling", old_control.token, "100"])
+    assert entry["rate"] == 1
+    M.run_command(app, ["metric-sampling", fresh.token, "50"])
+    assert entry["rate"] == 50 and requests[-1] == {identity: 50}
+
+
+@pytest.mark.parametrize("kind", ["window", "sampling"])
+def test_same_identity_reused_attempt_cancels_capture_without_restoring_old_values(app, kind):
+    requests = []
+    store = Store(persist=False)
+    store.apply_jobs([Job("101", "old attempt", "cpu", "RUNNING")])
+    app.store = store
+    app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)))
+    identity = key(attempt="|")
+    old_control = enable(app, identity)
+    assert M.set_rate(app, identity, 17) and M.set_delta(app, identity, .1)
+    slider = old_control.slider if kind == "window" else old_control.rate_slider
+    assert M.handle_mouse(app, slider.top, slider.right - 1, button="press")
+    assert M.active(app)
+    store.apply_jobs([])
+    store.apply_jobs([Job("101", "new attempt", "cpu", "RUNNING")])
+    # Even without an intermediate redraw, a stale token must expire and the
+    # original capture preview must never be restored into the replacement.
+    M.tick(app)
+    entry = M.initialize(app)["entries"][identity]
+    assert not M.active(app) and entry["token"] != old_control.token
+    assert entry["rate"] == 1 and entry["delta"] == 5.0 and not entry["enabled"]
+    assert requests[-1] == {}
+    assert M.handle_mouse(app, slider.top, slider.left, button="release")
+    assert entry["rate"] == 1 and entry["delta"] == 5.0
+    C.begin_frame(app, 120, 40)
+    draw(app, identity)
+    fresh = current(app)
+    assert M.set_rate(app, identity, 3)
+    assert M.handle_mouse(app, fresh.rate_slider.top, fresh.rate_slider.right - 1, button="press")
+    assert M.handle_mouse(app, fresh.rate_slider.top, fresh.rate_slider.right - 1, button="release")
+    assert entry["rate"] == 100 and requests[-1] == {identity: 100}
+
+
+def test_unobserved_reused_attempt_rejects_old_palette_token_until_fresh_publication(app):
+    store = Store(persist=False)
+    store.apply_jobs([Job("101", "old", "cpu", "RUNNING")])
+    app.store = store
+    identity = key(attempt="|")
+    old = enable(app, identity)
+    assert M.set_rate(app, identity, 100)
+    store.apply_jobs([])
+    store.apply_jobs([Job("101", "replacement", "cpu", "RUNNING")])
+    assert M.run_command(app, ["metric-sampling", old.token, "50"])
+    entry = M.initialize(app)["entries"][identity]
+    assert entry["rate"] == 1 and not entry["running"]
+    assert entry["token"] != old.token
+    assert not M.set_rate(app, identity, 25)
+    C.begin_frame(app, 120, 40)
+    draw(app, identity)
+    assert M.set_rate(app, identity, 25)
+
+
+@pytest.mark.parametrize("kind", ["window", "sampling"])
+def test_finished_capture_never_restores_a_faster_rate_after_invalidation(app, kind):
+    job = Job("101", "finishing", "cpu", "RUNNING", submit="s", start="r")
+    requests = []
+    app.store = SimpleNamespace(jobs=[job])
+    app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)))
+    identity = key(attempt="s|r")
+    control = enable(app, identity)
+    assert M.set_rate(app, identity, 50)
+    slider = control.slider if kind == "window" else control.rate_slider
+    M.handle_mouse(app, slider.top, slider.right - 1, button="press")
+    job.state = "COMPLETED"
+    M.tick(app)
+    assert not M.active(app)
+    assert M.initialize(app)["entries"][identity]["rate"] == 1
+    assert requests[-1] == {}

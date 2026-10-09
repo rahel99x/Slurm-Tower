@@ -1,7 +1,7 @@
-"""Per-metric live display windows, independent of scheduler sampling cadence.
+"""Exact-source Live windows and independent sampling-rate controls.
 
-These controls only change the displayed time range. A one millisecond window
-never implies one millisecond measurements or additional scheduler requests.
+The time window changes only the display. The separate rate control publishes
+bounded requests to background collectors without performing source I/O here.
 State is transient, bounded, and scoped to an exact job/source/attempt.
 """
 
@@ -21,6 +21,8 @@ MAX_METRICS = 128
 MIN_WIDTH = 24
 DOCUMENT_INTERVAL = 0.1
 CAPTURE_TIMEOUT = 15.0
+MIN_RATE = 1
+MAX_RATE = 100
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,8 @@ class Controls:
     slider: Rect
     slider_full: Rect
     layer: int = 0
+    rate_slider: Rect | None = None
+    rate_slider_full: Rect | None = None
 
 
 def initialize(app):
@@ -49,6 +53,7 @@ def initialize(app):
             "command_viewport": None,
             "capture": None,
             "focus": None,
+            "focus_kind": "window",
             "pending_focus": None,
             "revision": 0,
             "ascii": False,
@@ -109,12 +114,89 @@ def format_delta(value):
     return f"{value:.3g}s" if value >= 1 else f"{value*1000:.3g}ms"
 
 
+def rate_fraction(value):
+    """Sampling multipliers use an independent, linear integer scale."""
+    from .metric_sampling import validate_rate
+
+    try:
+        value = validate_rate(value)
+    except (ValueError, TypeError, OverflowError):
+        value = MIN_RATE
+    return (value - MIN_RATE) / (MAX_RATE - MIN_RATE)
+
+
+def rate_at(value):
+    if not _finite(value):
+        value = 0.0
+    value = min(1.0, max(0.0, value))
+    return round(MIN_RATE + value * (MAX_RATE - MIN_RATE))
+
+
+def _sync_sampling(app):
+    """Publish requests once; eligibility checks may invalidate other entries."""
+    state = initialize(app)
+    if state.get("sampling_syncing"):
+        return
+    from .metric_sampling import sync
+
+    state["sampling_syncing"] = True
+    try:
+        sync(app)
+    finally:
+        state["sampling_syncing"] = False
+
+
+def _generation(app, identity):
+    """Read the exact queue-attempt generation from its published Store."""
+    owner = getattr(app, "_chart_owner", app)
+    store = getattr(owner, "store", None)
+    reader = getattr(store, "job_attempt", None)
+    if not callable(reader) or len(identity) < 2:
+        return None
+    generation = reader(str(identity[1]))
+    if type(generation) is not int or generation < 0:
+        return None
+    return id(store), generation
+
+
+def _invalidate(app, entry, *, reset_window=False, rotate_token=False):
+    """Expired attempts cannot retain or restore faster collection requests."""
+    state = initialize(app)
+    changed_sampling = entry.get("rate", MIN_RATE) != MIN_RATE
+    changed = changed_sampling or entry["enabled"]
+    entry.update(running=False, enabled=False, rate=MIN_RATE)
+    if reset_window:
+        changed |= entry["delta"] != MAX_DELTA
+        entry["delta"] = MAX_DELTA
+    if rotate_token:
+        state["counter"] += 1
+        entry["token"] = "m" + str(state["counter"])
+        changed = True
+    if changed:
+        state["revision"] += 1
+    if changed_sampling:
+        _sync_sampling(app)
+
+
+def _bind_generation(app, identity, entry):
+    generation = _generation(app, identity)
+    if generation is None:
+        return True
+    previous = entry.get("generation")
+    entry["generation"] = generation
+    if previous is not None and previous != generation:
+        _invalidate(app, entry, reset_window=True, rotate_token=True)
+        return False
+    return True
+
+
 def _entry(app, identity, *, running=None):
     state = initialize(app)
     identity = canonical(identity)
     if identity is None:
         return None
     entry = state["entries"].get(identity)
+    changed_sampling = False
     if entry is None and running is False:
         return None
     if entry is None:
@@ -122,27 +204,44 @@ def _entry(app, identity, *, running=None):
         entry = {
             "token": "m" + str(state["counter"]),
             "delta": MAX_DELTA,
+            "rate": MIN_RATE,
             "enabled": False,
             "running": False,
+            "generation": None,
         }
         state["entries"][identity] = entry
         state["wanted_revision"] = state.get("wanted_revision", 0) + 1
     state["entries"].move_to_end(identity)
     while len(state["entries"]) > MAX_METRICS:
-        stale, _ = state["entries"].popitem(last=False)
+        stale, evicted = state["entries"].popitem(last=False)
+        changed_sampling |= evicted.get("rate", MIN_RATE) != MIN_RATE
         state["wanted_revision"] = state.get("wanted_revision", 0) + 1
         if state["current"].get(_family(stale)) == stale:
             state["current"].pop(_family(stale), None)
     if running is not None:
-        entry["running"] = running is True
+        changed_sampling |= entry["running"] != (running is True) and entry.get(
+            "rate", MIN_RATE
+        ) != MIN_RATE
         if running is True:
+            # A fresh source publication can establish a replacement attempt.
+            # Retained old commands only run through _eligible and are rejected.
+            if entry.get("generation") is not None:
+                _bind_generation(app, identity, entry)
+            entry["running"] = True
+            previous = state["current"].get(_family(identity))
+            if previous is not None and previous != identity:
+                old = state["entries"].get(previous)
+                if old:
+                    changed_sampling |= old.get("rate", MIN_RATE) != MIN_RATE
+                    _invalidate(app, old)
             state["current"][_family(identity)] = identity
             state["current"].move_to_end(_family(identity))
             while len(state["current"]) > MAX_METRICS:
                 state["current"].popitem(last=False)
-        elif entry["enabled"]:
-            entry["enabled"] = False
-            state["revision"] += 1
+        else:
+            _invalidate(app, entry)
+    if changed_sampling:
+        _sync_sampling(app)
     return entry
 
 
@@ -229,9 +328,10 @@ def _eligible(app, identity):
                 )
                 prefix = "scheduler:" if identity[4].startswith("scheduler:") else ""
                 valid = identity[4] == prefix + attempt
-    if not valid and entry and entry["enabled"]:
-        entry["enabled"] = False
-        state["revision"] += 1
+    if valid:
+        valid = _bind_generation(app, identity, entry)
+    if not valid and entry:
+        _invalidate(app, entry)
     return valid
 
 
@@ -315,38 +415,91 @@ def set_delta(app, identity, value):
     return True
 
 
-def _row(g, entry, width):
-    """One stable-width row, with both slider endpoints at compact widths."""
-    compact = width < 36
-    if compact:
+def set_rate(app, identity, value):
+    identity = canonical(identity)
+    from .metric_sampling import validate_rate
+
+    try:
+        value = validate_rate(value)
+    except (ValueError, TypeError, OverflowError):
+        return False
+    if identity is None or not _eligible(app, identity):
+        return False
+    state = initialize(app)
+    entry = state["entries"][identity]
+    if entry.get("rate", MIN_RATE) != value:
+        entry["rate"] = value
+        state["revision"] += 1
+        _sync_sampling(app)
+    return True
+
+
+def _row(g, entry, width, *, app=None, identity=None):
+    """A stable one-row layout for both independent sliders, even at 24 cells."""
+    from .metric_sampling import cadence, format_interval
+
+    def interval(rate=None):
+        value = cadence(app, identity, rate=rate) if app is not None else None
+        return format_interval(value, ascii_=g.ascii) if value is not None else "?"
+
+    current_interval = interval()
+    slow_interval, fast_interval = interval(MIN_RATE), interval(MAX_RATE)
+    if width < 64:
         toggle = (
-            ("+ Live" if entry["enabled"] else "o Live")
+            ("+" if entry["enabled"] else "o")
             if g.ascii
-            else ("● Live" if entry["enabled"] else "○ Live")
+            else ("●" if entry["enabled"] else "○")
         )
-        label = format_delta(entry["delta"])
-        label_width = 6
+        delta_prefix, delta_suffix = "5s", "1ms"
+        rate_prefix = L.pad(current_interval, 6)
+        rate_suffix = L.pad(fast_interval, 6)
+        separator = " "
     else:
         toggle = "[Live ON ]" if entry["enabled"] else "[Live off]"
-        label = ("dt " if g.ascii else "Δ ") + format_delta(entry["delta"])
-        label_width = 9 if g.ascii else 8
-    text_prefix = toggle + " " + L.pad(label, label_width) + "5s "
-    suffix = " 1ms"
-    count = max(3, width - L.vlen(text_prefix) - L.vlen(suffix))
-    slider_left = L.vlen(text_prefix)
-    index = round(fraction(entry["delta"]) * (count - 1))
-    track = "-" if g.ascii else "─"
-    thumb = "o" if g.ascii else "◆"
+        delta_prefix = "Delta " + L.pad(format_delta(entry["delta"]), 6) + " 5s "
+        delta_suffix = " 1ms"
+        rate_prefix = (
+            "Poll " + L.pad(current_interval, 6) + " "
+            + L.pad(slow_interval, 6) + " "
+        )
+        rate_suffix = " " + L.pad(fast_interval, 6)
+        separator = " | " if g.ascii else " │ "
+    fixed = sum(
+        L.vlen(part)
+        for part in (
+            toggle, " ", delta_prefix, delta_suffix, separator,
+            rate_prefix, rate_suffix,
+        )
+    )
+    available = max(4, width - fixed)
+    delta_count, rate_count = available // 2, available - available // 2
+    delta_left = L.vlen(toggle + " " + delta_prefix)
+    rate_left = delta_left + delta_count + L.vlen(delta_suffix + separator + rate_prefix)
+    track, thumb = ("-", "o") if g.ascii else ("─", "◆")
+
+    def slider(count, value):
+        index = round(value * (count - 1))
+        return [
+            (track * index, "track"),
+            (thumb, "cursor+bold"),
+            (track * (count - index - 1), "track"),
+        ]
+
     row = [
         (toggle, "cyan+bold" if entry["enabled"] else "muted"),
-        (" " + L.pad(label, label_width), "text-secondary"),
-        ("5s ", "dim"),
-        (track * index, "track"),
-        (thumb, "cursor+bold"),
-        (track * (count - index - 1), "track"),
-        (suffix, "dim"),
+        (" " + delta_prefix, "text-secondary"),
     ]
-    return L.clip_row(row, width), (0, L.vlen(toggle), slider_left, slider_left + count)
+    row.extend(slider(delta_count, fraction(entry["delta"])))
+    row.extend([
+        (delta_suffix, "dim"), (separator, "border"),
+        (rate_prefix, "text-secondary"),
+    ])
+    row.extend(slider(rate_count, rate_fraction(entry.get("rate", MIN_RATE))))
+    row.append((rate_suffix, "dim"))
+    return L.clip_row(row, width), (
+        0, L.vlen(toggle), delta_left, delta_left + delta_count,
+        rate_left, rate_left + rate_count,
+    )
 
 
 def controls(g, app, identity, width, *, running=True, row=0, column=0, layer=0):
@@ -366,7 +519,7 @@ def controls(g, app, identity, width, *, running=True, row=0, column=0, layer=0)
         )
     ):
         return [], []
-    rendered, spans = _row(g, entry, width)
+    rendered, spans = _row(g, entry, width, app=app, identity=identity)
     from .chart_interaction import Plot, put_records
 
     rect = Rect(row, column, row + 1, column + width)
@@ -405,10 +558,22 @@ def controls(g, app, identity, width, *, running=True, row=0, column=0, layer=0)
             "control",
             {
                 "id": "metric-window:" + entry["token"],
-                "label": "Adjust Live metric time window",
+                "label": "Adjust Live metric time window; right-click resets to 5 seconds",
                 "left": column + spans[2],
                 "right": column + spans[3],
                 "action": ("command", "metric-window " + entry["token"] + " focus"),
+                "group": "metric-live",
+            },
+        ),
+        (
+            row,
+            "control",
+            {
+                "id": "metric-sampling:" + entry["token"],
+                "label": "Adjust metric polling interval; right-click resets the rate",
+                "left": column + spans[4],
+                "right": column + spans[5],
+                "action": ("command", "metric-sampling " + entry["token"] + " focus"),
                 "group": "metric-live",
             },
         ),
@@ -504,9 +669,9 @@ def publish(app, records):
     published = []
     if not _blocked(app):
         for record in records:
-            if not _eligible(app, record.key) or len(record.payload) != 5:
+            if not _eligible(app, record.key) or len(record.payload) != 7:
                 continue
-            a, b, c, d, token = record.payload
+            a, b, c, d, e, f, token = record.payload
             entry = state["entries"].get(record.key)
             if not entry or token != entry["token"]:
                 continue
@@ -522,9 +687,16 @@ def publish(app, records):
                 record.rect.bottom,
                 record.rect.left + d,
             )
+            rate_slider = Rect(
+                record.rect.top,
+                record.rect.left + e,
+                record.rect.bottom,
+                record.rect.left + f,
+            )
             visible_toggle = _clip(toggle, record.visible)
             visible_slider = _clip(slider, record.visible)
-            if visible_toggle and visible_slider:
+            visible_rate = _clip(rate_slider, record.visible)
+            if visible_toggle and visible_slider and visible_rate:
                 published.append(
                     Controls(
                         record.key,
@@ -535,6 +707,8 @@ def publish(app, records):
                         visible_slider,
                         slider,
                         record.layer,
+                        visible_rate,
+                        rate_slider,
                     )
                 )
             if len(published) >= MAX_METRICS:
@@ -569,6 +743,12 @@ def descriptors(app):
                 control.slider,
                 "Adjust Live metric time window",
                 "metric-window " + control.token + " focus",
+            ),
+            (
+                "metric-sampling",
+                control.rate_slider,
+                "Adjust metric polling interval",
+                "metric-sampling " + control.token + " focus",
             ),
         ):
             output.append(
@@ -630,13 +810,24 @@ def cancel(app):
     capture = state["capture"]
     if capture:
         entry = state["entries"].get(capture["control"].key)
-        if entry and entry["delta"] != capture["original"]:
-            entry["delta"] = capture["original"]
+        field = "rate" if capture.get("kind") == "sampling" else "delta"
+        if (
+            entry
+            and entry.get("token") is not None
+            and entry.get("token") == getattr(capture["control"], "token", None)
+            and entry.get("running")
+            and _eligible(app, capture["control"].key)
+            and entry[field] != capture["original"]
+        ):
+            entry[field] = capture["original"]
             state["revision"] += 1
+            if field == "rate":
+                _sync_sampling(app)
     if capture:
         state["cancelled_release"] = True
     state["capture"] = None
     state["focus"] = None
+    state["focus_kind"] = "window"
     state["pending_focus"] = None
     return capture is not None
 
@@ -644,7 +835,7 @@ def cancel(app):
 def tick(app, now=None):
     state = initialize(app)
     for identity, entry in state["entries"].items():
-        if entry["enabled"]:
+        if entry["enabled"] or entry.get("rate", MIN_RATE) != MIN_RATE:
             _eligible(app, identity)
     capture = state["capture"]
     if capture:
@@ -689,9 +880,16 @@ def tick(app, now=None):
         state["pending_focus"] = None
 
 
-def _move(app, control, x):
-    span = control.slider_full.right - control.slider_full.left - 1
-    set_delta(app, control.key, delta_at((x - control.slider_full.left) / max(1, span)))
+def _move(app, control, x, kind="window"):
+    slider = control.rate_slider_full if kind == "sampling" else control.slider_full
+    if slider is None:
+        return
+    span = slider.right - slider.left - 1
+    position = (x - slider.left) / max(1, span)
+    if kind == "sampling":
+        set_rate(app, control.key, rate_at(position))
+    else:
+        set_delta(app, control.key, delta_at(position))
 
 
 def _focus_graph(app, token, kind):
@@ -735,19 +933,27 @@ def handle_mouse(app, y, x, button="left", shift=False):
             ):
                 cancel(app)
                 return True
-            _move(app, control, x)
+            _move(app, control, x, capture.get("kind", "window"))
             capture["last"] = time.monotonic()
             if button == "release":
                 state["capture"] = None
             return True
         cancel(app)
     if (
-        button not in ("press", "left")
+        button not in ("press", "left", "right")
         or _blocked(app)
         or state["context"] != _context(app)
     ):
         return False
     for control in reversed(state["records"]):
+        if button == "right":
+            if control.slider.contains(y, x):
+                set_delta(app, control.key, MAX_DELTA)
+                return True
+            if control.rate_slider and control.rate_slider.contains(y, x):
+                set_rate(app, control.key, MIN_RATE)
+                return True
+            continue
         if control.toggle.contains(y, x):
             from .chart_interaction import cancel as cancel_chart
 
@@ -757,20 +963,32 @@ def handle_mouse(app, y, x, button="left", shift=False):
             _focus_graph(app, control.token, "metric-live")
             state["focus"] = None
             return True
+        kind = None
         if control.slider.contains(y, x):
+            kind = "window"
+        elif control.rate_slider and control.rate_slider.contains(y, x):
+            kind = "sampling"
+        if kind:
             from .chart_interaction import cancel as cancel_chart
 
             cancel_chart(app)
             state["focus"] = control.token
-            _focus_graph(app, control.token, "metric-window")
+            state["focus_kind"] = kind
+            _focus_graph(
+                app, control.token,
+                "metric-sampling" if kind == "sampling" else "metric-window",
+            )
             if button == "press":
                 state["capture"] = {
                     "control": control,
                     "context": _context(app),
-                    "original": state["entries"][control.key]["delta"],
+                    "kind": kind,
+                    "original": state["entries"][control.key][
+                        "rate" if kind == "sampling" else "delta"
+                    ],
                     "last": time.monotonic(),
                 }
-            _move(app, control, x)
+            _move(app, control, x, kind)
             return True
     state["focus"] = None
     return False
@@ -789,6 +1007,17 @@ def handle_key(app, key):
         return key in ("esc", "enter")
     if key in ("left", "right", "home", "end", "pgup", "pgdn"):
         entry = state["entries"][control.key]
+        if state.get("focus_kind") == "sampling":
+            step = 10 if key in ("pgup", "pgdn") else 1
+            value = MIN_RATE if key == "home" else MAX_RATE if key == "end" else (
+                min(MAX_RATE, max(
+                    MIN_RATE,
+                    entry.get("rate", MIN_RATE)
+                    + (-step if key in ("left", "pgup") else step),
+                ))
+            )
+            set_rate(app, control.key, value)
+            return True
         step = (5 if key in ("pgup", "pgdn") else 1) / max(
             1, control.slider_full.right - control.slider_full.left - 1
         )
@@ -808,7 +1037,7 @@ def handle_key(app, key):
 
 
 def command_names():
-    return ["metric-live", "metric-window"]
+    return ["metric-live", "metric-window", "metric-sampling"]
 
 
 def run_command(app, args):
@@ -829,10 +1058,12 @@ def run_command(app, args):
             control.key,
             not entry["enabled"] if args[2] == "toggle" else args[2] == "on",
         )
-    elif args[0] == "metric-window" and len(args) == 3:
+    elif args[0] in ("metric-window", "metric-sampling") and len(args) == 3:
+        kind = "sampling" if args[0] == "metric-sampling" else "window"
         if args[2] == "focus":
             state = initialize(app)
             state["focus"] = control.token
+            state["focus_kind"] = kind
             state["pending_focus"] = (
                 {
                     "control": control,
@@ -842,15 +1073,38 @@ def run_command(app, args):
                 if _current(app, control.token) is None
                 else None
             )
+        elif kind == "sampling":
+            try:
+                value = MIN_RATE if args[2] == "reset" else int(args[2])
+            except (ValueError, OverflowError):
+                value = None
+            if set_rate(app, control.key, value):
+                from .metric_sampling import cadence, format_interval
+
+                glyphs = getattr(getattr(app, "views_ref", None), "g", None)
+                ascii_ = bool(getattr(glyphs, "ascii", False))
+                interval = cadence(app, control.key)
+                description = (
+                    format_interval(interval, ascii_=ascii_)
+                    if interval is not None else "unavailable"
+                )
+                _say(app, "Metric polling interval: " + description)
+            else:
+                _say(app, "Metric sampling rate must be an integer from 1 to 100")
         else:
             try:
-                value = float(args[2])
+                value = MAX_DELTA if args[2] == "reset" else float(args[2])
             except (ValueError, OverflowError):
                 value = float("nan")
             if not set_delta(app, control.key, value):
                 _say(app, "Metric window must be 0.001 to 5 seconds")
     else:
-        _say(app, "metric-live TOKEN on|off|toggle | metric-window TOKEN focus|SECONDS")
+        _say(
+            app,
+            "metric-live TOKEN on|off|toggle | "
+            "metric-window TOKEN focus|SECONDS|reset | "
+            "metric-sampling TOKEN focus|1..100|reset",
+        )
     return True
 
 
@@ -887,7 +1141,10 @@ def feedback(app, g):
         entry = state["entries"].get(control.key)
         if not entry:
             continue
-        row, _ = _row(g, entry, control.rect.right - control.rect.left)
+        row, _ = _row(
+            g, entry, control.rect.right - control.rect.left,
+            app=app, identity=control.key,
+        )
         left = control.visible.left - control.rect.left
         # Control text is one-cell terminal glyphs; cut in display coordinates.
         clipped = []

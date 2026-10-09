@@ -86,7 +86,7 @@ It therefore uses local Slurm commands and normal identity detection.
 | Live resource sampling | Every 5 seconds |
 | Accounting sampling | Every 10 seconds |
 | Partition display | All reported local partitions, including idle CPU-only partitions |
-| Live GPU sampling | Disabled |
+| Live GPU sampling | Enabled for detected running GPU allocations |
 | Queue forecast probes | Disabled |
 | Allocation-budget queries | Disabled |
 | Display | Unicode preference, with ASCII fallback |
@@ -240,13 +240,16 @@ Hover highlights controls when the terminal reports pointer movement.
 Drag visible job rows to mark a range; Shift preserves existing marks.
 Review the complete target list before confirming a bulk action.
 
-The top-right update slider requests a fetching multiplier from 1x to 50x.
-Press and drag its track to adjust the multiplier.
-Use `:rate` to inspect the active multiplier and effective Jobs interval.
-Use `:rate N` to select a whole-number multiplier, or `:rate reset` to restore 1x.
-The desktop Jobs interval starts at two seconds at 1x.
+The top-right update slider shows the effective Jobs fetching interval.
+Press and drag its track to request shorter or longer intervals.
+Its labels use `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
+Use `:rate` to inspect the effective Jobs interval.
+Use `:rate N` to select a whole-number request factor from one to 50, or `:rate reset` to restore the default request.
+The desktop Jobs interval starts at two seconds with the default request.
 Source minimum intervals and retry backoff limit higher rates.
 Sources shows the effective cadence.
+Running metric graphs have a separate polling slider next to their display-window slider.
+See [chart controls](guides/charts.md#follow-a-running-metric) to adjust one exact job's reads.
 See [Live workbench](guides/live-workbench.md) for the toolbar, controls, limits, and project reporting procedure.
 Use `:smoothscroll off` for immediate wheel movement.
 Use View → Disable startup animation or `:startup off` to suppress the welcome.
