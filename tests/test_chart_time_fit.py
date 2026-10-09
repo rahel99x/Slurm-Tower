@@ -139,7 +139,7 @@ def test_selector_inherits_resolved_plot_background_in_all_themes(app, theme, so
         assert item.visible.contains(y, x)
         style = P.resolve(P.cell_style(row[0][1], theme), theme)
         assert style.background == expected
-        assert style.foreground == P.resolve("cursor", theme).foreground
+        assert style.foreground == P.resolve("accent", theme).foreground
         assert "bold" not in row[0][1] and "rev" not in row[0][1]
 
 
@@ -154,6 +154,55 @@ def test_topmost_nested_overlay_and_wide_cells_choose_the_painted_background(app
     assert P.resolve(feedback[(5, 30)][0][1], app.theme).background == expected
     expected = P.resolve(P.cell_style("bg:surface-sunken", app.theme), app.theme).background
     assert P.resolve(feedback[(5, 25)][0][1], app.theme).background == expected
+
+
+@pytest.mark.parametrize("theme", P.THEME_NAMES + ("monokai", "gruvbox", "Gruvbox Dark", "Modnokai"))
+@pytest.mark.parametrize("dragging", [False, True])
+def test_all_selector_marks_use_the_current_theme_accent_and_retain_their_background(app, theme, dragging):
+    app.theme = theme
+    plot(app)
+    rows = [[(" " * 120, "bg:surface-sunken")]] * 40
+    C.hover(app, 5, 30)
+    if dragging:
+        C.handle_mouse(app, 4, 20, button="press")
+        C.handle_mouse(app, 9, 45, button="drag")
+    feedback = C.feedback(app, rows=rows)
+    assert {char for _, _, row in feedback for char, _ in row} == {"·", "+"}
+    accent = P.resolve("accent", theme).foreground
+    background = P.resolve(P.cell_style("bg:surface-sunken", theme), theme).background
+    for _, _, row in feedback:
+        for char, style in row:
+            resolved = P.resolve(P.cell_style(style, theme), theme)
+            assert style.split("+")[0] == "accent"
+            assert "bold" not in style.split("+")
+            assert resolved.foreground == accent and resolved.background == background
+    if P.canonical_theme(theme) in ("darcula", "gruvbox-dark"):
+        assert accent == P.resolve("cyan", theme).foreground
+        assert accent == P.resolve("cursor", theme).foreground
+
+
+@pytest.mark.parametrize("before,after", [("darcula", "gruvbox-dark"), ("gruvbox", "light"),
+                                         ("monokai", "darcula"), ("dark", "modnokai")])
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_republished_graph_selector_changes_its_accent_and_background_on_theme_switch(app, before, after, ascii_):
+    app.theme = before
+    item = plot(app)
+    rows = [[(" " * 120, "bg:surface")]] * 40
+    C.hover(app, 5, 30)
+    original = C.feedback(app, rows=rows, ascii_=ascii_)
+    app.theme = after
+    C.begin_frame(app, 120, 40)
+    current = plot(app)
+    changed = C.feedback(app, rows=rows, ascii_=ascii_)
+    assert current.rect == item.rect and current.key == item.key
+    assert len(changed) == len(original)
+    assert {char for _, _, row in changed for char, _ in row} == ({".", "+"} if ascii_ else {"·", "+"})
+    old_style = P.resolve(P.cell_style(original[0][2][0][1], before), before)
+    new_style = P.resolve(P.cell_style(changed[0][2][0][1], after), after)
+    assert old_style.foreground != new_style.foreground
+    assert new_style.foreground == P.resolve("accent", after).foreground
+    assert new_style.background == P.resolve(P.cell_style("bg:surface", after), after).background
+    assert new_style.background != old_style.background
 
 
 @pytest.mark.parametrize("value", ["#", "#12345", "#GGGGGG", "surface", "#1234567", "\x1b[31m"])

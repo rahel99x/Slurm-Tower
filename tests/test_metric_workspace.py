@@ -96,6 +96,33 @@ def test_scrolled_details_graph_rows_and_capture_follow_current_viewport(dashboa
     assert not C.active(app)
 
 
+@pytest.mark.parametrize("tab", ["analytics", "jobs"])
+@pytest.mark.parametrize("ascii_", [False, True])
+@pytest.mark.parametrize("edge", ["top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right"])
+def test_native_and_inline_captured_buffer_clamps_every_edge_without_changing_job(dashboard, tab, ascii_, edge):
+    app, views = dashboard.app, dashboard.views
+    app.tab = tab
+    app.job_panel_state["mode"] = "analytics"
+    views.set_ascii(ascii_)
+    _, hits = draw(dashboard, 180, 70)
+    plot = next(value for value in C.initialize(app)["plots"] if value.key[0] == "resource-series")
+    margin = C.capture_bounds(plot)
+    top, left, bottom, right = plot.visible.top, plot.visible.left, plot.visible.bottom, plot.visible.right
+    y, x = top + (bottom - top) // 2, left + (right - left) // 2
+    end_y = margin.top if "top" in edge else margin.bottom - 1 if "bottom" in edge else min(bottom - 1, y + 1)
+    end_x = margin.left if "left" in edge else margin.right - 1 if "right" in edge else min(right - 1, x + 5)
+    selected, marks = app.selected_id, set(app.marks)
+    app.click(y, x, hits, button="press", shift=True)
+    assert C.active(app)
+    app.click(end_y, end_x, hits, button="drag")
+    assert C.active(app)
+    current = C.initialize(app)["capture"]["current"]
+    assert plot.visible.contains(*current)
+    app.click(end_y, end_x, hits, button="release")
+    assert not C.active(app) and C.bounds(app, plot.key) is not None
+    assert app.selected_id == selected and app.marks == marks
+
+
 def test_drag_feedback_does_not_recompose_cached_graph(dashboard, monkeypatch):
     app, views, store = dashboard.app, dashboard.views, dashboard.store
     app.tab = "analytics"
@@ -203,15 +230,29 @@ def test_one_millisecond_live_window_stays_active_when_samples_are_absent(dashbo
     monkeypatch.setattr(clock, "now", lambda: 1191.0)
     draw(dashboard, 180, 70)
     control = next(c for c in metric_live.initialize(app)["records"] if c.key[2] == "cpu-rate")
+    full = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
     assert metric_live.set_enabled(app, control.key, True)
     assert metric_live.set_delta(app, control.key, .001)
     original = list(store.series_of("7"))
-    rows, _ = draw(dashboard, 180, 70)
+    rows, hits = draw(dashboard, 180, 70)
     assert metric_live.window(app, control.key) == (1190.999, 1191.0)
     assert metric_live.document_interval(app) == .1
     text = "\n".join(map(L.row_text, rows))
     assert "1ms" in text and "no observations in live window" in text
-    assert all(plot.key != control.key for plot in C.initialize(app)["plots"])
+    empty = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
+    assert empty.kind == "metric-empty" and empty.x_bounds == (1190.999, 1191.0)
+    y, x = empty.visible.top, empty.visible.left
+    assert not C.hover(app, y, x) and C.feedback(app) == []
+    assert not C.handle_mouse(app, y, x, button="press") and not C.active(app)
+    assert list(store.series_of("7")) == original
+    selected, marks = app.selected_id, set(app.marks)
+    app.click(y, x, hits, button="right")
+    assert not metric_live.enabled(app, control.key)
+    assert app.selected_id == selected and app.marks == marks
+    draw(dashboard, 180, 70)
+    restored = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
+    assert restored.kind == "metric"
+    assert restored.x_bounds == full.x_bounds and restored.y_bounds == full.y_bounds
     assert list(store.series_of("7")) == original
 
 
@@ -282,6 +323,13 @@ def test_native_live_curve_cannot_use_future_observations_to_fill_current_window
                               times=(1180, 1200), sample_interval=12)
     C.publish(app, 80, 30)
     assert observed == [([10], [1180])]
-    assert not C.initialize(app)["plots"]
+    empty, = C.initialize(app)["plots"]
+    assert empty.kind == "metric-empty" and empty.key == identity
+    assert empty.x_bounds == (1186.0, 1191.0)
+    y, x = empty.visible.top, empty.visible.left
+    assert not C.hover(app, y, x) and C.feedback(app) == []
+    assert not C.handle_mouse(app, y, x, button="press") and not C.active(app)
     text = "\n".join(map(L.row_text, rows))
     assert "Source age 11s" in text and "no observations in live window" in text
+    assert C.handle_mouse(app, y, x, button="right")
+    assert not metric_live.enabled(app, identity) and C.bounds(app, identity) is None

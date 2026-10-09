@@ -1745,7 +1745,7 @@ class App:
         return f"no finished run of '{what}' in the window and no such running job"
 
     def click(self, y: int, x: int, hits: Sequence, button: str = "left", shift: bool = False) -> None:
-        """Select rows and controls, route History exports, and consume Jobs right-click clearing.
+        """Select rows, reset graphs, route History exports, and clear Jobs selections.
 
         Shift-click extends text selection; other pages retain right-click text selection.
         """
@@ -1757,6 +1757,12 @@ class App:
         from .job_selection import context_click
         if context_click(self, y, x, button=button):
             return
+        if button in ("press", "left"):
+            # A fresh gesture commits the previous marked range even when its
+            # terminal release was lost. Controls can activate before the row
+            # selector runs; an old capture must not later restore old marks or
+            # consume Escape after a Details button has already gained focus.
+            getattr(self, "job_selection_state", {})["capture"] = None
         from .startup import handle_mouse as startup_mouse
         startup_mouse(self, y, x, button=button, shift=shift)
         from .interaction import handle_mouse as pointer_mouse

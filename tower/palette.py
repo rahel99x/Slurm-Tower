@@ -51,7 +51,7 @@ DARCULA_PALETTE = dict(PALETTE, **{
     "green": "#a9c58f", "yellow": "#ffc66d", "red": "#ff6b68",
     "cyan": "#56c4d8", "magenta": "#c792ea", "blue": "#6ea5ff",
     "track": "#42505a", "selection": "#214283", "orange": "#ffad66",
-    "cursor": "#67e8f9", "notice": "#614321", "notice-text": "#ffe0b2",
+    "cursor": "#56c4d8", "notice": "#614321", "notice-text": "#ffe0b2",
     "chart-1": "#56c4d8", "chart-2": "#c792ea", "chart-3": "#a9c58f",
     "chart-4": "#ffc66d", "chart-5": "#ff6b68", "chart-6": "#6ea5ff",
 })
@@ -75,7 +75,7 @@ GRUVBOX_DARK_PALETTE = dict(PALETTE, **{
     "green": "#b8bb26", "yellow": "#fabd2f", "red": "#fb4934",
     "cyan": "#8ec07c", "magenta": "#d3869b", "blue": "#83a598",
     "track": "#504945", "selection": "#504945", "orange": "#fe8019",
-    "cursor": "#67e8f9", "notice": "#68441d", "notice-text": "#f9e1b2",
+    "cursor": "#8ec07c", "notice": "#68441d", "notice-text": "#f9e1b2",
     "chart-1": "#8ec07c", "chart-2": "#d3869b", "chart-3": "#b8bb26",
     "chart-4": "#fabd2f", "chart-5": "#fb4934", "chart-6": "#83a598",
 })
@@ -96,6 +96,9 @@ ALIASES = {
     "accent": "cyan", "success": "green", "warning": "yellow", "warn": "yellow",
     "danger": "red", "error": "red", "text": "white", "info": "blue",
     "cool": "blue", "hot": "red", "heading": "accent", "secondary": "text-secondary",
+    # Pointer and slider glyphs use the same active accent as other controls.
+    # This alias also covers cached fg:/bg: styles and future theme palettes.
+    "cursor": "accent",
 }
 CB_MAP = {"green": "blue", "red": "yellow", "yellow": "magenta"}
 FLAGS = {"bold": "1", "dim": "2", "rev": "7", "under": "4"}
@@ -216,7 +219,9 @@ class Style:
 
 def theme_tokens(theme: str = "default") -> dict[str, str]:
     """A fresh semantic token map; callers cannot mutate the global palette."""
-    return dict(_tokens(theme))
+    tokens = dict(_tokens(theme))
+    tokens["cursor"] = tokens[_alias("cursor")]
+    return tokens
 
 
 def chart_colors(theme: str = "default") -> tuple[str, ...]:

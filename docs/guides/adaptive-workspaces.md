@@ -84,6 +84,9 @@ The active queue retains at least one data row when both sections contain jobs.
 The Recents split is limited to 10–90 percent of the available data space.
 
 Click a Recents row to give its list keyboard focus.
+Clicking a Jobs row also returns keyboard focus from Details to the active list.
+When Details controls have focus, press Esc once to return to Main, or use F6 or Ctrl-W to switch panes.
+These focus changes preserve marked jobs.
 Use Up, Down, Page Up, Page Down, Home, and End to navigate.
 Up at the first recent job returns to the last active job.
 The wheel stays within Recents instead of switching to the active queue.
@@ -106,11 +109,14 @@ Jobs and Recents retain separate filters and cascading sorts.
 ## Read metric graphs inside Details
 
 Open **Analytics → Job series** or an available **Research** metric view for the selected job.
-Point inside a plot for a cyan dotted crosshair.
+Point inside a plot for a dotted crosshair in the active theme's accent color.
 Drag across a time interval and release inside that plot to fit its horizontal extent and visible curve.
 Hold Shift before pressing to set explicit horizontal and vertical bounds instead.
 Selected intervals use adaptive `s`, `ms`, or `us` axis labels and identify their start timestamp.
+After pressing inside the plot, a two-cell buffer around its edges permits a small overshoot within the visible pane.
+Movement and release in that buffer use the nearest plot edge. Moving beyond it cancels the preview.
 Use `u` while pointing at the plot to undo, or `0` to reset rectangular zoom.
+Right-click inside the plot to restore its full view and turn off that metric's Live window.
 The graph keeps the exact selected job and source.
 
 A running metric can show its own Live toggle and a window slider from five seconds to one millisecond.

@@ -85,6 +85,18 @@ def _say(app, message):
         callback(message)
 
 
+def focus_main(app):
+    """Give row navigation ownership to Main without changing marked jobs.
+
+    Accepted row presses can finish before the panel's ordinary outside-click
+    handler runs. Release native Details and graph focus explicitly instead of
+    leaving the next arrow attached to the previous clicked Details control.
+    """
+    from .workspace_layout import initialize as layout_state, _focus_main_content
+    layout_state(app).focus = "main"
+    _focus_main_content(app)
+
+
 def _activate(app, mode, *, focus=True, view=None):
     state = initialize(app)
     if mode not in MODES:
@@ -137,13 +149,17 @@ def handle_key(app, key):
         return False
     if not state["focus"]:
         return False
+    from .workspace_layout import initialize as layout_state
+    if layout_state(app).focus != "details":
+        # Pane focus is authoritative. A stale native tab/content hint must
+        # never steal a key after Main or an explicit row graph gained focus.
+        state["focus"] = ""
+        return False
     if key in ("ctrl-w", "ctrl_w", "f6"):
         state["focus"] = ""
         return False
     if key == "esc":
-        state["focus"] = ""
-        from .workspace_layout import initialize as layout_state
-        layout_state(app).focus = "main"
+        focus_main(app)
         return True
     if key in ("enter", "tab", "btab"):
         if key == "enter" and state["focus"] == "content" and state["mode"] == "quick":
@@ -228,12 +244,18 @@ def handle_mouse(app, y, x, button="left", shift=False):
     if contains(app, y, x):
         if button in ("wheel-up", "wheel-down", "wheel_up", "wheel_down"):
             state["focus"] = "content"
+            from .workspace_layout import initialize as layout_state
+            layout_state(app).focus = "details"
             handle_key(app, "up" if button in ("wheel-up", "wheel_up") else "down")
         elif button == "left":
             state["focus"] = "content"
+            from .workspace_layout import initialize as layout_state
+            layout_state(app).focus = "details"
         return True
     if button == "left":
         state["focus"] = ""
+        if any(row == y and kind in ("job", "recent") for row, kind, _ in getattr(app, "last_hits", ())):
+            focus_main(app)
     return False
 
 

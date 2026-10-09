@@ -473,6 +473,11 @@ def _apply_input(app, event, hits, curses):
     from .job_selection import context_click
     if context_click(app, my, mx, button=button):
         return
+    if button in ("press", "left"):
+        # The toolbar can consume a fresh gesture before App.click runs.
+        # Commit an earlier marked range here too, so a lost row release
+        # cannot remain captured behind a new menu or update-slider gesture.
+        getattr(app, "job_selection_state", {})["capture"] = None
     # Every final pointer position survives global capture. Wheels change the
     # document or menu and publish fresh hover geometry immediately afterward;
     # avoid resolving the displaced graph for every report in a wheel burst.

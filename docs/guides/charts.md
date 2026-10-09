@@ -39,7 +39,9 @@ When a slider or directional button focus owns the keys, its controls take prior
 ## Point at a metric graph
 
 Move the pointer inside a visible metric plot with recorded data.
-Tower draws a thin cyan dotted crosshair with `+` at the pointer.
+Tower draws a thin dotted crosshair with `+` at the pointer.
+The dots, center marker, and selection outline use the active theme's accent color.
+They update when you change the theme.
 Unicode uses `·` for the dots; ASCII uses `.`.
 Every cell along the guide can contain a dot.
 The guide preserves the graph's background and has no black outline.
@@ -115,6 +117,9 @@ Tower calculates the vertical limits from the complete known curve inside that i
 Both axes update to the new view.
 The selection must span at least two columns.
 A click without that width leaves the view unchanged.
+After the drag starts inside the plot, a two-cell buffer surrounds each visible edge.
+Moving or releasing inside that buffer uses the nearest plot edge.
+The buffer stays inside the visible pane and does not extend the initial clickable area.
 The operation changes the display bounds and preserves the original measurements.
 Between adjacent known samples, a zoom can show their connected line even when
 the selected interval contains no original sample. The sample count still
@@ -133,6 +138,9 @@ It keeps the selected vertical limits instead of fitting them to the visible dat
 
 Press `u` while pointing at the graph to undo the last rectangular zoom.
 Press `0` while pointing at it to restore its original rectangular view.
+Right-click inside the plot to restore the full view, including an empty zoomed interval.
+This also turns off that metric's Live window. Other metric graphs keep their current views.
+In Jobs Details, the selected job and marks stay selected.
 Use `:chartzoom undo` or `:chartzoom reset` for the last selected or zoomed graph.
 In the chart inspector, use the Undo zoom and Reset zoom buttons, or
 `:chart undo` and `:chart reset`, for the current metric.
@@ -144,7 +152,7 @@ Zooms are session display state; they do not change files or sampler intervals.
 Tower retains at most 128 zoom entries and 16 undo steps per entry.
 
 Press Esc before release to discard the preview.
-Releasing outside the plot also discards it.
+Moving beyond the buffer discards the preview. A later release cannot commit it.
 Changing the page, job, source, graph bounds, panel geometry, or terminal size cancels capture.
 Opening a menu, dialog, or startup preview cancels it too.
 A missing release times out after 15 seconds.
@@ -402,9 +410,10 @@ Zoom bounds use plotted coordinates; logarithmic vertical bounds remain base-10 
 | `publish(app, width=None, height=None)` | Freeze the final visible geometry and validate capture. |
 | `hover(app, y, x)` | Update cosmetic pointer feedback from the published plots. |
 | `active(app)` | Report whether a rectangular drag is active. |
+| `capture_bounds(plot)` | Return the active drag's two-cell tolerance, clipped to the plot's visible pane. |
 | `tick(app, now=None)` | Cancel stale, blocked, or timed-out capture. |
 | `cancel(app)` | Discard an unfinished preview without changing completed zoom. |
-| `handle_mouse(app, y, x, button="left", shift=False)` | Apply plot press, motion, and valid-release controls. |
+| `handle_mouse(app, y, x, button="left", shift=False)` | Apply plot press, motion, valid-release zoom, and right-click full-view reset. |
 | `bounds(app, identity, scale=None)` | Return completed source-specific display bounds. |
 | `autofit(app, identity, scale=None)` | Identify a time-only zoom that requires an observed-data vertical fit. |
 | `undo(app, identity=None)` | Restore the previous rectangular view. |
@@ -412,7 +421,7 @@ Zoom bounds use plotted coordinates; logarithmic vertical bounds remain base-10 
 | `handle_key(app, key)` | Apply cancellation, undo, and reset controls in plot context. |
 | `command_names()` | Return the interaction command names. |
 | `run_command(app, args)` | Apply `chartzoom undo` or `chartzoom reset`. |
-| `feedback(app, ascii_=None, rows=None, overlays=())` | Return thin dotted feedback with each underlying plot cell's actual background. |
+| `feedback(app, ascii_=None, rows=None, overlays=())` | Return thin theme-colored dotted feedback with each underlying plot cell's actual background. |
 | `overlay(views, snap, app, width, height)` | Return no full modal overlay; feedback belongs to the current plot. |
 
 ### `tower.metric_live`

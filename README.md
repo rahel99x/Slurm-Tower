@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.6.0 |
+| Release | Tower 4.6.1 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -345,8 +345,11 @@ Hold Shift to add the dragged range to existing marks.
 Press Esc during a drag to restore the earlier marks.
 Press `c` after the drag to review cancellation of the marked jobs.
 Check every job ID before you confirm the action.
-Right-click anywhere on Jobs to clear the job selection and marks.
+Right-click a metric graph to restore its full view and keep the selected job and marks.
+Right-click elsewhere on Jobs to clear the job selection and marks.
 That click does not activate the control beneath the pointer.
+Click a Jobs or Recents row to return arrow navigation from Details to that list.
+Press Esc from Details control navigation to return to Main, or use F6 to switch panes.
 
 In History, select the completed or failed job.
 Press `I` for its inspector or `l` for its full Logs page.

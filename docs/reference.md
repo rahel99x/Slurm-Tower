@@ -70,14 +70,15 @@ colors; `cb` uses the color-blind palette; `reader` forces plain ASCII text.
 `monokai` is an alias for `modnokai`; `gruvbox` is an alias for `gruvbox-dark`.
 Quoted `"Gruvbox Dark"` and `gruvbox_dark` normalize to `gruvbox-dark`.
 Runtime changes repaint the canvas, blank cells, text, menus, information strips,
-and chart colours with the active palette. Terminal, mono, and reader keep the
+chart colours, and all interface symbols with the active palette. Status symbols retain their semantic colors.
+Terminal, mono, and reader keep the
 terminal's default background. Colour capacity determines the available approximation.
 
 Charts use collected measurements. Unavailable metrics and gaps remain unknown,
 and time-series detail grows as samples arrive. ASCII `--report` exports remain
 portable plain text regardless of the live dashboard's glyph preference.
 
-Visible metric plots have a thin cyan dotted pointer crosshair with the graph's background.
+Visible metric plots have a thin dotted pointer crosshair in the active theme's accent color, with the graph's background.
 Press and drag inside the plot, then release inside it, to select a time interval.
 The time selection must span two columns; labels and buttons are outside capture.
 Tower fits its vertical scale to the known curve in that interval.
@@ -86,9 +87,13 @@ That rectangle must also span one row.
 Selected intervals use relative `s`, `ms`, or `us` labels with a start-time anchor.
 Use `u` or `0` while pointing at the graph to undo or reset, or use
 `:chartzoom undo|reset` for the last selected or zoomed graph.
+Right-click inside a plot to restore its full view and turn off its Live window.
+This keeps the selected job and marks in Jobs Details.
 The inspector provides `:chart undo|reset` and corresponding buttons.
 Zoom belongs to the exact metric/source/job/attempt and remains session display state.
-Esc, an outside release, changed source or geometry, menu/dialog/startup, or a
+An active drag has a two-cell buffer around each visible edge, confined to its pane.
+Movement and release inside the buffer use the nearest plot edge; the initial press must remain inside the plot.
+Esc, movement beyond the buffer, changed source or geometry, menu/dialog/startup, or a
 15-second missing-release timeout cancels an unfinished preview.
 See [Graph interaction](guides/charts.md#zoom-a-rectangular-area) for controls and bounds.
 
@@ -192,6 +197,8 @@ layout action on any page. `:density comfortable|compact|focused` changes
 information density; `:layout split 20..80` controls Main's percentage on wide
 screens. `:layout save NAME`, `load NAME`, `delete NAME`, and `list` manage up to
 16 layouts. UI preferences persist when ordinary state is enabled.
+Click a Jobs or Recents row to give its list arrow-key ownership after a Details interaction or mouse range selection.
+Esc from Details control navigation returns to Main in one press. Focus changes preserve marked jobs.
 
 Grey dividers support mouse capture from their line and one cell beside it.
 Drag and release to change the split; Esc restores the starting size.
@@ -350,7 +357,8 @@ without motion or pulses. One-frame reports are static as well.
 The mouse works too: a click selects a row or switches tabs, a double-click opens the details (Jobs) or the series
 (History), or opens the selected file in the Logs browser. The wheel scrolls,
 and Shift-click extends a line selection from the last click.
-Right-click anywhere on Jobs clears selected and marked jobs without activating the surface beneath it.
+Right-click inside a metric plot restores its full view and keeps selected and marked jobs.
+Right-click elsewhere on Jobs clears selected and marked jobs without activating the surface beneath it.
 In History, drag through rows to mark a range; right-click inside the list for the clipboard or directory log-export menu.
 Right-click outside the History list clears its job selection.
 In Logs, right-click retains its original line-selection function.
@@ -795,7 +803,7 @@ tower/
   views.py       the tabs and overlays as rows of (text, style) segments
   interaction.py bounded visible-control graph, exact hit regions, hover feedback, and directional focus
   control_rows.py wrapped semantic control rows and translation into visible modal coordinates
-  job_panels.py  selected-job inline Inspector, Logs, Investigate, Research, and Analytics workspaces
+  job_panels.py  selected-job inline workspaces and explicit Main/Details keyboard-focus handoffs
   job_selection.py exact job-ID range capture for existing marked-job actions and confirmation
   scrolling.py   bounded PID viewport motion, immediate selection, and saved smooth-scroll preferences
   startup.py     short interruptible Unicode welcome and static ASCII fallback
@@ -803,7 +811,7 @@ tower/
   controller.py  the application state and every key, mouse click and confirmation; no curses, so tests drive it;
                  the line selection, the command palette, exports and the clipboard
   charts.py      connected quadrant curves, eight-level area bars, axes, histograms, heatmaps, and Gantt rows
-  chart_interaction.py final plot geometry, thin cyan crosshairs, exact-source time or XY zoom, cancellation, undo, and reset
+  chart_interaction.py final plot geometry, thin theme-colored crosshairs, buffered exact-source time or XY zoom, cancellation, undo, and reset
   metric_live.py per-running-metric logarithmic display windows and captured mouse or keyboard sliders
   analytics_document.py bounded native Job Series document scrolling and visible metric cards
   logs.py        bounded incremental log buffers, logical keyboard cursors, raw line ranges, and selection

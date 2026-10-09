@@ -1,8 +1,8 @@
 """Cell-accurate metric crosshairs and bounded, source-scoped box zoom.
 
-The terminal pointer is represented by a cyan dotted crosshair. The paths here
-only inspect the published graph geometry. They do not sample, scan files, copy
-series, or request scheduler work. Zoom bounds are transient display state.
+The terminal pointer is a dotted crosshair in the theme accent. These paths only
+inspect published graph geometry. They do not sample, scan files, copy series,
+or request scheduler work. Zoom bounds are transient display state.
 """
 from __future__ import annotations
 
@@ -21,7 +21,10 @@ MAX_KEY_PARTS = 16
 MAX_KEY_TEXT = 512
 MAX_OVERLAY_CELLS = 4096
 CAPTURE_TIMEOUT = 15.0
-CROSSHAIR_STYLE = "cursor"
+CAPTURE_MARGIN = 2
+# Use the active theme's accent, rather than the deliberately bright pointer
+# token used by controls. Dots, intersections and drag edges share this style.
+CROSSHAIR_STYLE = "accent"
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class Plot:
     layer: int = 0
     kind: str = "metric"
     payload: tuple = ()
+    viewport: Rect | None = None
 
 
 def initialize(app):
@@ -42,9 +46,13 @@ def initialize(app):
     if not isinstance(state, dict):
         state = {"pending": [], "plots": (), "pointer": None, "hovered": None,
                  "capture": None, "zoom": OrderedDict(), "last_key": None,
-                 "revision": 0, "frame_context": None, "ascii": False}
+                 "revision": 0, "frame_context": None, "ascii": False, "cancelled_release": False}
         app.chart_interaction_state = state
     return state
+
+
+def _translate(rect, dy=0, dx=0):
+    return Rect(rect.top + dy, rect.left + dx, rect.bottom + dy, rect.right + dx) if rect else None
 
 
 def _finite(value):
@@ -155,8 +163,27 @@ def _bounds(value):
             all(_finite(item) for item in value) and value[0] < value[1] else None)
 
 
+def _inspector_range(app, identity):
+    analysis = _state(app, "analysis_state")
+    return (getattr(app, "mode", "main") == "analysis" and analysis.get("modal") == "chart" and
+            analysis.get("chart_interaction_key") == identity)
+
+
+def _cropped(app, identity, scale):
+    """Only an existing display crop makes empty geometry a reset target."""
+    value = initialize(app)["zoom"].get(identity)
+    if value is not None and value.get("scale") == scale:
+        return True
+    from .metric_live import canonical, initialize as live_state
+    if live_state(app)["entries"].get(canonical(identity), {}).get("enabled"):
+        return True
+    analysis = _state(app, "analysis_state")
+    return bool(_inspector_range(app, identity) and
+                (analysis.get("zoom", 1) != 1 or analysis.get("pan", 0) != 0 or analysis.get("window")))
+
+
 def record(app, identity, metadata, *, row=0, column=0, scale="linear", layer=0):
-    """Stage a chart in local cells. Only the measured plot is interactive.
+    """Stage a chart in local cells, with reset-only empty cropped areas.
 
     ``metadata`` comes from ``charts.braille_chart`` or ``vbar_chart``. Use
     ``place_since`` after clipping and embedding the native document in panes.
@@ -165,10 +192,12 @@ def record(app, identity, metadata, *, row=0, column=0, scale="linear", layer=0)
     state = initialize(app)
     identity = _key(identity)
     if (identity is None or not isinstance(metadata, dict) or not metadata.get("valid", True) or
-            metadata.get("has_data", True) is False or
             scale not in ("linear", "log") or
             any(not isinstance(item, int) or isinstance(item, bool) for item in (row, column, layer)) or
             len(state["pending"]) >= MAX_PLOTS):
+        return None
+    empty = metadata.get("has_data", True) is False
+    if empty and not _cropped(app, identity, scale):
         return None
     rect, x_bounds, y_bounds = (_rect(metadata.get("plot_rect")), _bounds(metadata.get("x_bounds")),
                                _bounds(metadata.get("y_bounds")))
@@ -178,7 +207,8 @@ def record(app, identity, metadata, *, row=0, column=0, scale="linear", layer=0)
     if rect.right - rect.left > charts.MAX_COLUMNS or rect.bottom - rect.top > charts.MAX_HEIGHT:
         return None
     rect = Rect(rect.top + row, rect.left + column, rect.bottom + row, rect.right + column)
-    plot = Plot(identity, rect, rect, x_bounds, y_bounds, scale, layer)
+    plot = Plot(identity, rect, rect, x_bounds, y_bounds, scale, layer,
+                kind="metric-empty" if empty else "metric")
     state["pending"].append(plot)
     return plot
 
@@ -200,9 +230,11 @@ def place_since(app, first, *, dy=0, dx=0, clip=None):
             continue
         rect = Rect(plot.rect.top + dy, plot.rect.left + dx, plot.rect.bottom + dy, plot.rect.right + dx)
         visible = Rect(plot.visible.top + dy, plot.visible.left + dx, plot.visible.bottom + dy, plot.visible.right + dx)
+        viewport = _translate(plot.viewport, dy, dx)
         if clip is not None:
             visible = _intersection(visible, clip)
-        state["pending"][i] = replace(plot, rect=rect, visible=visible) if visible else None
+            viewport = _intersection(viewport, clip) if viewport else clip
+        state["pending"][i] = replace(plot, rect=rect, visible=visible, viewport=viewport) if visible else None
 
 
 def take_since(app, first):
@@ -253,9 +285,12 @@ def map_records(records, mapping, *, dx=0, dy=0, clip=None):
         rect = Rect(plot.rect.top + offset, plot.rect.left + dx, plot.rect.bottom + offset, plot.rect.right + dx)
         visible = Rect(pairs[0][1] + dy, plot.visible.left + dx,
                        pairs[-1][1] + dy + 1, plot.visible.right + dx)
+        viewport = _translate(plot.viewport, offset, dx)
         visible = _intersection(visible, clip) if clip is not None else visible
+        if clip is not None:
+            viewport = _intersection(viewport, clip) if viewport else clip
         if visible:
-            output.append(replace(plot, rect=rect, visible=visible))
+            output.append(replace(plot, rect=rect, visible=visible, viewport=viewport))
         if len(output) >= MAX_PLOTS:
             break
     return tuple(output)
@@ -275,7 +310,10 @@ def publish(app, width=None, height=None):
                 continue
             visible = _intersection(plot.visible, screen) if screen is not None else plot.visible
             if visible:
-                painted = replace(plot, visible=visible)
+                viewport = plot.viewport
+                if screen is not None:
+                    viewport = _intersection(viewport, screen) if viewport else screen
+                painted = replace(plot, visible=visible, viewport=viewport)
                 (live_controls if plot.kind == "live-controls" else plots).append(painted)
     from .metric_live import publish as publish_live
     publish_live(app, live_controls)
@@ -287,12 +325,13 @@ def publish(app, width=None, height=None):
     return state["plots"]
 
 
-def _at(app, y, x):
+def _at(app, y, x, *, allow_empty=False):
     state = initialize(app)
     if (any(not isinstance(value, int) or isinstance(value, bool) for value in (y, x)) or
             _blocked(app) or state["frame_context"] != _context(app)):
         return None
-    return next((plot for plot in reversed(state["plots"]) if plot.visible.contains(y, x)), None)
+    return next((plot for plot in reversed(state["plots"]) if plot.visible.contains(y, x) and
+                 (allow_empty or plot.kind != "metric-empty")), None)
 
 
 def hover(app, y, x):
@@ -313,7 +352,25 @@ def active(app):
 def _same_plot(current, original):
     return (current is not None and current.key == original.key and current.rect == original.rect and
             current.visible == original.visible and current.scale == original.scale and
-            current.x_bounds == original.x_bounds and current.y_bounds == original.y_bounds)
+            current.x_bounds == original.x_bounds and current.y_bounds == original.y_bounds and
+            current.kind == original.kind and current.viewport == original.viewport)
+
+
+def capture_bounds(plot):
+    """The active gesture's small tolerance, constrained by its real viewport.
+
+    This does not expand hover, initial hit testing or right-click targets.
+    Overlapping buffers never switch the source captured by the initial press.
+    """
+    visible = plot.visible
+    expanded = Rect(visible.top - CAPTURE_MARGIN, visible.left - CAPTURE_MARGIN,
+                    visible.bottom + CAPTURE_MARGIN, visible.right + CAPTURE_MARGIN)
+    return _intersection(expanded, plot.viewport) if plot.viewport else expanded
+
+
+def _clamp_pointer(plot, y, x):
+    return (min(plot.visible.bottom - 1, max(plot.visible.top, y)),
+            min(plot.visible.right - 1, max(plot.visible.left, x)))
 
 
 def tick(app, now=None):
@@ -324,16 +381,22 @@ def tick(app, now=None):
         now = time.monotonic() if now is None else now
         if (_blocked(app) or capture["context"] != _context(app) or not _same_plot(current, capture["plot"]) or
                 now - capture["last"] > CAPTURE_TIMEOUT):
-            state["capture"] = None
+            cancel(app)
     if _blocked(app) or state["frame_context"] != _context(app):
         state["hovered"] = None
 
 
 def cancel(app):
-    """Discard a preview. Zoom changes only on a valid release inside the plot."""
+    """Discard a preview and consume its delayed release.
+
+    Zoom changes only on a valid release within the captured plot's bounded
+    tolerance. Its coordinates are clamped to the actual visible data cells.
+    """
     state = initialize(app)
     was_active = state["capture"] is not None
     state["capture"] = None
+    if was_active:
+        state["cancelled_release"] = True
     return was_active
 
 
@@ -369,12 +432,21 @@ def handle_mouse(app, y, x, button="left", shift=False):
         return previous is not None
     tick(app)
     capture = state["capture"]
+    if button == "release" and capture is None and state.get("cancelled_release"):
+        state["cancelled_release"] = False
+        return True
+    if button == "drag" and capture is None and state.get("cancelled_release"):
+        return True
     if previous is not None and capture is None and button in ("motion", "drag", "release"):
         return True
     if button in ("motion", "drag"):
         hover(app, y, x)
         if capture:
-            capture["current"] = (y, x)
+            margin = capture_bounds(capture["plot"])
+            if margin is None or not margin.contains(y, x):
+                cancel(app)
+                return True
+            capture["current"] = _clamp_pointer(capture["plot"], y, x)
             capture["last"] = time.monotonic()
             return True
         return False
@@ -382,8 +454,13 @@ def handle_mouse(app, y, x, button="left", shift=False):
         if button == "release":
             state["capture"] = None
             plot = capture["plot"]
+            release_pointer = (y, x)
             start_y, start_x = capture["start"]
-            if (not plot.visible.contains(y, x) or abs(x - start_x) < 2 or
+            margin = capture_bounds(plot)
+            if margin is None or not margin.contains(y, x):
+                return True
+            y, x = _clamp_pointer(plot, y, x)
+            if (abs(x - start_x) < 2 or
                     capture.get("shift", False) and abs(y - start_y) < 1):
                 return True
             left, right = sorted((start_x, x))
@@ -400,14 +477,46 @@ def handle_mouse(app, y, x, button="left", shift=False):
                 target["y"] = plot.y_bounds
             if _bounds(target["x"]) and _bounds(target["y"]):
                 _apply(app, plot, target)
-            hover(app, y, x)
+            hover(app, *release_pointer)
             return True
         cancel(app)
-        # A second press starts a fresh gesture; wheels/right-clicks pass on.
-    plot = _at(app, y, x)
+        # A second press starts a fresh gesture; wheels pass to native handlers.
+    if button in ("press", "left"):
+        # A deliberate new press supersedes a cancelled gesture's late release,
+        # including when it starts an ordinary row selection outside the plot.
+        state["cancelled_release"] = False
+    plot = _at(app, y, x, allow_empty=button == "right")
+    if button == "right" and plot:
+        from .metric_live import stop_for_zoom, cancel as cancel_live
+        from .pane_drag import cancel as cancel_pane
+        cancel_live(app)
+        cancel_pane(app)
+        selection = getattr(app, "job_selection_state", None)
+        if isinstance(selection, dict):
+            selection["capture"] = None
+        history = getattr(app, "history_browser_state", None)
+        if isinstance(history, dict):
+            history["drag"] = None
+        toolbar = getattr(app, "toolbar_state", None)
+        if isinstance(toolbar, dict):
+            toolbar.update(dragging=False, pressed=False, drag_width=None)
+        stop_for_zoom(app, plot.key)
+        reset(app, plot.key)
+        if _inspector_range(app, plot.key):
+            analysis = _state(app, "analysis_state")
+            analysis.update(zoom=1.0, pan=0.0, cursor=0, preset="all", chart_box=None, chart_live_window=None)
+            analysis.pop("window", None)
+            analysis.pop("chart_visible", None)
+        state["last_key"] = plot.key
+        hover(app, y, x)
+        _say(app, "Chart reset to its full default view")
+        # Even an already-full graph owns its right-click. Jobs selection and
+        # underlying controls must not receive this same pointer action.
+        return True
     if button in ("press", "left") and plot:
         state["last_key"] = plot.key
         if button == "press":
+            state["cancelled_release"] = False
             state["capture"] = {"plot": plot, "context": _context(app), "start": (y, x),
                                 "current": (y, x), "last": time.monotonic(), "shift": bool(shift)}
         hover(app, y, x)
@@ -500,7 +609,7 @@ def overlay(views, snap, app, width, height):
 
 
 def feedback(app, *, ascii_=None, rows=None, overlays=()):
-    """Return thin dotted feedback preserving the painted plot background.
+    """Return thin theme-accented dots preserving the painted plot background.
 
     Terminals cannot alpha blend a glyph. When supplied, cached document rows
     and prior overlays provide each cell's actual background, so dots do not

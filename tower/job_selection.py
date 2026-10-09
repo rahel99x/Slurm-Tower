@@ -32,21 +32,34 @@ def clear(app):
     pointer = getattr(app, "interaction_state", {})
     pointer.update(active=False, focused=None, frame_required=True)
     getattr(app, "job_panel_state", {})["focus"] = ""
+    if app.tab == "jobs":
+        from .job_panels import focus_main
+        focus_main(app)
     from . import chart_interaction, metric_live, pane_drag
     chart_interaction.cancel(app)
     metric_live.cancel(app)
-    pane_drag.blur(app)
+    pane_drag.cancel(app)
+    toolbar = getattr(app, "toolbar_state", None)
+    if isinstance(toolbar, dict):
+        toolbar.update(dragging=False, pressed=False, drag_width=None)
+    history = getattr(app, "history_browser_state", None)
+    if isinstance(history, dict):
+        history["drag"] = None
     app.say("Job selection cleared; click a job or use the arrows to select")
 
 
 def context_click(app, y, x, button="left"):
-    """Right-click clearing is deliberately ahead of every clickable surface."""
+    """Route graph resets before clearing jobs or opening History exports."""
     if button != "right" or getattr(app, "mode", "main") != "main":
         return False
     if not (0 <= x < getattr(app, "width", 120)
             and 0 <= y < getattr(app, "height", 100000)):
         return False
     tab = getattr(app, "tab", "")
+    if tab in ("jobs", "history"):
+        from .chart_interaction import handle_mouse as chart_mouse
+        if chart_mouse(app, y, x, button=button):
+            return True
     if tab == "history":
         rect = getattr(app, "history_jobs_rect", None)
         if rect is not None and rect.contains(y, x):
@@ -212,6 +225,9 @@ def handle_mouse(app, y, x, button="left", shift=False):
                         "point": (y, x), "size": (getattr(app, "width", None), getattr(app, "height", None))}
     # A press retains ordinary row selection. Marks change only on a range drag.
     resume(app)
+    if app.tab == "jobs":
+        from .job_panels import focus_main
+        focus_main(app)
     app.cursor[app.tab] = ids.index(identifier)
     app.selected_id = identifier
     return True

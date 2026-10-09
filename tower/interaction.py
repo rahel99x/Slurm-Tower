@@ -866,6 +866,12 @@ def handle_key(app, key):
     if key == "esc":
         state["active"] = False
         state["pending_focus"] = None
+        if getattr(app, "mode", "main") == "main" and getattr(app, "tab", "") == "jobs":
+            # Clicking a Details button starts graph traversal and native tab
+            # focus together. One Escape releases both owners, so Jobs arrows
+            # do not unexpectedly continue cycling Details after graph exit.
+            from .job_panels import focus_main
+            focus_main(app)
         return True
     graph = _current(app)
     if graph is None:

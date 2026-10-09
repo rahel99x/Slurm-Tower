@@ -184,6 +184,8 @@ See [Mouse and button navigation](guides/pointer-navigation.md) for procedures, 
 
 The active theme updates the canvas, blank cells, text, menus, information strips, and chart colours.
 Theme changes preserve job selection and measured values.
+All interface symbols use the active palette, including sliders, clocks, hourglasses, arrows, diamonds, and selection markers.
+Status symbols retain their warning, error, and success meanings.
 Use `dark`, `light`, `high`, or `cb` for the other explicit display palettes.
 Use `--no-color` or `NO_COLOR` to suppress colour.
 See [Terminal palettes](guides/pointer-navigation.md#change-the-terminal-palette) for controls and terminal limits.
@@ -294,7 +296,11 @@ Drag through visible job rows to mark a range in the current table order.
 Hold Shift to add that range to existing marks.
 Press Esc during capture to cancel the drag and restore earlier marks.
 Release the mouse button to complete the range before opening a job action.
-Right-click anywhere on Jobs to clear the selected job and marks without activating the surface beneath the pointer.
+Right-click a metric graph to restore its full view and keep the selected job and marks.
+Right-click elsewhere on Jobs to clear the selected job and marks without activating the surface beneath the pointer.
+Click a Jobs or Recents row to return arrow navigation from Details to that list.
+When Details controls have focus, one Esc returns to Main; F6 or Ctrl-W switches panes.
+Focus changes preserve marks. Right-click clearing cancels unfinished drags and consumes their later releases.
 In History, right-click inside the job list to open the selected jobs' log-export menu.
 Right-click outside that list to clear the selection without activating another surface.
 Inspect the complete target list in the action review.
@@ -670,13 +676,17 @@ Use `r` to set the start and end of a sample interval.
 Use `e` to open observed events.
 Use `s` to change shared-scale mode.
 Click a visible time-preset or axis control for the corresponding chart operation.
-Move the pointer inside a metric plot for its cyan dotted crosshair.
+Move the pointer inside a metric plot for its dotted crosshair in the active theme's accent color.
 Press, drag, and release inside the same plot to select a time interval and fit its visible curve to both axes.
 The interval must span at least two columns.
 Hold Shift before pressing to retain an explicit two-axis rectangle instead; this also requires at least one row.
 Selected time intervals show relative offsets in adaptive `s`, `ms`, or `us` units, with a start timestamp and span note.
 Press `u` or `0` while pointing at that graph to undo or reset rectangular zoom.
-Esc before release discards the preview; an outside release or changed job/layout also cancels it.
+Right-click inside the plot to restore its full view. This also turns off that metric's Live window.
+The reset applies only to that graph's exact metric and source.
+An active drag has a two-cell buffer around each visible edge, confined to its pane.
+Movement and release inside that buffer use the nearest plot edge.
+Esc, movement beyond the buffer, or changed job/layout cancels the preview. A later release cannot commit it.
 Menus, dialogs, and startup previews prevent capture of hidden graphs.
 
 In Diff, `s` changes the comparison scale lock.

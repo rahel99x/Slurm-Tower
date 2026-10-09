@@ -62,6 +62,9 @@ Up and Down follow rows in the current table.
 At a viewport edge, they scroll or load the next available row and refresh the visible controls.
 Right moves from a job row into visible Details controls; Left returns toward Main.
 This pane crossing also works when Details is stacked below Main.
+Click a Jobs or Recents row to return arrow navigation to that list, including after a range selection or Details click.
+When Details controls have focus, press Esc once to return arrows to Main.
+Use F6 or Ctrl-W to switch pane focus. Marks stay selected during these focus changes.
 Scrolling, sorting, filtering, and resizing update the graph before another action can use the old row positions.
 Moving focus into Quick Advisor does not start its calculation; activate that button to request it.
 
@@ -76,15 +79,19 @@ The existing `:timeline seek EVENT_NUMBER` command remains the replay-seeking op
 
 ## Point at and zoom a graph
 
-Move the pointer inside a metric plot to show its cyan dotted crosshair.
+Move the pointer inside a metric plot to show its dotted crosshair in the active theme's accent color.
 Press the left button, drag across a time interval, and release inside the plot.
 Tower fits the selected interval across the plot and calculates the vertical scale from its visible curve.
 The thin dotted guide preserves the graph background.
 Hold Shift before pressing to select explicit horizontal and vertical bounds instead.
 Time labels use `s`, `ms`, or `us` as required and identify the selected start timestamp.
 Use `u` or `0` while pointing at the same graph to undo or reset rectangular zoom.
+Right-click inside the plot to restore its full view and turn off that metric's Live window.
+An active drag has a two-cell buffer on each side, confined to the visible pane.
+Movement and release in that buffer use the nearest plot edge.
+Moving beyond it cancels the preview, and a later release has no effect.
 Esc before release discards the preview.
-An outside release or changed job, page, plot bounds, layout, menu, or terminal size also cancels it.
+A changed job, page, plot bounds, layout, menu, or terminal size also cancels it.
 The operation changes display bounds and preserves measured values.
 See [Graph interaction](charts.md#zoom-a-time-interval) for keyboard commands, source scope, logarithmic axes, and limits.
 
@@ -158,7 +165,8 @@ Range dragging is available for job rows in Jobs, Recents, History, Group, and D
 The terminal must report mouse press, movement, and release for a drag.
 Use Space to mark individual jobs when those events are unavailable.
 
-Right-click anywhere on Jobs to clear the selected job and all marks.
+Right-click a metric graph to restore its full view and keep the selected job and marks.
+Right-click elsewhere on Jobs to clear the selected job and all marks.
 The click does not activate a page label, button, link, or other control beneath it.
 The cleared state remains until you select a row or move with a row-navigation key.
 
