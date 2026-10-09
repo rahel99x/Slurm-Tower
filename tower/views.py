@@ -27,6 +27,63 @@ LOG_WARNING = re.compile(r"\b(?:warn(?:ing)?|retry(?:ing)?|timeout)\b", re.IGNOR
 LOG_SUCCESS = re.compile(r"\b(?:done|complete(?:d)?|success(?:ful)?)\b", re.IGNORECASE)
 
 
+def _gpu_value(value, *, percentage=True):
+    """Unknown counters are gaps, never measured idle devices."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    value = charts._finite(value)
+    return value if value is not None and value >= 0 and (not percentage or value <= 100) else None
+
+
+def _gpu_mean(values):
+    measured = [value for item in values if (value := _gpu_value(item)) is not None]
+    return sum(measured) / len(measured) if measured else None
+
+
+def _gpu_record_mean(point):
+    devices = point.get("gpu")
+    if not isinstance(devices, dict):
+        return None
+    return _gpu_mean(reading[0] for reading in devices.values()
+                     if isinstance(reading, (list, tuple)) and reading)
+
+
+def _gpu_memory(sample):
+    used = _gpu_value(sample.used, percentage=False)
+    total = _gpu_value(sample.total, percentage=False)
+    ratio = used / total if used is not None and total is not None and total > 0 else None
+    text = f"{used / 1024:.1f}" if used is not None else "unknown"
+    text += "/" + (f"{total / 1024:.0f}" if total is not None and total > 0 else "unknown") + " GB"
+    return ratio, text
+
+
+def _gpu_unavailable(snap, app, jid, record, *, detected=False):
+    """Explain published collection state without scheduler or file access."""
+    if not detected and not getattr(record, "gpus", 0):
+        return []
+    if detected:
+        reason = "GPU devices were detected, but utilisation counters are unavailable. Missing readings remain graph gaps."
+    else:
+        reason = "GPU telemetry is unavailable. Enable GPU sampling or provide this job's nvidia-smi trace."
+    rows = [[(" " + reason, "yellow")]]
+    health = snap.get("health", {}).get("gpu")
+    if not getattr(app, "gpu", True):
+        rows.append([(" GPU sampling is off.", "dim")])
+    elif health is not None and not getattr(health, "enabled", True):
+        rows.append([(" The GPU source is disabled. Enable it in Sources.", "dim")])
+    elif health is not None and getattr(health, "error", ""):
+        rows.append([(" GPU source error: " + display_text(str(health.error))[:800], "dim")])
+    elif not detected and getattr(record, "state", "") == "PENDING":
+        rows.append([(" This job is waiting. GPU sampling starts when it runs.", "dim")])
+    trace_status = getattr(getattr(app, "sampler", None), "trace_status", {})
+    status = trace_status.get(jid) if isinstance(trace_status, dict) else None
+    if isinstance(status, dict) and status.get("state") in ("missing_workdir", "missing_file", "empty", "error"):
+        trace_reason = display_text(str(status.get("reason") or status["state"]))[:800]
+        rows.append([(" GPU trace: " + trace_reason, "dim")])
+    rows.append([(" Run tower --gpu-check " + str(jid) + " for details.", "cyan")])
+    return rows
+
+
 def _scroll_rule(glyphs, width, title):
     """Keep jump controls in the title strip, outside the table columns."""
     return [("    ", "")] + rule(glyphs, max(0, width - 4), title) if width >= 6 else rule(glyphs, width, title)
@@ -82,7 +139,7 @@ def job_sort_values(job: Job, row: dict, snap: dict, keys=None) -> dict:
             values["mem%"] = live.rss / request if live and live.rss is not None and request else None
     if "gpu%" in requested:
         gpu = (snap.get("gpu", {}).get(job.id) or []) if not job.pending else []
-        values["gpu%"] = sum(sample.util for sample in gpu) / len(gpu) if gpu else None
+        values["gpu%"] = _gpu_mean(sample.util for sample in gpu)
     return values
 
 
@@ -596,7 +653,7 @@ class Views:
                            time=f"-/{j.limit}", left=f"waited {left}" if left else "", info=info, flags=flags, _style="dim", _styles=styles,
                            **{"cpu%": "", "eff": "", "mem%": "", "gpu%": ""})
             else:
-                gutil = (sum(s.util for s in g) / len(g)) if g else None
+                gutil = _gpu_mean(s.util for s in g)
                 shown = (lv.rate if lv.rate is not None else lv.avg) if lv else None
                 st = {"RUNNING": "R", "COMPLETING": "CG", "CONFIGURING": "CF", "SUSPENDED": "S"}.get(j.state, j.state[:2])
                 info = f"started {when(j.start)}"
@@ -710,7 +767,8 @@ class Views:
         if j.gpus:
             g = snap["gpu"].get(j.id, [])
             if g is None:
-                rows.append([("   gpu   ", ""), bar(g_, None, bw), ("  n/a (nvidia-smi unreachable: srun --overlap and ssh both failed)", "dim")])
+                rows.append([("   gpu   ", ""), bar(g_, None, bw), ("  n/a", "dim")])
+                rows += _gpu_unavailable(snap, app, j.id, j)
             elif not g:
                 rows.append([("   gpu   ", ""), bar(g_, None, bw), ("  sampling ..." if app.gpu else "  sampling off", "dim")])
             else:
@@ -718,7 +776,10 @@ class Views:
                     key = f"{j.id}:{x.node}:{x.index}"
                     mean = snap["gpu_mean"].get(key)
                     tag = f"gpu{x.index}" + (f"@{x.node}" if j.nodes > 1 else "")
-                    rows.append([(f"   {tag:<6}", ""), bar(g_, x.util / 100, bw), (f" {int(x.util):>3}%  mem ", ""), bar(g_, x.used / x.total, 8), (f" {x.used / 1024:.1f}/{x.total / 1024:.0f} GB  ", ""),
+                    util = _gpu_value(x.util)
+                    util_text = f"{util:3.0f}%" if util is not None else "unknown"
+                    memory_ratio, memory_text = _gpu_memory(x)
+                    rows.append([(f"   {tag:<6}", ""), bar(g_, util / 100 if util is not None else None, bw), (f" {util_text}  mem ", ""), bar(g_, memory_ratio, 8), (f" {memory_text}  ", ""),
                                  (spark(g_, snap["hist_gpu"].get(key, [])), "cyan"), (f"  mean {'?' if mean is None else f'{mean:.0f}%'}  {x.name}", "dim")])
         trace = snap.get("trace", {}).get(j.id)
         if trace:
@@ -805,17 +866,27 @@ class Views:
     def trace_row(self, trace: List[dict], j: Job, bw: int) -> Row:
         """One line from the GPU trace the job writes itself: mean utilisation per GPU index over the trace, the last minute."""
         g_ = self.g
+        points = [r for r in trace if isinstance(r, dict) and isinstance(r.get("index"), int)
+                  and not isinstance(r["index"], bool) and r["index"] >= 0
+                  and isinstance(r.get("t"), (int, float)) and not isinstance(r["t"], bool)
+                  and charts._finite(r["t"]) is not None]
+        points.sort(key=lambda r: r["t"])
         by: Dict[int, List[float]] = {}
-        for r in trace:
-            by.setdefault(r["index"], []).append(r["util"])
-        last_t = trace[-1]["t"]
-        last = {r["index"]: r["util"] for r in trace if r["t"] >= last_t - 60}
-        means = {i: sum(v) / len(v) for i, v in by.items()}
-        span = (trace[-1]["t"] - trace[0]["t"]) / 60
-        idle = sum(1 for r in trace if r["util"] < 10)
-        parts = "  ".join(f"gpu{i} {means[i]:.0f}% (now {last.get(i, 0):.0f}%)" for i in sorted(means))
-        seg: Row = [("   trace ", ""), bar(g_, (sum(means.values()) / len(means)) / 100 if means else None, bw),
-                    (f"  {parts}  {g_.dot} {span:.0f} min in the job's own nvidia-smi log, {100 * idle / max(1, len(trace)):.0f}% of samples idle", "dim")]
+        for r in points:
+            by.setdefault(r["index"], []).append(r.get("util"))
+        last_t = points[-1]["t"] if points else 0
+        last = {r["index"]: _gpu_value(r.get("util")) for r in points if r["t"] >= last_t - 60}
+        means = {i: _gpu_mean(values) for i, values in by.items()}
+        span = (points[-1]["t"] - points[0]["t"]) / 60 if points else 0
+        valid = [value for r in points if (value := _gpu_value(r.get("util"))) is not None]
+        idle = sum(value < 10 for value in valid)
+        shown = lambda value: f"{value:.0f}%" if value is not None else "unknown"
+        parts = "  ".join(f"gpu{i} {shown(means[i])} (now {shown(last.get(i))})" for i in sorted(means))
+        mean = _gpu_mean(means.values())
+        qualifier = "samples" if len(valid) == len(points) else "valid samples"
+        idle_text = f"{100 * idle / len(valid):.0f}% of {qualifier} idle" if valid else "idle share unknown"
+        seg: Row = [("   trace ", ""), bar(g_, mean / 100 if mean is not None else None, bw),
+                    (f"  {parts}  {g_.dot} {span:.0f} min in the job's own nvidia-smi log, {idle_text}", "dim")]
         return seg
 
     def step_row(self, st: Step, j: Job) -> Row:
@@ -1323,14 +1394,15 @@ class Views:
             for j in jobs:
                 for s in snap["gpu"].get(j.id) or []:
                     gsamp.append(s)
-            gutil = f"{sum(s.util for s in gsamp) / len(gsamp):.0f}%" if gsamp else ""
+            measured_gpu = _gpu_mean(s.util for s in gsamp)
+            gutil = f"{measured_gpu:.0f}%" if measured_gpu is not None else ""
             rows.append(dict(name=nd.name, state=nd.state, load=f"{nd.load:.1f}" if nd.load is not None else "n/a", cpus=f"{nd.alloc}/{nd.cpus}", loadpct=f"{100 * nd.load / nd.cpus:.0f}%" if nd.load is not None and nd.cpus else "n/a",
                              mem=f"{(nd.mem_total - nd.mem_free) / 1024:.0f}/{nd.mem_total / 1024:.0f} GB" if nd.mem_free is not None and nd.mem_total and nd.mem_free <= nd.mem_total else "n/a", gres=nd.gres.split("(")[0] if nd.gres and nd.gres != "(null)" else "",
                              gused=nd.gres_used.split("(")[0] if nd.gres_used and nd.gres_used != "(null)" else "", gutil=gutil,
                              _node=nd, _sort={"load": nd.load, "cpus": nd.alloc / nd.cpus if nd.cpus else None,
                                              "loadpct": nd.load / nd.cpus if nd.load is not None and nd.cpus else None,
                                              "mem": (nd.mem_total - nd.mem_free) * 1024 ** 2 if nd.mem_free is not None and nd.mem_total and nd.mem_free <= nd.mem_total else None,
-                                             "gutil": sum(s.util for s in gsamp) / len(gsamp) if gsamp else None},
+                                             "gutil": measured_gpu},
                              jobs=" ".join(f"{j.id}({j.name})" for j in jobs), _styles={"state": "red" if any(k in nd.state.lower() for k in ("drain", "down", "fail")) else ""}))
         cols = [Column("name", "NODE", 6, 16), Column("state", "STATE", 5, 14), Column("cpus", "ALLOC/CPUS", 10, 10, ">"), Column("load", "LOAD", 4, 7, ">"), Column("loadpct", "LOAD%", 5, 5, ">"),
                 Column("mem", "MEM USED", 8, 14, ">"), Column("gres", "GRES", 4, 16), Column("gused", "GRES USED", 9, 16), Column("gutil", "GPU%", 4, 4, ">"), Column("jobs", "MY JOBS", 7, 60, flex=True)]
@@ -1355,7 +1427,10 @@ class Views:
                     if s.node == nd.name or s.node.startswith("task"):
                         key = f"{j.id}:{s.node}:{s.index}"
                         mean = snap["gpu_mean"].get(key)
-                        out.append([(f"   {nd.name} gpu{s.index} ", ""), bar(self.g, s.util / 100, 20), (f" {int(s.util):>3}%  mem {s.used / 1024:.1f}/{s.total / 1024:.0f} GB  ", ""),
+                        util = _gpu_value(s.util)
+                        util_text = f"{util:3.0f}%" if util is not None else "unknown"
+                        _, memory_text = _gpu_memory(s)
+                        out.append([(f"   {nd.name} gpu{s.index} ", ""), bar(self.g, util / 100 if util is not None else None, 20), (f" {util_text}  mem {memory_text}  ", ""),
                                     (spark(self.g, snap["hist_gpu"].get(key, []), 20), "cyan"), (f"  mean {'?' if mean is None else f'{mean:.0f}%'}  job {j.id}", "dim")])
         return out, matrix_hits + header_hits("nodes", cells, header_y) + [(header_y + 1 + index, "node_row", row["name"]) for index, row in enumerate(rows)]
 
@@ -2093,7 +2168,7 @@ class Views:
             cpu = [x.get("cpu") if x.get("cpu") is not None else x.get("eff") for x in live]
             cpu = [c for c in cpu if c is not None]
             rss = [x.get("rss") for x in live if x.get("rss") is not None]
-            gu = [sum(v[0] for v in x["gpu"].values()) / len(x["gpu"]) for x in gpu if x.get("gpu")]
+            gu = [value for point in gpu if (value := _gpu_record_mean(point)) is not None]
             j, f = jobs.get(i), fins.get(i)
             name = j.name if j else (f.name if f else "?")
             state = j.state if j else (f.state if f else "?")
@@ -2112,7 +2187,7 @@ class Views:
         out += trows
         metrics = [("cpu per core", lambda x: (100 * x["cpu"] if x.get("cpu") is not None else (100 * x["eff"] if x.get("eff") is not None else None)) if x.get("k") == "live" else None, 100.0, "%", "live"),
                    ("memory (GB)", lambda x: (x["rss"] / 1024 ** 3) if (x.get("k") == "live" and x.get("rss") is not None) else None, None, "G", "live"),
-                   ("gpu utilisation", lambda x: (sum(v[0] for v in x["gpu"].values()) / len(x["gpu"])) if (x.get("k") == "gpu" and x.get("gpu")) else None, 100.0, "%", "gpu")]
+                   ("gpu utilisation", lambda x: _gpu_record_mean(x) if x.get("k") == "gpu" else None, 100.0, "%", "gpu")]
         with_data = [i for i in ids[:6] if series.get(i)]
         if not with_data:
             return out + [[("   no recorded series for these jobs (series accumulate while the dashboard runs)", "dim")]]
@@ -2168,7 +2243,7 @@ class Views:
         if job:
             head[1].append((f"   {job.partition} {g.dot} {job.nodelist or 'pending'} {g.dot} {job.cpus} cpus" + (f" {g.dot} {job.gpu_text}" if job.gpus else "") + f" {g.dot} {job.elapsed} of {job.limit}", "dim"))
         if not series and not snap.get("trace", {}).get(jid):
-            return head + [[("   no samples recorded for this job yet", "dim")]]
+            return head + _gpu_unavailable(snap, app, jid, job or fin) + [[("   no samples recorded for this job yet", "dim")]]
         charts_ = []
         if live:
             cpu = [(s.get("cpu") if s.get("cpu") is not None else s.get("eff")) for s in live]
@@ -2182,9 +2257,7 @@ class Views:
             else:
                 charts_.append(("resident memory (GB)", [None if s.get("rss") is None else s["rss"] / 1024 ** 3 for s in live], None, "G", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "resident-memory"))
         keys = []
-        def finite_gpu(value):
-            return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and charts._finite(value) is not None and 0 <= value <= 100 else None)
+        finite_gpu = _gpu_value
 
         def busy_mean(values):
             # This is an observed sample mean, not a counter of GPU busy time.
@@ -2243,8 +2316,11 @@ class Views:
         if keys or idx:
             head.append([(" GPU rate is sampled device busy %. Efficiency proxy is the mean of valid retained samples; gaps are excluded.", "dim")])
             head.append([(" GPU scope is observed devices only. Throughput, FLOP efficiency, and full-run allocation efficiency are not measured.", "dim")])
+            if not any(value is not None for _, values, _, _, _, _, _, identity in charts_
+                       if identity.startswith("gpu") for value in values):
+                head += _gpu_unavailable(snap, app, jid, job or fin, detected=True)
         elif getattr(job or fin, "gpus", 0):
-            head.append([(" GPU telemetry is unavailable. Enable GPU sampling or provide this job's nvidia-smi trace.", "dim")])
+            head += _gpu_unavailable(snap, app, jid, job or fin)
         from . import analytics_document, chart_interaction, metric_live
         native_document = analytics_document.eligible(app, avail)
         source_head = len(head)

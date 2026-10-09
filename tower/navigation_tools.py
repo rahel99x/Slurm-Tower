@@ -771,7 +771,8 @@ def raw_field(app, table, key):
         if gpu is None:
             return None
         samples = gpu if isinstance(gpu, list) else [gpu]
-        values = [sample.util for sample in samples if getattr(sample, "util", None) is not None]
+        values = [sample.util for sample in samples if isinstance(getattr(sample, "util", None), (int, float))
+                  and not isinstance(sample.util, bool) and 0 <= sample.util <= 100]
         return sum(values) / len(values) if values else None
     raise ValueError("This field has no selected job value; select a job table or use the inspector")
 
@@ -795,13 +796,15 @@ def _resource_field(app, table, key, snap):
                   "backoff": record.backoff, "error": record.error}
     elif table == "nodes":
         jobs = [job for job in snap["jobs"] if record.name in job.hosts]
-        gpu = [sample for job in jobs for sample in snap.get("gpu", {}).get(job.id, []) if sample.node == record.name]
+        gpu = [sample.util for job in jobs for sample in snap.get("gpu", {}).get(job.id) or []
+               if sample.node == record.name and isinstance(sample.util, (int, float))
+               and not isinstance(sample.util, bool) and 0 <= sample.util <= 100]
         alloc, load = getattr(record, "alloc", getattr(record, "cpus_alloc", 0)), getattr(record, "load", None)
         total, free = getattr(record, "mem_total", None), getattr(record, "mem_free", None)
         values = {"name": record.name, "state": record.state, "cpus": f"{alloc}/{record.cpus}", "load": load,
                   "loadpct": load / record.cpus * 100 if load is not None and record.cpus else None,
                   "mem": (total - free) * 1024**2 if free is not None and total and free <= total else None,
-                  "gres": getattr(record, "gres", ""), "gused": getattr(record, "gres_used", ""), "gutil": sum(sample.util for sample in gpu) / len(gpu) if gpu else None,
+                  "gres": getattr(record, "gres", ""), "gused": getattr(record, "gres_used", ""), "gutil": sum(gpu) / len(gpu) if gpu else None,
                   "jobs": " ".join(job.id + "(" + job.name + ")" for job in jobs)}
     else:
         nodes, cpus = record.nodes_aiot.split("/"), record.cpus_aiot.split("/")

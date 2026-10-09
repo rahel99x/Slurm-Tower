@@ -36,7 +36,7 @@ from .layout import Glyphs
 from .model import Store
 from .remote import LocalFiles, RemoteFiles, SshBackend
 from .sampler import Sampler
-from .slurm import Backend, FakeBackend, Slurm
+from .slurm import Backend, CommandError, FakeBackend, Slurm
 from .views import TABS, Views
 
 
@@ -323,6 +323,16 @@ def parse(argv):
     ap.add_argument("--config", help="configuration file (TOML or JSON); default ~/.config/tower/config.toml")
     ap.add_argument("--write-config", action="store_true", help="write the commented defaults to the default path and exit")
     ap.add_argument("--doctor", action="store_true", help="check local, --host, or --fake prerequisites without sampling or changing jobs; combine with --json")
+    def gpu_job(value):
+        from .gpu_diagnostics import valid_job_id
+        try:
+            return valid_job_id(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc))
+    ap.add_argument("--gpu-check", nargs="?", const="all", default=None, type=gpu_job, metavar="JOBID",
+                    help="diagnose GPU allocation, NVIDIA sampling, traces, and retained samples; omit JOBID to check current jobs")
+    ap.add_argument("--gpu-check-output", default="", metavar="DIRECTORY",
+                    help="with --gpu-check: create a private new directory with report.json, report.txt, and command evidence")
     ap.add_argument("--profile", default="", help="a [profiles.NAME] section of the config to merge over it (a cluster)")
     ap.add_argument("--host", default="", help="remote mode: run every Slurm command on this login node over ssh")
     ap.add_argument("--ssh-user", default="", help="the login on --host (default: as here)")
@@ -423,6 +433,10 @@ def parse(argv):
         free_text = cmd[0] in ("eval", "find", "filter", "note")
         argv = pre + ["--run", " ".join(cmd) if free_text else shlex.join(cmd)]
     args = ap.parse_intermixed_args(argv)
+    if args.gpu_check_output and args.gpu_check is None:
+        ap.error("--gpu-check-output requires --gpu-check")
+    if args.gpu_check is not None and (args.doctor or args.run or args.eval or args.wait_for or args.watch or args.report or args.csv or args.write_config or args.record):
+        ap.error("--gpu-check cannot be combined with another command or report mode")
     if args.words:
         ap.error(f"unexpected argument '{args.words[0]}' (did you mean: tower run {' '.join(args.words)} ?)")
     for name in ("interval", "days", "timeout", "poll", "speed", "width"):
@@ -430,6 +444,46 @@ def parse(argv):
         if not math.isfinite(value) or value < 0 or (name == "speed" and value == 0):
             ap.error(f"--{name} must be {'positive' if name == 'speed' else 'non-negative'} and finite")
     return args
+
+
+def gpu_check(args, cfg):
+    """Run a bounded evidence check without creating a dashboard session."""
+    from copy import copy
+    from .gpu_diagnostics import diagnose, render, save
+    # Diagnostic evidence uses the explicitly requested private report folder.
+    # Do not append to the user's configured session recorder.
+    diagnostic_cfg = Config(cfg.data)
+    diagnostic_cfg.path, diagnostic_cfg.profile_name = cfg.path, cfg.profile_name
+    diagnostic_cfg.set("record", "")
+    diagnostic_args = copy(args)
+    diagnostic_args.record = ""
+    backend = None
+    try:
+        user = args.user or cfg["user"] or os.environ.get("USER", "")
+        backend, files, replay, user = make_backend(diagnostic_args, diagnostic_cfg, user)
+        location = "" if args.no_state or args.fake or args.replay else scoped_state_dir(backend, cfg, user)
+        result = diagnose(cfg, backend, files, user=user, job_id=args.gpu_check,
+                          no_gpu=args.no_gpu, state_path=location, no_state=args.no_state)
+        if args.fake:
+            result["mode"] = "demo"
+        elif replay:
+            result["mode"] = "replay"
+        if args.fake or replay:
+            result["scope"] += " This is simulated or recorded evidence, not a live hardware check."
+        if args.gpu_check_output:
+            result["report_directory"] = save(result, args.gpu_check_output)
+        print(json.dumps(result, indent=2, allow_nan=False) if args.json else render(result))
+        if args.gpu_check_output and not args.json:
+            print(f"\nSaved GPU evidence: {result['report_directory']}")
+        return 0 if result["ok"] else 1
+    except (OSError, ValueError, TypeError, CommandError) as exc:
+        print(f"tower: GPU check: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        close = getattr(backend, "close", None)
+        if close:
+            close()
+        clock.reset()
 
 
 def main(argv=None):
@@ -462,6 +516,8 @@ def main(argv=None):
             result = diagnose(cfg, fake=args.fake, host=args.host, ssh_user=args.ssh_user)
             print(render(result, as_json=args.json))
             return 0 if result["ready"] else 1
+        if args.gpu_check is not None:
+            return gpu_check(args, cfg)
         if args.run:
             from .research_commands import offline
             code = offline(args.run, host=args.host or cfg["host"], replay=bool(args.replay))

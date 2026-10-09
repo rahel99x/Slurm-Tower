@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 from copy import deepcopy
+import re
 import threading
 import time
 from typing import Callable, Dict, List, Optional
@@ -16,6 +17,9 @@ from .slurm import CommandError, Slurm
 
 HISTORY_REFRESH_MIN = 5.0
 HISTORY_FAST_ATTEMPTS = 5
+GPU_ALLOCATION_CACHE_MAX = 10000
+GPU_ALLOCATION_CACHE_MIN_AGE = 10.0
+GPU_ALLOCATION_CACHE_MAX_AGE = 120.0
 
 
 class Sampler(threading.Thread):
@@ -33,6 +37,10 @@ class Sampler(threading.Thread):
         self.files = files or LocalFiles()
         self.want_fin: Optional[str] = None                # a finished job whose steps the details overlay wants
         self.want_trace: Optional[str] = None              # a job (running or finished) whose GPU trace the analytics view wants
+        self.trace_status: Dict[str, dict] = {}
+        # Positive allocation evidence omitted by %b, never persisted. Access
+        # and queue reapplication share Store.lock with sampler publication.
+        self._gpu_allocation_cache: Dict[str, dict] = {}
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tower-src")
         # GPU sampling waits for child tasks; sharing the source executor can deadlock
         # with one worker and starve unrelated sources with any pool size.
@@ -223,8 +231,10 @@ class Sampler(threading.Thread):
     # ---- sources -----------------------------------------------------------------------------------
     def src_jobs(self):
         jobs = self.slurm.jobs()
-        returning = {job.id for job in jobs} & self.store.preserved_detail_ids()
-        events = self.store.apply_jobs(jobs)
+        with self.store.lock:
+            returning = {job.id for job in jobs} & self.store.preserved_detail_ids()
+            events = self.store.apply_jobs(jobs)
+            self._gpu_cache_reapply_locked(time.monotonic())
         for jid in returning:
             self._historical_details.pop(jid, None)
             with self._schedule_lock:
@@ -294,13 +304,88 @@ class Sampler(threading.Thread):
         if failures:
             raise CommandError(f"Live sampling failed for {len(failures)}/{len(jobs)} jobs: {failures[0]}")
 
+    @staticmethod
+    def _gpu_identity(job):
+        """Stable queue identity; elapsed time and sampled fields are excluded."""
+        return (job.start, job.submit, job.name, job.partition, job.state,
+                job.nodelist, job.nodes, job.cpus, job.mem_req, job.limit,
+                job.account, job.qos, job.command, job.workdir)
+
+    def _gpu_cache_reapply_locked(self, now):
+        current = {job.id: job for job in self.store.jobs}
+        for jid, cached in list(self._gpu_allocation_cache.items()):
+            job = current.get(jid)
+            if (job is None or now >= cached["expires"] or job.state != "RUNNING"
+                    or cached["attempt"] != self.store.job_attempt(jid)
+                    or cached["identity"] != self._gpu_identity(job)):
+                if job is cached.get("publication") and job.gpus == cached["count"] and job.gpu_type == cached["type"]:
+                    job.gpu_type, job.gpus = "", 0
+                    if job.id in self.store.gpu:
+                        self.store.apply_gpu(job.id, None)
+                self._gpu_allocation_cache.pop(jid, None)
+                continue
+            if job.gpus:
+                # A new queue row with explicit GPUs supplies fresh evidence
+                # itself; never replace it with inferred allocation metadata.
+                if (job is not cached.get("publication") or job.gpus != cached["count"]
+                        or job.gpu_type and job.gpu_type != cached["type"]):
+                    self._gpu_allocation_cache.pop(jid, None)
+                continue
+            job.gpu_type, job.gpus = cached["type"], cached["count"]
+            cached["publication"] = job
+        while len(self._gpu_allocation_cache) > GPU_ALLOCATION_CACHE_MAX:
+            self._gpu_allocation_cache.pop(next(iter(self._gpu_allocation_cache)))
+
     def src_gpu(self):
-        jobs = [j for j in self.store.jobs if not j.pending and j.gpus and j.state == "RUNNING"]
+        with self.store.lock:
+            self._gpu_cache_reapply_locked(time.monotonic())
+            running = [j for j in self.store.jobs if j.state == "RUNNING"]
+            attempts = {j.id: self.store.job_attempt(j.id) for j in running}
+        failures, discovery_error = [], ""
+        discover = getattr(self.slurm, "gpu_allocations", None)
+        if running and callable(discover):
+            try:
+                allocations = discover()
+                with self.store.lock:
+                    current = {j.id: j for j in self.store.jobs}
+                    now = time.monotonic()
+                    age = max(GPU_ALLOCATION_CACHE_MIN_AGE, min(GPU_ALLOCATION_CACHE_MAX_AGE, self.effective_interval("gpu") * 2))
+                    for j in running:
+                        if current.get(j.id) is not j:
+                            continue
+                        cached = self._gpu_allocation_cache.get(j.id)
+                        if j.id not in allocations:
+                            # Unsupported old fields provide no authoritative
+                            # reply. A successful available field can remove
+                            # evidence for a job absent from that newer queue.
+                            if getattr(self.slurm, "_gpu_allocations_supported", None) is True:
+                                self._gpu_allocation_cache.pop(j.id, None)
+                                if cached:
+                                    j.gpu_type, j.gpus = "", 0
+                                    if j.id in self.store.gpu:
+                                        self.store.apply_gpu(j.id, None)
+                            continue
+                        kind, count = allocations[j.id]
+                        inferred = not j.gpus or cached is not None
+                        j.gpu_type, j.gpus = kind, count
+                        if not count and j.id in self.store.gpu:
+                            self.store.apply_gpu(j.id, None)
+                        if count and inferred:
+                            self._gpu_allocation_cache[j.id] = dict(
+                                type=kind, count=count, identity=self._gpu_identity(j),
+                                attempt=attempts[j.id], expires=now + age, publication=j)
+                        else:
+                            self._gpu_allocation_cache.pop(j.id, None)
+                    self._gpu_cache_reapply_locked(now)
+            except CommandError as exc:
+                discovery_error = f"GPU allocation discovery: {exc}"
+        jobs = [j for j in running if j.gpus]
         if not jobs:
+            if discovery_error:
+                raise CommandError(discovery_error)
             return
         pending = {}
         remaining = iter(jobs)
-        failures = []
         while not self.stop.is_set():
             # Bound both active commands and queued futures even for a very large account.
             with self._schedule_lock:
@@ -317,15 +402,23 @@ class Sampler(threading.Thread):
             for fut in done:
                 job = pending.pop(fut)
                 try:
-                    self.store.apply_gpu(job.id, fut.result())
+                    samples, error = fut.result(), None
                 except CommandError as exc:
-                    self.store.apply_gpu(job.id, None)
-                    failures.append(str(exc))
+                    samples, error = None, str(exc)
+                with self.store.lock:
+                    current = self.store.job(job.id)
+                    if (current is None or self.store.job_attempt(job.id) != attempts[job.id]
+                            or self._gpu_identity(current) != self._gpu_identity(job)):
+                        continue
+                    self.store.apply_gpu(job.id, samples)
+                    if error:
+                        failures.append(error)
         for fut in pending:
             fut.cancel()
         self.check_alerts()
-        if failures:
-            raise CommandError(f"GPU sampling failed for {len(failures)}/{len(jobs)} jobs: {failures[0]}")
+        if failures or discovery_error:
+            reason = f"GPU sampling failed for {len(failures)}/{len(jobs)} jobs: {failures[0]}" if failures else ""
+            raise CommandError("; ".join(message for message in (discovery_error, reason) if message))
 
     def src_nodes(self):
         names = sorted({h for j in self.store.jobs if not j.pending for h in j.hosts})
@@ -410,37 +503,54 @@ class Sampler(threading.Thread):
             self.store.budget = info
 
     def trace_path(self, jid: str) -> str:
-        """<WorkDir>/logs/gpu-util-<id>.csv from the job's details or its sacct record."""
+        """Find the exact live, completed or departed job's trace without inspection."""
         import os
-        kv = self.store.details.get(jid, {})
-        wd = kv.get("WorkDir", "")
-        if not wd:
-            fin = next((f for f in self.store.finished if f.id == jid), None)
-            wd = fin.workdir if fin else ""
-        return os.path.join(wd, "logs", f"gpu-util-{jid}.csv") if wd else ""
+        if not isinstance(jid, str) or not re.fullmatch(r"[0-9]+(?:_[0-9]+)?(?:\+[0-9]+)?", jid):
+            return ""
+        record, kv = self.store.record_context(jid)
+        # The delimited queue/accounting path preserves spaces. parse_kv's
+        # older whitespace-delimited inspection path may have truncated them.
+        for wd in (getattr(record, "workdir", ""), kv.get("WorkDir", "")):
+            if isinstance(wd, str) and len(wd) <= 4096 and os.path.isabs(wd) and "\0" not in wd:
+                return os.path.join(wd, "logs", f"gpu-util-{jid}.csv")
+        return ""
 
     def src_trace(self):
         """The nvidia-smi CSV the job writes itself (timestamp, index, utilization.gpu, memory.used; one line per GPU per minute; the README says how a job writes it) for every
         running GPU job and the job the analytics view shows."""
-        want = [j.id for j in self.store.jobs if not j.pending and j.gpus]
+        with self.store.lock:
+            want = [j.id for j in self.store.jobs if not j.pending and j.gpus]
         if self.want_trace and self.want_trace not in want:
             want.append(self.want_trace)
-        traces = {}
+        traces, statuses, failures = {}, {}, []
         for jid in want:
             path = self.trace_path(jid)
-            if not path or not self.files.exists(path):
+            status = {"path": path, "state": "missing_workdir", "reason": "The exact job has no valid absolute WorkDir.", "rows": 0}
+            statuses[jid] = status
+            if not path:
                 continue
             try:
+                if not self.files.exists(path):
+                    status.update(state="missing_file", reason="The job's optional NVIDIA trace file does not exist.")
+                    continue
                 rows = self.slurm.gpu_trace(path, self.files)
-            except OSError:
+            except (OSError, CommandError) as exc:
+                status.update(state="error", reason=str(exc)[:400])
+                failures.append(f"job {jid}: {status['reason']}")
                 continue
             if rows:
                 traces[jid] = rows
+                status.update(state="ready", reason="", rows=len(rows))
+            else:
+                status.update(state="empty", reason="The trace is empty or contains no valid NVIDIA timestamp/index rows.")
         with self.store.lock:
+            self.trace_status = statuses
             for jid, rows in traces.items():
                 self.store.trace[jid] = rows
-            for k in [k for k in self.store.trace if k not in want]:
+            for k in [k for k in self.store.trace if k not in traces]:
                 del self.store.trace[k]
+        if failures:
+            raise CommandError(f"GPU trace read failed for {len(failures)}/{len(want)} jobs: {failures[0]}")
 
     def src_fin_details(self):
         jid = self.want_fin

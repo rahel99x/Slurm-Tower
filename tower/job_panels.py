@@ -725,8 +725,9 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
         cpu = [point.get("cpu") if point.get("cpu") is not None else point.get("eff") for point in live]
         cpu = [value for value in cpu if value is not None]
         rss = [point["rss"] for point in live if point.get("rss") is not None]
-        gpu = [sum(value[0] for value in point["gpu"].values()) / len(point["gpu"])
-               for point in series if point.get("k") == "gpu" and point.get("gpu")]
+        from .views import _gpu_record_mean
+        gpu = [value for point in series if point.get("k") == "gpu"
+               and (value := _gpu_record_mean(point)) is not None]
         elapsed = job.elapsed_s if job else secs(fin.elapsed) if fin else None
         cpus = getattr(record, "cpus", 0)
         requested = job.mem_bytes if job else fin.req_mem if fin else 0

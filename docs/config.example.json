@@ -22,7 +22,7 @@
       "partitions": [],
       "show_all_partitions": true,
       "state_namespace": "desktop",
-      "gpu_sampling": false,
+      "gpu_sampling": true,
       "weather": false,
       "budget": false,
       "history_days": 7,

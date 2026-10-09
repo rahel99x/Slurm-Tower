@@ -15,6 +15,7 @@ from .model import Finished, GpuSample, Job, Live, Node, NodeCell, Partition, St
 JOB_FMT = "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o|%Z"
 START_FMT = "%i|%S"
 GROUP_FMT = "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S|%a|%o|%Z"
+GPU_ALLOC_FMT = "JobID:0|,tres-alloc:0"
 PEND_FMT = "%P|%C|%b|%D"
 SACCT_FIELDS = "JobID,JobName,State,Elapsed,AllocCPUS,TotalCPU,ReqMem,MaxRSS,Start,End,Partition,NNodes,ExitCode,AllocTRES,NodeList,Submit,WorkDir,Timelimit"
 SSTAT_FIELDS = "JobID,AveCPU,MaxRSS,MaxRSSTask,MaxRSSNode,AveRSS,NTasks,MinCPU,MinCPUTask,MinCPUNode"
@@ -147,6 +148,10 @@ class FakeBackend(Backend):
         name = os.path.basename(cmd[0])
         t = self.now()
         if name == "squeue":
+            if "-O" in cmd and cmd[cmd.index("-O") + 1] == GPU_ALLOC_FMT:
+                return "\n".join(f"{s['id']}|cpu={s['cpus']},node={s['nodes']}" +
+                                 (f",gres/gpu={s['gn'] * s['nodes']},gres/gpu:{s['gt']}={s['gn'] * s['nodes']}" if s['gn'] else "")
+                                 for s, state, _ in self._rows() if state == "RUNNING") + "\n", 0.02
             if "--start" in cmd:
                 lines = [f"{s['id']}|{self._ts(s['start']) if s.get('start') is not None else (self._ts(s['est']) if s.get('est') else 'N/A')}"
                          for s, state, _ in self._rows() if state == "PENDING"]
@@ -525,7 +530,7 @@ def parse_gpu_trace(data: bytes, max_rows: int = 20000) -> List[dict]:
             t = time.mktime(time.strptime(f[0].split(".")[0], "%Y/%m/%d %H:%M:%S"))
         except ValueError:
             continue
-        out.append(dict(t=t, index=int(f[1]), util=fnum(f[2]), mem=fnum(f[3]) if len(f) > 3 else 0.0))
+        out.append(dict(t=t, index=int(f[1]), util=gpu_counter(f[2], upper=100), mem=gpu_counter(f[3]) if len(f) > 3 else None))
     return out
 
 
@@ -552,6 +557,15 @@ def parse_sstat(text: str) -> Tuple[Optional[float], Optional[float]]:
     return cpu, (rss if seen else None)
 
 
+def gpu_counter(text: str, *, upper: Optional[float] = None) -> Optional[float]:
+    """Keep unsupported, malformed and nonfinite NVIDIA counters unmeasured."""
+    try:
+        value = float(text)
+    except (ValueError, TypeError):
+        return None
+    return value if math.isfinite(value) and value >= 0 and (upper is None or value <= upper) else None
+
+
 def parse_nvsmi(text: str, labelled: bool, node: str = "") -> List[GpuSample]:
     out = []
     for line in text.splitlines():
@@ -560,7 +574,28 @@ def parse_nvsmi(text: str, labelled: bool, node: str = "") -> List[GpuSample]:
             tag, rest = line.split(":", 1)
         f = [x.strip() for x in rest.split(",")]
         if len(f) >= 4 and f[0].isdigit():
-            out.append(GpuSample(node=node or f"task{tag.strip()}", index=int(f[0]), util=fnum(f[1]), used=fnum(f[2]), total=fnum(f[3]) or 1.0, name=f[4] if len(f) > 4 else ""))
+            total = gpu_counter(f[3])
+            out.append(GpuSample(node=node or f"task{tag.strip()}", index=int(f[0]), util=gpu_counter(f[1], upper=100), used=gpu_counter(f[2]), total=total if total else None, name=f[4] if len(f) > 4 else ""))
+    return out
+
+
+def parse_gpu_allocations(text: str) -> Dict[str, Tuple[str, int]]:
+    """Read one user-scoped squeue allocation reply without borrowing sibling IDs."""
+    out, ambiguous = {}, set()
+    if len(text.encode("utf-8")) > 1 << 20:
+        raise CommandError("GPU allocation reply exceeds the 1 MiB inspection limit")
+    for line in text.splitlines():
+        fields = line.split("|")
+        if len(fields) != 2:
+            continue
+        jid, tres = (field.strip() for field in fields)
+        if not re.fullmatch(r"[0-9]+(?:_[0-9]+)?(?:\+[0-9]+)?", jid) or len(tres) > 4096 or "=" not in tres:
+            continue
+        if jid in out:
+            ambiguous.add(jid)
+        out[jid] = gres_gpus(tres)
+    for jid in ambiguous:
+        out.pop(jid, None)
     return out
 
 
@@ -681,6 +716,7 @@ class Slurm:
         self.timeout, self.gpu_timeout, self.action_timeout = timeout, gpu_timeout, action_timeout
         self._hosts: Dict[str, List[str]] = {}
         self._sacct_log_paths_supported: Optional[bool] = None
+        self._gpu_allocations_supported: Optional[bool] = None
 
     def jobs(self) -> List[Job]:
         out, _ = self.b.run(["squeue", "-u", self.user, "-h", "-o", JOB_FMT], self.timeout)
@@ -719,23 +755,56 @@ class Slurm:
         return Live(cpu_time=cpu, rss=rss, avg=avg, rate=rate, t=now), keep, steps
 
     def gpu(self, job: Job) -> List[GpuSample]:
+        reasons = []
         try:
             out, _ = self.b.run(["srun", "--jobid", job.id, "--overlap", "--immediate=5", "--quiet", "-N", str(job.nodes), "--ntasks-per-node=1", "--label"] + NVSMI, self.gpu_timeout)
             rows = parse_nvsmi(out, labelled=True)
             if rows:
                 return rows
-        except CommandError:
-            pass
+            reasons.append("srun: nvidia-smi returned no parseable GPU rows")
+        except CommandError as exc:
+            reasons.append(f"srun: {str(exc)[:400]}")
         rows = []
         for node in job.hosts:
             try:
                 out, _ = self.b.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=yes", "--", node] + NVSMI, self.gpu_timeout)
                 rows += parse_nvsmi(out, labelled=False, node=node)
-            except CommandError:
+                if not rows and len(reasons) < 5:
+                    reasons.append(f"ssh {node}: nvidia-smi returned no parseable GPU rows")
+            except CommandError as exc:
+                if len(reasons) < 5:
+                    reasons.append(f"ssh {node}: {str(exc)[:400]}")
                 continue
         if not rows:
-            raise CommandError("nvidia-smi unreachable (srun --overlap and ssh both failed)")
+            if not job.hosts:
+                reasons.append("ssh fallback: allocation has no resolved hosts")
+            raise CommandError(f"GPU telemetry unavailable for job {job.id}: " + "; ".join(reasons))
         return rows
+
+    def gpu_allocations(self) -> Dict[str, Tuple[str, int]]:
+        """One batch read finds per-job/per-task GPUs omitted by squeue's %b.
+
+        %b is TRESPerNode, rather than AllocTRES. A --gpus allocation can
+        therefore appear as a CPU-only job there. Unsupported old fields are
+        attempted once; ordinary connection failures keep their real error.
+        """
+        if self._gpu_allocations_supported is False:
+            return {}
+        try:
+            out, _ = self.b.run(["squeue", "-u", self.user, "-h", "-O", GPU_ALLOC_FMT], self.timeout)
+        except CommandError as exc:
+            message = str(exc).lower()
+            if "invalid" in message and ("format" in message or "field" in message) and ("tres" in message or "jobid" in message):
+                self._gpu_allocations_supported = False
+                return {}
+            raise
+        # Some Slurm releases print an unsupported field literally and exit
+        # successfully after writing the format error to stderr.
+        if any(line.rsplit("|", 1)[-1].strip().lower() == "tres-alloc" for line in out.splitlines()):
+            self._gpu_allocations_supported = False
+            return {}
+        self._gpu_allocations_supported = True
+        return parse_gpu_allocations(out)
 
     def node(self, name: str) -> Optional[Node]:
         out, _ = self.b.run(["scontrol", "show", "node", name, "-o"], self.timeout)

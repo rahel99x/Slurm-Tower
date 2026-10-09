@@ -267,9 +267,20 @@ Tower detects these tools automatically.
 Log selection uses `y`; complete log export uses `Y`.
 If clipboard delivery is unavailable, the private exported file remains available in Activity and the export library.
 
-Keep GPU sampling disabled until you choose to enable it for a valid allocation.
-Live GPU sampling can create short `srun` steps.
-The local desktop profile does not require GPU measurements for ordinary monitoring.
+The supplied desktop profile enables GPU sampling for detected running GPU allocations.
+CPU-only jobs do not trigger NVIDIA sampling.
+Live GPU sampling can create short `srun` steps inside an existing allocation.
+Use `:gpu off` or `--no-gpu` to disable it.
+An earlier saved off preference remains off until you enter `:gpu on`.
+
+If GPU graphs are missing, run:
+
+```bash
+tower --gpu-check --gpu-check-output ./tower-gpu-report
+```
+
+The directory must not exist yet.
+Read [GPU detection checks](guides/gpu-detection.md) for the complete procedure.
 
 ## 7. Use another scheduler environment
 
@@ -305,6 +316,7 @@ See [SSH transport](runbook.md#optional-ssh-transport) for remote prerequisites.
 | History is empty or errors | Inspect `sacct` availability and the configured accounting backend |
 | Source commands are unavailable | Use the terminal environment that exposes the existing Slurm installation |
 | Log paths are unavailable | Run Tower where those paths exist or register exact accessible log locations |
+| GPU graphs are missing | Use `:gpu on`, then `tower --gpu-check` to inspect settings, allocation, driver, and sampling evidence |
 | Unicode characters are misaligned | Use a compatible font or select `--ascii` |
 
 Use the read-only checks in this guide to verify your existing desktop scheduler.

@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.7.0 |
+| Release | Tower 4.7.1 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -29,6 +29,16 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.7.1
+
+- The supplied desktop profile enables GPU sampling for detected running GPU allocations. Use `:gpu on` if an earlier session saved the toggle as off.
+- GPU detection reads allocation TRES when the per-node queue field omits a `--gpus` request.
+- Analytics finds GPU traces without opening Inspector first and shows sampling errors before the first sample.
+- Unknown NVIDIA counters remain gaps. Trace paths preserve spaces, and missing trace files clear stale readings.
+- Use `tower --gpu-check` to inspect current jobs. Add `--gpu-check-output DIRECTORY` to save allocation, command, trace, and cache evidence.
+
+See [GPU detection checks](docs/guides/gpu-detection.md) for Fedora instructions and report interpretation.
 
 ## Changes in Tower 4.7.0
 
@@ -504,6 +514,7 @@ See [execution and recovery](docs/WORKBENCH.md#execute-a-reviewed-workflow-or-sc
 | Method | Command | Result |
 | --- | --- | --- |
 | Inspect prerequisites | `tower --doctor` | Local environment checks |
+| Diagnose missing GPU graphs | `tower --gpu-check` | Current job allocations, NVIDIA sampling, traces, and retained samples |
 | Inspect a simulated environment | `tower --doctor --fake` | Checks without Slurm |
 | Export one page | `tower --once --tab history` | One terminal frame |
 | Export a snapshot | `tower --json` | Machine-readable JSON |
@@ -577,6 +588,7 @@ See [Documentation style](docs/DOCUMENTATION_STYLE.md) for terminology and proce
 | Inspect graph windows, ranges, events, and units | [Chart guide](docs/guides/charts.md) |
 | Page through declared output files | [Artifact guide](docs/guides/artifacts.md) |
 | Review completions, exports, diagnostics, and alerts | [Operations guide](docs/guides/operations.md) |
+| Diagnose missing GPU measurements | [GPU detection checks](docs/guides/gpu-detection.md) |
 | Use the original terminal workbench | [Workbench guide](docs/WORKBENCH.md) |
 | Instrument projects and define reports | [Project reporting standard](docs/PROJECT_STANDARD.md) |
 | Prepare research and output contracts | [Research workflows](docs/RESEARCH.md) |

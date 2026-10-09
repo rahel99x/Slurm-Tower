@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
@@ -158,24 +159,44 @@ def when(s: Optional[str]) -> str:
 
 
 def gres_gpus(s: Optional[str]):
-    """'gres/gpu:a100:2' | 'gpu:2' | 'gpu:a100:2(S:0-1)' | 'gres:gpu:1' | 'N/A' -> (type, count)."""
-    if not s or "gpu" not in s:
+    """Read GPU GRES and TRES, including typed, aggregate and mixed resources.
+
+    An aggregate ``gres/gpu=`` is already the job total. Its typed TRES
+    entries describe that same allocation and must not be counted twice.
+    Socket/index annotations describe placement, rather than extra GPUs.
+    """
+    if not s or len(s) > 65536:
         return ("", 0)
-    body = s.split("gpu", 1)[1].lstrip(":").split("(")[0]
-    bits = [b for b in body.split(":") if b]
-    if not bits:
-        return ("", 0)
-    if bits[-1].isdigit():
-        return (bits[0] if len(bits) > 1 else "", int(bits[-1]))
-    return (bits[0], 1)
+    total, aggregate, types = 0, None, set()
+    for piece in re.sub(r"\([^)]*\)", "", s).split(","):
+        match = re.fullmatch(r"(?:gres[/:])?gpu(?P<body>(?::[^\s,=]+)?)(?:=(?P<count>[0-9]+))?", piece.strip())
+        if match is None:
+            continue
+        bits = match.group("body").lstrip(":").split(":") if match.group("body") else []
+        raw = match.group("count")
+        if raw is None and bits and bits[-1].isascii() and bits[-1].isdigit():
+            raw = bits.pop()
+        if raw is None:
+            if len(bits) != 1 or bits[0].startswith(("-", "+")):
+                continue
+            count = 1
+        elif len(raw) > 20:
+            continue
+        else:
+            count = int(raw)
+        kind = ":".join(bits)
+        if kind and count:
+            types.add(kind)
+        if match.group("count") is not None and not kind:
+            aggregate = count
+        else:
+            total += count
+    return (next(iter(types)) if len(types) == 1 else "mixed" if types else "", aggregate if aggregate is not None else total)
 
 
 def gpus_in_tres(tres: str) -> int:
-    """'cpu=8,mem=32G,node=1,billing=8,gres/gpu=1,gres/gpu:a100=1' -> 1."""
-    for part in (tres or "").split(","):
-        if part.startswith("gres/gpu=") :
-            return fint(part.split("=", 1)[1])
-    return 0
+    """Count allocated GPUs even when Slurm exposes only typed GPU TRES."""
+    return gres_gpus(tres)[1]
 
 
 def mem_request_bytes(mem_req: str, cpus: int, nodes: int) -> float:
@@ -254,9 +275,9 @@ class Live:
 class GpuSample:
     node: str
     index: int
-    util: float                          # percent
-    used: float                          # MiB
-    total: float                         # MiB
+    util: Optional[float]                # percent; None when the device does not expose the counter
+    used: Optional[float]                # MiB
+    total: Optional[float]               # MiB
     name: str = ""
 
 
@@ -818,6 +839,8 @@ class Store:
             self.gpu[jid] = samples
             for s in samples or []:
                 key = f"{jid}:{s.node}:{s.index}"
+                if s.util is None:
+                    continue
                 self.hist_gpu[key].append(s.util / 100.0)
                 m = self.gpu_mean[key]
                 m[0] += s.util

@@ -275,7 +275,9 @@ def job_ns(j, snap: dict, marks: Iterable[str] = (), tags: Optional[Dict[str, Se
     from .model import stamp
     lv = snap.get("live", {}).get(j.id)
     g = snap.get("gpu", {}).get(j.id) or []
-    gutil = (sum(s.util for s in g) / len(g)) if g else None
+    measured_gpu = [s.util for s in g if isinstance(s.util, (int, float))
+                    and not isinstance(s.util, bool) and 0 <= s.util <= 100]
+    gutil = sum(measured_gpu) / len(measured_gpu) if measured_gpu else None
     mean = None
     if g:
         key = f"{j.id}:{g[0].node}:{g[0].index}"

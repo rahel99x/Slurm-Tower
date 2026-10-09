@@ -212,8 +212,8 @@ def _resource_series(app, jid):
             samples = sample.get("gpu", {})
             if not isinstance(samples, dict):
                 samples = {}
-            util = [v[0] for v in samples.values() if isinstance(v, (list, tuple)) and v and _finite(v[0])]
-            values["GPU utilization (%)"].append({"t": t, "value": statistics.fmean(util) if util and len(util) == len(samples) else None})
+            util = [v[0] for v in samples.values() if isinstance(v, (list, tuple)) and v and _finite(v[0]) and 0 <= v[0] <= 100]
+            values["GPU utilization (%)"].append({"t": t, "value": statistics.fmean(util) if util else None})
     return {name: points for name, points in values.items() if points}
 
 

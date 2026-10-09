@@ -836,6 +836,8 @@ Run `tower --help` for the parser's complete current syntax.
 | `--config FILE` | Select TOML or JSON configuration |
 | `--write-config` | Create commented defaults without replacing an existing file |
 | `--doctor` | Inspect demo, local, or remote prerequisites |
+| `--gpu-check [JOBID]` | Inspect GPU detection; omit JOBID to check current individual jobs |
+| `--gpu-check-output DIRECTORY` | Save a GPU check to a new private directory |
 | `--profile NAME` | Apply a configured cluster profile |
 | `--host HOST` | Run scheduler commands and log reads through SSH |
 | `--ssh-user USER` | Select the remote SSH login |

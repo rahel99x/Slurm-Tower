@@ -8,7 +8,7 @@ import pytest
 from tower import chart_interaction as C, charts, job_panels as J, layout as L, palette
 from tower.config import Config
 from tower.controller import App
-from tower.model import Finished, Job, Store
+from tower.model import Finished, GpuSample, Health, Job, Node, Store
 from tower.views import Views
 
 
@@ -249,3 +249,158 @@ def test_sample_mean_uses_retained_observations_and_not_process_lifetime(monkeyp
     curves, _ = inspect_curves(monkeypatch, dashboard)
     assert curves["gpu:nodeA:0:rate"]["values"] == [20., 40., 60.]
     assert curves["gpu:nodeA:0:busy-mean"]["values"] == [20., 30., 40.]
+
+
+@pytest.mark.parametrize("ascii_", [False, True])
+@pytest.mark.parametrize("condition", ["waiting", "off", "disabled", "error"])
+def test_empty_gpu_series_explains_collection_state_before_first_success(monkeypatch, dashboard, ascii_, condition):
+    health = Health("gpu")
+    dashboard.store.health["gpu"] = health
+    expected = "GPU telemetry is unavailable"
+    if condition == "waiting":
+        dashboard.store.jobs[0].state = "PENDING"
+        expected = "This job is waiting"
+    elif condition == "off":
+        dashboard.app.gpu = False
+        expected = "GPU sampling is off"
+    elif condition == "disabled":
+        health.enabled = False
+        expected = "The GPU source is disabled"
+    else:
+        health.error = "srun exit 1: Failed to initialize NVML: Driver/library version mismatch"
+        expected = "Driver/library version mismatch"
+    curves, text = inspect_curves(monkeypatch, dashboard, ascii_=ascii_)
+    assert not curves
+    assert expected in text
+    assert "tower --gpu-check 900" in text
+    assert "no samples recorded" in text
+
+
+def test_gpu_health_notice_never_queries_sources_or_executes_terminal_controls(monkeypatch, dashboard):
+    dashboard.store.health["gpu"] = Health("gpu", error="srun: \x1b[31mGPU initialization failed\x1b[0m\nretry")
+    dashboard.app.sampler = SimpleNamespace(trace_status={}, slurm=SimpleNamespace(
+        gpu=lambda *a: pytest.fail("GPU renderer attempted collection")))
+    dashboard.store._series_loaded.add("900")
+    monkeypatch.setattr(dashboard.store, "_series_path", lambda *a: pytest.fail("GPU renderer attempted file IO"))
+    _, text = inspect_curves(monkeypatch, dashboard)
+    assert "GPU initialization failed" in text
+    assert "\x1b" not in text and "^Jretry" in text
+
+
+@pytest.mark.parametrize("state", ["missing_workdir", "missing_file", "empty", "error"])
+def test_empty_gpu_series_shows_published_trace_reason_without_loading_the_path(monkeypatch, dashboard, state):
+    dashboard.app.sampler = SimpleNamespace(trace_status={"900": {
+        "state": state, "path": "/unreachable/gpu-util-900.csv", "reason": "No valid timestamp/index rows", "rows": 0}})
+    _, text = inspect_curves(monkeypatch, dashboard)
+    assert "GPU trace: No valid timestamp/index rows" in text
+    assert "tower --gpu-check 900" in text
+
+
+@pytest.mark.parametrize("source", ["live", "trace"])
+def test_detected_devices_with_only_unknown_counters_keep_gaps_and_explain_state(monkeypatch, dashboard, source):
+    if source == "live":
+        observations(dashboard, [None, None])
+    else:
+        dashboard.store.trace["900"] = [dict(t=0., index=0, util=None), dict(t=60., index=0, util=None)]
+    curves, text = inspect_curves(monkeypatch, dashboard)
+    assert len(curves) == 2
+    assert all(item["values"] == [None, None] for item in curves.values())
+    assert "devices were detected" in text and "counters are unavailable" in text
+    assert "tower --gpu-check 900" in text
+
+
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_optional_gpu_counters_are_safe_in_jobs_inspector_nodes_and_sort_values(dashboard, ascii_):
+    from tower.views import job_sort_values
+    dashboard.views.g = L.Glyphs(ascii_)
+    job = dashboard.store.jobs[0]
+    job.hosts = ["nodeA"]
+    samples = [GpuSample("nodeA", 0, None, None, None),
+               GpuSample("nodeA", 1, 0, 0, 0),
+               GpuSample("nodeA", 2, 100, 512, 1024)]
+    dashboard.store.gpu["900"] = samples
+    dashboard.store.nodes["nodeA"] = Node("nodeA", cpus=8)
+    snap = dashboard.store.snapshot()
+    rows = dashboard.views.job_rows(snap, dashboard.app)
+    assert rows[0]["gpu%"] == "50"
+    assert job_sort_values(job, rows[0], snap, ["gpu%"]) == {**job_sort_values(job, rows[0], snap, []), "gpu%": 50}
+    inspector = L.to_text(dashboard.views.selected_panel(snap, job, 100, 0, dashboard.app), 100)
+    assert "unknown" in inspector and "0%" in inspector
+    node_rows, _ = dashboard.views.my_nodes(snap, dashboard.app, 160, None)
+    assert "50%" in L.to_text(node_rows, 160) and "unknown" in L.to_text(node_rows, 160)
+    if ascii_:
+        assert inspector.isascii()
+
+
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_compare_graphs_and_inline_cards_ignore_unknown_device_counters(monkeypatch, dashboard, ascii_):
+    dashboard.views.g = L.Glyphs(ascii_)
+    dashboard.app.compare_ids = ["900"]
+    for timestamp, data in enumerate(({}, {"nodeA:0": [None, None, None]},
+                                      {"nodeA:0": [None], "nodeA:1": [0]},
+                                      {"nodeA:0": [20], "nodeA:1": [60]})):
+        dashboard.store.record("900", dict(k="gpu", t=float(timestamp), gpu=data))
+    calls = []
+    monkeypatch.setattr(dashboard.views, "metric_curve", lambda app, values, *a, **k: calls.append(list(values)) or [])
+    body = dashboard.views.analytics_compare(dashboard.store.snapshot(), dashboard.app, 160, None)
+    assert calls == [[None, None, 0., 40.]]
+    assert "20%" in L.to_text(body, 160)
+    narrow = J._analytics_cards(dashboard.views, dashboard.store.snapshot(), dashboard.app, body)
+    assert "GPU mean 20%" in L.to_text(narrow, 160)
+
+
+@pytest.mark.parametrize("values,expected", [([None, None], "idle share unknown"),
+                                            ([None, 0, 100], "50% of valid samples idle"),
+                                            ([0, 100], "50% of samples idle")])
+def test_trace_summary_uses_only_measured_counters_and_never_invents_current_zero(dashboard, values, expected):
+    trace = [dict(t=float(i * 120), index=0, util=value) for i, value in enumerate(values)]
+    text = L.row_text(dashboard.views.trace_row(trace, dashboard.store.jobs[0], 12))
+    assert expected in text
+    if all(value is None for value in values):
+        assert "gpu0 unknown (now unknown)" in text
+        assert "0%" not in text
+
+
+def test_trace_summary_old_device_has_unknown_recent_value(dashboard):
+    trace = [dict(t=0., index=0, util=100.), dict(t=120., index=1, util=20.)]
+    text = L.row_text(dashboard.views.trace_row(trace, dashboard.store.jobs[0], 12))
+    assert "gpu0 100% (now unknown)" in text
+    assert "gpu1 20% (now 20%)" in text
+
+
+@pytest.mark.parametrize("counters,expected", [([None], None), ([None, 0], 0.),
+                                               ([None, 20, 80], 50.),
+                                               ([math.nan, math.inf, -1, 101, True, "50", 10**400], None)])
+def test_gpu_expressions_and_full_field_peeks_use_only_valid_observations(dashboard, counters, expected):
+    from tower import expr, navigation_tools as N, table_tools as T
+    job = dashboard.store.jobs[0]
+    job.hosts = ["nodeA"]
+    dashboard.store.nodes["nodeA"] = Node("nodeA", cpus=8)
+    dashboard.store.gpu[job.id] = [GpuSample("nodeA", index, counter, None, None)
+                                    for index, counter in enumerate(counters)]
+    T.select_resource(dashboard.app, "nodes", ["nodeA"])
+    namespace = expr.job_ns(job, dashboard.store.snapshot())
+    assert namespace.gpu == expected
+    assert N.raw_field(dashboard.app, "jobs", "gpu%") == expected
+    assert N.raw_field(dashboard.app, "nodes", "gutil") == expected
+    assert expr.Expr("gpu is not None and gpu < 10")(namespace) is (expected is not None and expected < 10)
+
+
+def test_node_field_peek_handles_failed_gpu_source_without_iterating_none(dashboard):
+    from tower import navigation_tools as N, table_tools as T
+    dashboard.store.jobs[0].hosts = ["nodeA"]
+    dashboard.store.nodes["nodeA"] = Node("nodeA", cpus=8)
+    dashboard.store.gpu["900"] = None
+    T.select_resource(dashboard.app, "nodes", ["nodeA"])
+    assert N.raw_field(dashboard.app, "nodes", "gutil") is None
+
+
+def test_inspector_resource_graph_uses_valid_gpu_devices_and_keeps_unknown_time_gaps(monkeypatch, dashboard):
+    from tower import analysis_ui as A
+    for timestamp, values in enumerate(([None], [None, 0], [20, None, 80], [math.nan, -1, 101, True])):
+        dashboard.store.record("900", dict(k="gpu", t=float(timestamp),
+            gpu={f"nodeA:{i}": [value] for i, value in enumerate(values)}))
+    monkeypatch.setattr(dashboard.store, "series_of", lambda *a: pytest.fail("Inspector frame read a series file"))
+    series = A._resource_series(dashboard.app, "900")
+    assert series["GPU utilization (%)"] == [dict(t=0., value=None), dict(t=1., value=0.),
+                                               dict(t=2., value=50.), dict(t=3., value=None)]

@@ -1,0 +1,222 @@
+# Diagnose missing GPU measurements
+
+[README](../../README.md) · [Desktop setup](../DESKTOP.md) · [Chart controls](charts.md)
+
+Tower must detect a job's GPU allocation before it collects automatic NVIDIA measurements.
+A GPU visible on the desktop does not establish that Slurm assigned it to a job.
+This guide separates sampling settings, allocation detection, driver access, live measurements, trace files, and retained data.
+
+## Enable sampling on Fedora
+
+The supplied `desktop` profile enables GPU sampling from Tower 4.7.1.
+Earlier versions supplied that profile with sampling disabled.
+A custom configuration or a saved off preference can still disable it.
+
+1. Open Tower with the desktop profile.
+2. Enter `:gpu on`.
+3. Open Sources. Check that the GPU source is enabled.
+4. If required, enter `:source gpu on`.
+5. Select a running GPU job in Analytics or Jobs Details.
+6. Wait for a GPU sampling interval.
+
+**Expected result:** Valid observed utilization produces a GPU rate curve and an observed busy-mean curve.
+Unknown counters stay unknown. They do not become zero utilization.
+The normal GPU interval is a configuration setting.
+Confirmed allocation counts stay available across ordinary queue refreshes.
+Tower refreshes that evidence once per GPU polling round.
+Changed job attempts or resource settings invalidate the cached count.
+Failed discovery cannot extend it indefinitely: its lifetime is twice the effective GPU interval, bounded from 10 to 120 seconds.
+The cache retains at most 10,000 current running jobs.
+The Live graph slider changes the displayed time window; it does not increase the measurement cadence.
+
+Use `:gpu off` or `--no-gpu` when you want sampling disabled.
+The saved toggle belongs to the connection's state scope.
+Source enable/disable controls apply to the running session and are not saved.
+
+## Run the complete check
+
+From a terminal with the same Slurm configuration and permissions as Tower, run:
+
+```bash
+tower --gpu-check --gpu-check-output ./tower-gpu-report
+```
+
+The output directory must not exist.
+The check preserves existing files and does not replace configuration.
+To inspect one job, use its exact individual ID:
+
+```bash
+tower --gpu-check 123 --gpu-check-output ./tower-gpu-job-123
+tower --gpu-check 123_4 --json > gpu-array-task-123_4.json
+```
+
+Replace the example IDs with your actual job IDs.
+The check selects the current scheduler user by default.
+Use `--user USER` for another authorized scheduler user.
+
+To bypass an old alias or custom configuration, run from the checkout:
+
+```bash
+./scripts/tower --config docs/config.example.json --profile desktop \
+  --gpu-check --gpu-check-output ./tower-gpu-report-direct
+```
+
+The standalone check file uses the same implementation:
+
+```bash
+python3 scripts/check_gpu.py --config docs/config.example.json --profile desktop \
+  --gpu-check-output ./tower-gpu-report-script
+
+python3 scripts/check_gpu.py 123 --profile desktop
+```
+
+The installed command works without the checkout script.
+Both entry points accept normal connection and configuration options.
+Use `--host LOGIN` for a remote scheduler connection.
+Use `--json` for machine-readable output.
+
+`--fake` selects simulation. `--replay FILE` selects recorded evidence.
+These modes do not verify live desktop hardware.
+The report labels them explicitly.
+`--record` cannot be combined with a GPU check.
+A configured session recording path is ignored; the diagnostic writes only its requested report folder.
+
+## Read the report files
+
+| File | Contents |
+| --- | --- |
+| `report.txt` | Human-readable checks, next steps, and captured command excerpts |
+| `report.json` | Structured `tower.gpu-check/v1` report, job evidence, limits, and results |
+| `commands.jsonl` | One record per attempted command, with arguments, status, return code, duration, stdout, and stderr |
+
+The check captures both successful commands and failures.
+Each captured stream records its original byte count and whether the excerpt was truncated.
+It preserves timeout output when the process supplied it.
+Terminal output replaces control characters instead of executing captured escape sequences.
+
+The new directory has private permissions. Each report file has private permissions.
+Reports can contain job names, project paths, node names, and command output.
+Review them before sharing.
+The check does not dump environment variables, configuration secrets, or SSH credentials.
+
+An exit status of `0` means the check completed without an error-level result.
+Warnings can still explain why a job has no graph data.
+An exit status of `1` means a check or report operation failed.
+Invalid command syntax returns `2`.
+Read `summary.jobs_with_graph_data` and the job-specific checks; a successful exit alone does not prove GPU data exists.
+
+## Interpret the checks
+
+| Check | Meaning and action |
+| --- | --- |
+| `sampling_settings`, `saved_sampling` | Shows configuration, `--no-gpu`, and the saved toggle. Use `:gpu on` when off. |
+| `command_paths` | Reports tool paths on the scheduler connection host. Check that Tower uses your normal Slurm environment. |
+| `host_gpu_inventory` | Runs `nvidia-smi` on the connection host. This is hardware evidence, not job attribution. A GPU-free cluster login host is normal. |
+| `pci_gpu_inventory` | Lists display/controller devices when NVIDIA inventory fails. `lspci` is optional. |
+| `nvidia_backend_only` | The listed devices are not NVIDIA. Automatic sampling currently uses `nvidia-smi`; AMD and Intel devices need another telemetry source. |
+| `queue` | Shows whether the controller returned your jobs. Resolve a queue connection failure first. |
+| `allocation_batch` | Reads per-job allocation TRES. This detects `--gpus` allocations omitted by the per-node `%b` field. |
+| `queue_gpu_underreported` | Allocation details show more GPUs than the queue lookup. Compare the captured resource fields and batch-query result. |
+| `allocation_missing` | Slurm reports no GPU allocation. Check compute-node GRES and the job's GPU request. |
+| `not_running` | Pending or completed jobs cannot produce a new live sample. Check recorded traces or retained samples. |
+| `live_samples` | Counts observed devices with valid utilization. Tower can record new graph samples. |
+| `utilization_unsupported` | Devices exist but the utilization counter is unavailable. Inspect the NVIDIA output and device/MIG/driver capabilities. |
+| `driver_unavailable`, `command_missing`, `permission_denied` | Identifies the original command failure. Fix the named prerequisite. |
+| `allocation_probe_failed`, `probe_timeout`, `sampling_failed` | Shows why the allocation probe or fallback failed. Read the corresponding `srun` and SSH records. |
+| `ssh_device_scope` | SSH exposed node-visible devices. On a shared node, their ownership by this job is not proved. Prefer the allocation probe or an in-job trace. |
+| `trace_read`, `trace_unavailable`, `trace_workdir_missing` | Shows the exact optional trace location, read result, and valid utilization count. |
+| `retained_samples` | Counts valid retained GPU measurements in this connection's local series cache. Malformed and unknown readings do not count as measurements. |
+| `job_not_found`, `job_details_identity` | Rejects missing or mismatched exact job evidence. Check the profile, user, and job ID. |
+| `nonindividual_queue_ids` | Skips compressed array groups and malformed IDs. Specify the exact array task. |
+| `job_limit`, `node_limit`, `diagnostic_budget` | Reports incomplete coverage caused by the stated limits. Run another exact-job check if required. |
+
+Live sampling uses Tower's ordinary `srun --jobid ... --overlap` NVIDIA query.
+It can create a short step inside an existing allocation.
+It does not submit, cancel, requeue, hold, or change jobs.
+The check does not start the dashboard, its plugins, or the sampler background loop.
+
+## Check a Fedora allocation
+
+When `nvidia-smi` detects a GPU but `allocation_missing` appears for every job:
+
+1. Inspect the job's captured `TRES`, `AllocTRES`, and `TresPerNode` fields.
+2. Inspect the compute node's captured `Gres` and `CfgTRES` fields.
+3. Confirm that Slurm's compute-node GRES configuration registers the GPU.
+4. Request a GPU in the job's batch file or launch command.
+
+For a node with GPU GRES configured, use one suitable request:
+
+```bash
+#SBATCH --gpus=1
+```
+
+or:
+
+```bash
+#SBATCH --gres=gpu:1
+```
+
+Use the GPU type and count configured on your node when a typed request is required.
+Adding a request alone does not configure Slurm's GRES or install a driver.
+Use your installed Slurm version's `slurm.conf` and `gres.conf` documentation for that configuration.
+The diagnostic deliberately leaves scheduler configuration unchanged.
+
+`AccountingStorageTRES=gres/gpu` records allocated GPU resources in accounting.
+It does not create live utilization measurements.
+See [Fedora accounting](../FEDORA_ACCOUNTING.md) for the accounting setup.
+
+## Provide an optional GPU trace
+
+Tower looks for this exact path:
+
+```text
+<WorkDir>/logs/gpu-util-<job_id>.csv
+```
+
+Use the full array task ID when applicable.
+The queue or accounting work directory preserves spaces.
+Opening Inspector is not required to discover the trace.
+
+Run the trace writer inside the actual job environment:
+
+```bash
+mkdir -p logs
+job_key="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}"
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+  job_key="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+fi
+nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used \
+  --format=csv,noheader,nounits --loop=5 > "logs/gpu-util-${job_key}.csv" &
+gpu_trace_pid=$!
+trap 'kill "$gpu_trace_pid" 2>/dev/null || true' EXIT
+
+# Run your application here.
+```
+
+Use a cadence appropriate for your application and environment.
+This minimal format identifies devices by index and suits one node.
+Do not combine multiple nodes with duplicate device indices into one unlabeled file.
+Automatic multi-node sampling retains separate device identities.
+An unavailable or removed trace clears its current chart; older session samples remain separate retained evidence.
+Application JSONL metrics remain available in Research and are not automatically converted into scheduler GPU samples.
+
+## Check the limits
+
+The check probes at most eight jobs, prioritizing running GPU allocations.
+An exact job check avoids that queue limit.
+It inspects at most four nodes per job and requests at most four nodes for its diagnostic allocation probe.
+Larger jobs can therefore have partial device coverage.
+Queue discovery uses one batch request instead of inspection commands for every CPU job.
+
+Command work has a 60-second budget and a 128-command limit.
+Each captured stream retains at most 16 KiB.
+Total captured stream evidence is limited to 1 MiB.
+Trace reads inspect at most the last 1 MiB; retained series reads inspect at most the last 2 MiB.
+Saved UI preference reads are limited to 1 MiB.
+Unread or truncated portions do not establish that data is absent from the complete file.
+These limits bound diagnostic command and file work; scheduler and filesystem delays can still affect total elapsed time.
+
+A successful probe measures the system at that time.
+After updating Tower, restart it and let the GPU source run.
+The check cannot inspect the source-enable switch of a different running Tower process.
+Use Sources in that process to verify its current source state.
