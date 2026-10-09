@@ -19,6 +19,20 @@ Live metric windows use display deadlines while source sampling retains its own 
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
 The display changes do not increase Slurm sampling rates.
 
+## Manual group identity checks in 4.12.0
+
+Job marks retain their submission and cluster identity. This prevents a refreshed or reused job ID from moving a manual group to another execution.
+Pointer movement uses published rows and does not read scheduler sources or rebuild group inference.
+Unchanged frames reuse selection tokens. Frame preparation still checks the underlying identity fields, including conflicting records from different sources.
+Cluster, Nodes, and Sources pages skip job-selection identity publication.
+
+Local CPU measurements of the unchanged inference-plus-selection stage were 14.81 ms for 10,000 known jobs, compared with 12.07 ms in 4.11.0.
+Stress cases with 10,000 missing-submission records or duplicate source records took 33.34 ms and 40.49 ms, respectively.
+These measurements exclude graph rendering and terminal paint; they are not input latency promises.
+With grouping off, the added selection-provenance stage took 3.41 ms for 10,000 records and 22.77 ms for 50,000 records after optimization.
+This validation has a real cost on large lists. The cache does not skip in-place corrections or weaken attempt checks to remove that cost.
+See [Manual groups](batch-launches.md) for identity rules, limits, and reset controls.
+
 ## Check pointer feedback
 
 1. Open Jobs.

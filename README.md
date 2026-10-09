@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.11.0 |
+| Release | Tower 4.12.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -31,6 +31,13 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.12.0
+
+- Mark at least two jobs in a focused job list and press `g` to create a closed manual group. It uses the existing chevrons and state-count summary.
+- Press `u` on a closed group to dissolve it. In an open group, `u` removes only the marked members, or the selected member when no jobs are marked. Press `U` to clear marks without changing groups.
+- Manual membership and removals apply across job listings. Saved choices identify the execution attempt so that a reused job number does not inherit an earlier grouping.
+- Menus, text selections, graphs, and graph/slider drags retain their input controls. See [Manual groups](docs/guides/batch-launches.md#create-a-manual-group) for selection and persistence rules.
 
 ## Changes in Tower 4.11.0
 
@@ -430,6 +437,9 @@ The same detection applies to available historical records and new queue publica
 Click the right-pointing chevron on the first visible expanded group row to close it.
 Click the down-pointing chevron on the summary row to show its jobs again.
 The fold preference remains shared across the job pages and their history browsers.
+Mark two or more real jobs in the focused list and press `g` to create a closed manual group.
+Press `u` on a closed summary to dissolve its group, or on marked expanded members to remove only those members.
+Removed members stay outside automatic grouping for that execution attempt. `U` clears marks without changing groups.
 Use `:jobgroups off` when you need individual rows.
 Collapsed groups retain a real representative job ID; hidden members do not become action targets automatically.
 See [Automatic launch groups](docs/guides/batch-launches.md) to identify a batch, read its state counts, and load older records.

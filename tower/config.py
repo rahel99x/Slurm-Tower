@@ -66,7 +66,7 @@ DEFAULTS: Dict[str, Any] = {
         "tab_log": ["5"], "tab_sources": ["6"], "tab_group": ["8"], "tab_deps": ["9"], "steps": ["i"], "pin": ["p"], "resubmit": ["A"],
         "wrap": ["w"], "stderr": ["e"], "log_file": ["o"], "log_files": ["O"], "bookmark": ["m"], "bookmark_next": ["'"],
         "replay_pause": ["|"], "replay_back": ["<"], "replay_fwd": [">"], "replay_slower": ["{"], "replay_faster": ["}"],
-        "mark": ["space"], "mark_all": ["a"], "unmark_all": ["u"],
+        "mark": ["space"], "mark_all": ["a"], "unmark_all": ["u", "U"],
         "details": ["enter", "d"], "cancel": ["c"], "hold": ["h"], "requeue": ["R"], "top": ["t"],
         "inspector": ["I"],
         "log": ["l"], "less": ["L"], "follow": ["f"], "sort": ["s"], "reverse": ["S"], "filter": ["/"], "clear": ["esc"],

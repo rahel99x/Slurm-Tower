@@ -2564,12 +2564,15 @@ class Views:
         previous_window = getattr(app, "analytics_render_window", None)
         app.analytics_group_hits = []
         app.analytics_group_records = []
+        app.analytics_advisor_ids = ()
+        app.analytics_advisor_positions = {}
+        app.analytics_advisor_page = 0
         if document:
             offsets = getattr(app, "analytics_scroll_offsets", None)
             if not isinstance(offsets, dict):
                 offsets = app.analytics_scroll_offsets = {}
             key = "analytics:document:" + view
-            context = (view, app.analytics_job, days, tuple(app.compare_ids), width)
+            context = (view, app.analytics_job if view != "advisor" else None, days, tuple(app.compare_ids), width)
             state = offsets.setdefault(view, {"top": 0, "context": context})
             if state["context"] != context:
                 state.update(top=0, context=context)
@@ -2592,6 +2595,8 @@ class Views:
         if document:
             from .scrolling import viewport
             page, count = max(0, (avail or 0) - 1), max(0, len(body) - 1)
+            if view == "advisor":
+                app.analytics_advisor_page = page
             state["top"] = max(0, min(max(0, count - page), state["top"]))
             painted = viewport(app, key, state["top"], count, page, context=context)
             records = chart_interaction.take_since(app, chart_mark)
@@ -2617,11 +2622,20 @@ class Views:
                 if 0 <= y < len(body):
                     self.group_controls(app, body, group_hits, [record], y,
                                         "analytics:advisor", body_width, first_visible=True)
+            hits += [(len(out) + y, "advisor_job", record.id)
+                     for y, record in group_records if 0 <= y < len(body)]
         chart_interaction.place_since(app, chart_mark, dy=len(out),
             clip=(len(out), 0, len(out) + len(body), width))
         SB.place_since(app, scroll_mark, dy=len(out),
             clip=(len(out), 0, len(out) + len(body), width))
         hits += [(len(out) + y, kind, value) for y, kind, value in group_hits if 0 <= y < len(body)]
+        if view == "advisor":
+            import shlex
+            hits += [(len(out) + y, "control", {"id": "advisor-job:" + record.id,
+                       "label": record.id, "left": 0, "right": body_width,
+                       "action": ("command", "advisor-job " + shlex.quote(record.id)),
+                       "group": "advisor-jobs", "button": False})
+                     for y, record in group_records if 0 <= y < len(body)]
         return out + body, hits
 
     def analytics_advisor(self, snap: dict, app, width: int, avail: Optional[int], days: float) -> List[Row]:
@@ -2657,7 +2671,9 @@ class Views:
         if running:
             from .job_groups import project_records, metadata_for_record
             running = project_records(app, snap, running, tab="analytics:advisor")
+            app.analytics_advisor_ids = tuple(j.id for j in running)
             out.append(rule(g, width, "running jobs so far"))
+            app.analytics_advisor_positions = {j.id: len(out) + index for index, j in enumerate(running)}
             by_name = self.history_advice_cache.groups(snap["finished"])
             window = getattr(app, "analytics_render_window", None)
             if isinstance(window, tuple) and len(window) == 2:
@@ -2671,19 +2687,23 @@ class Views:
                     out.append([])
                     continue
                 meta = metadata_for_record(app, "analytics:advisor", j.id)
-                if meta is not None:
-                    app.analytics_group_records.append((len(out), j))
+                app.analytics_group_records.append((len(out), j))
+                marked = j.id in app.marks
+                selected = (getattr(app, "job_selection_state", {}).get("advisor_focus")
+                            and app.analytics_job == j.id)
+                row_style = "sel+bold" if selected else "warning+bold" if marked else "cyan"
+                marker = "*" if marked else " "
                 if meta is not None and meta.header and meta.collapsed:
                     from .job_group_ui import summary_row
-                    label = f"   {j.id} {meta.group.label} / {meta.visible_count} records "
-                    out.append([(cut(label, width, g.ascii), "accent+bold")] + summary_row(meta.stats or meta.records,
+                    label = f"  {marker}{j.id} {meta.group.label} / {meta.visible_count} records "
+                    out.append([(cut(label, width, g.ascii), row_style)] + summary_row(meta.stats or meta.records,
                         max(0, width - L.vlen(label)), ascii_=g.ascii))
                     self.group_controls(app, out, app.analytics_group_hits, [j], len(out) - 1, "analytics:advisor", width)
                     continue
                 lv = snap["live"].get(j.id)
                 adv = advisor.advise_running(j, lv, _native_series(_series_of(app, j.id)), by_name.get(j.name, ()))
                 text = adv.summary(g.dot) or "nothing to change yet"
-                out.append([(f"   {j.id} ", "cyan"), (pad(cut(j.name, 20, g.ascii), 20), "bold"), (" " + cut(text, width - 36, g.ascii), "")])
+                out.append([(f"  {marker}{j.id} ", row_style), (pad(cut(j.name, 20, g.ascii), 20), "bold"), (" " + cut(text, width - 36, g.ascii), "")])
                 if meta is not None and meta.header:
                     self.group_controls(app, out, app.analytics_group_hits, [j], len(out) - 1, "analytics:advisor", width)
         if avail is not None:
@@ -3109,7 +3129,7 @@ class Views:
         hits = [(y, kind, key) for y, kind, key in hits if 0 <= y < max(0, height - 1)]
         app.last_hits = hits
         from .job_selection import publish as publish_selection
-        publish_selection(app, rows, hits, width, height)
+        publish_selection(app, rows, hits, width, height, snap=snap)
         if app.tab == "jobs" and app.animations_enabled and width >= 4:
             for item in app.completion.moving()[-3:]:
                 destination = next((y for y, kind, jid in hits if kind == "recent" and jid == item["job"]), None)
@@ -3250,7 +3270,8 @@ class Views:
             k = app.keys_help
             keys = [(f"{k('up')} {k('down')} {k('page_up')} {k('page_down')} {k('home')} {k('end')}", "move; on the Log tab: scroll"),
                     (f"{k('next_tab')} {k('prev_tab')} 1-9, 0", "switch tabs; 0 opens Research (Left/Right views, PgUp/PgDn scroll)"),
-                    (f"{k('mark')} {k('mark_all')} {k('unmark_all')}", "mark a job, all visible jobs, none: actions apply to the marked jobs, else the selected one"),
+                    (f"{k('mark')} {k('mark_all')} U", "mark a job, all visible jobs, none: actions apply to the marked jobs, else the selected one"),
+                    ("g / u", "in a job list: group marked jobs; ungroup a collapsed group or selected members"),
                     (k("pin"), "pin / unpin the marked or selected jobs (pinned jobs stay on top; :tag, :note and filter #tag go with it)"),
                     (k("resubmit"), "clone and resubmit the selected job: the palette opens with resubmit <id>, add --mem --time -c --gres -p or --advised; sbatch --test-only previews"),
                     (k("details"), "the job's scontrol show job record and its steps (Esc closes); History: the series"),

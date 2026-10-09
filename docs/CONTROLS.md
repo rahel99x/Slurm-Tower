@@ -85,7 +85,7 @@ Use the [runbook](runbook.md#3-adapt-setup-to-your-environment) for other setup 
 | Up, `k` | Move one row or line up |
 | Down, `j` | Move one row or line down |
 | Page Up, Page Down | Move by the current view's page size |
-| Home, `g` | Move to the beginning |
+| Home, `g` | Move to the beginning; `g` groups two or more marked jobs when a job list has focus |
 | End, `G` | Move to the end |
 | Left, `,`; Right, `.` | Change subviews in Analytics, Nodes, and Research |
 | `Ctrl-W`, F6 | Focus Main or Details |
@@ -295,7 +295,9 @@ See [Navigation](guides/navigation.md#feature-35) for multiline input and quotin
 | --- | --- |
 | `Space` | Mark or unmark the selected job |
 | `a` | Mark all visible jobs |
-| `u` | Clear job marks |
+| `g` | Create a closed manual group from two or more marked jobs in the focused job list |
+| `u` | In the focused job list, dissolve the selected closed group or detach marked or selected expanded members; clear marks when no grouped target applies |
+| `U` | Clear job marks without changing groups |
 | `p` | Pin or unpin selected or marked jobs |
 | `Enter`, `d` | Open the selected job's details |
 | `i` | Open scheduler details and steps |
@@ -316,6 +318,12 @@ Drag through visible job rows to mark a range in the current table order.
 Hold Shift to add that range to existing marks.
 Press Esc during capture to cancel the drag and restore earlier marks.
 Release the mouse button to complete the range before opening a job action.
+Press `g` to group the marked jobs in the focused list.
+On Jobs, this includes marked rows from both Main and Recents. Other workspaces use the focused list only.
+Open the group, mark specific members, and press `u` to detach those members.
+Select its closed summary and press `u` to dissolve the group.
+These controls change Tower's display organization only.
+See [Manual groups](guides/batch-launches.md#create-a-manual-group) for focus, identity, and persistence rules.
 Right-click a metric graph to restore its full view and keep the selected job and marks.
 Right-click elsewhere on a main page to clear job selections, marks, and line selections.
 It keeps the viewed log source open and does not activate the surface beneath the pointer.
@@ -400,6 +408,7 @@ Its choices target the exact available active, recent, or completed job.
 | Arrows, page keys, Home / End with browser focus | Select and activate a history job |
 | Esc with browser focus | Return input to the page data |
 | `:history-job JOBID` | Activate an exact available job |
+| `:advisor-job JOBID` | Select a published running-job row in Analytics → Advisor without changing the view |
 | `:history-scroll up\|down\|page-up\|page-down\|home\|end` | Scroll history without activating another job |
 
 Use the panel's divider to change its share of the page.
@@ -454,6 +463,9 @@ Identifiers include `jobs`, `recent`, `history`, `group`, `nodes`, `sources`, an
 | `:recents expand\|collapse` | Change the Recents presentation |
 | `:jobgroups [on\|off]` | Toggle or select automatic launch grouping |
 | `:jobgroup toggle\|open\|close GROUP_ID` | Fold or expand one known launch group |
+| `:jobgroup create` | Group at least two marked real jobs in the focused list |
+| `:jobgroup ungroup` | Dissolve targeted closed groups or detach targeted expanded members |
+| `:jobgroup reset` | Clear all saved and session manual groups and automatic-group exclusions; retain the current grouping on/off setting |
 | `:recents window DURATION\|all` | Select the completion time window |
 | `:marked [all\|hidden\|visible\|active\|finished]` | Inspect a subset of marked jobs |
 | `:freeze [on\|off]` | Hold or resume the inspection view |
@@ -478,6 +490,10 @@ The existing summary formatting and state counts stay available while the group 
 Fold preferences remain shared across the job listings and their history browsers.
 With a grouped job selected and ordinary page focus, Left closes its group and Right opens it.
 Closed groups retain one real representative ID.
+Manual groups use the same chevrons and state summaries.
+`g` creates one from at least two marked jobs; `u` removes the selected group or its selected expanded members.
+Use `U` when you only want to clear marks.
+These membership keys belong to the focused job list. Graph `u` still undoes zoom; text and menu controls retain their own input behavior.
 Their INFO badges use `run`, `pend`, `dep`, `never`, `done`, `fail`, `cancel`, and `other` for nonzero counts.
 The counts are disjoint and cover matching observed records; compressed array ranges remain records.
 See [Automatic launch groups](guides/batch-launches.md) for the badge meanings, historical coverage, and an explicit batch-launch procedure.

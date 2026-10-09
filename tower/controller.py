@@ -669,6 +669,11 @@ class App:
         from .text_selection import handle_key as text_key
         if text_key(self, key):
             return
+        from .manual_group_ui import handle_key as manual_group_key
+        from .job_selection import context as job_list_context
+        grouping_key_blocked = key == "u" and job_list_context(self) is None
+        if manual_group_key(self, key):
+            return
         if (key in ("up", "down", "pgup", "pgdn", "home", "end")
                 and not getattr(self, "interaction_state", {}).get("active")
                 and not (self.mode == "main" and self.tab == "analytics" and self.analytics_view != "job")):
@@ -768,7 +773,9 @@ class App:
             elif self.filter:
                 self.filter = ""; self.say("filter cleared")
             elif self.marks:
-                self.marks.clear(); self.say("marks cleared")
+                self.marks.clear()
+                self.job_selection_state["mark_tokens"].clear()
+                self.say("marks cleared")
         elif action == "help":
             self.mode, self.scroll = "help", 0
         elif action == "refresh":
@@ -853,9 +860,16 @@ class App:
         elif action == "mark_all":
             if self.tab == "jobs":
                 self.marks.update(self.visible_ids)
+                from .job_selection import _bind_marks
+                _bind_marks(self, self.visible_ids)
                 self.say(f"{len(self.marks)} marked")
         elif action == "unmark_all":
+            if key == "u":
+                if grouping_key_blocked or job_list_context(self) is None:
+                    self.say("Focus a job list to ungroup; U clears all job marks")
+                    return
             self.marks.clear()
+            self.job_selection_state["mark_tokens"].clear()
         elif action == "details":
             if self.tab == "log" and self.logs.browser:
                 self.select_log_file()
@@ -1716,15 +1730,20 @@ class App:
             self.say("sampling every source now")
         elif cmd == "mark":
             if args == ["all"]:
-                self.marks.update(self.visible_ids)
+                identifiers = self.visible_ids
             else:
-                self.marks.update(a for a in args if self.store.job(a))
+                identifiers = [a for a in args if self.store.job(a)]
+            self.marks.update(identifiers)
+            from .job_selection import _bind_marks
+            _bind_marks(self, identifiers)
             self.say(f"{len(self.marks)} marked")
         elif cmd == "unmark":
             if args:
                 self.marks.difference_update(args)
             else:
                 self.marks.clear()
+            from .job_selection import _bind_marks
+            _bind_marks(self, ())
             self.say(f"{len(self.marks)} marked")
         elif cmd == "log":
             if len(args) == 1 and self.job_record(args[0]):
@@ -1941,8 +1960,14 @@ class App:
             # Global controls validate their own published tokens above.
             # Content controls and native row fallbacks require this frame.
             return
+        from .job_selection import pointer_focus as job_pointer_focus
+        if fresh_activation:
+            job_pointer_focus(self, y, x)
         from .text_selection import handle_mouse as text_mouse
         if getattr(self, "text_selection_state", {}).get("explicit") and text_mouse(self, y, x, button=button, shift=shift):
+            return
+        from .job_selection import active as job_capture, advisor_pointer, handle_mouse as select_mouse
+        if (job_capture(self) or advisor_pointer(self, y, x)) and select_mouse(self, y, x, button=button, shift=shift):
             return
         from .pane_drag import handle_mouse as pane_mouse
         if pane_mouse(self, y, x, button=button, shift=shift):

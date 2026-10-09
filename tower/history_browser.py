@@ -163,14 +163,16 @@ def _items(app, snap, records):
     cached = state.get("item_cache")
     if cached is not None and cached[0] == cache_key:
         state["indices"] = cached[4]
+        state["selection_ids"] = cached[5]
         return cached[1]
     projected = job_groups.project_records(app, snap, records, tab=context, index=index)
     items = tuple(_Item(record, job_groups.metadata_for_record(app, context, record.id)) for record in projected)
     indices = {item.record.id: index for index, item in enumerate(items)}
     state["indices"] = indices
+    state["selection_ids"] = tuple(indices)
     # Keep the source identity objects alive; cache keys cannot alias recycled
     # Python object IDs when a producer replaces its inference index.
-    state["item_cache"] = (cache_key, items, index, records, indices)
+    state["item_cache"] = (cache_key, items, index, records, indices, state["selection_ids"])
     return items
 
 
@@ -350,6 +352,10 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
             hits.append(_control(tab, "group:" + meta.group.id,
                                  ("Expand " if meta.collapsed else "Collapse ") + meta.group.label + "; " + summary(meta.stats or meta.records),
                                  y, x, min(x + size, x + 2), fold_command(meta.group.id, meta.collapsed)))
+        if item.record.id in getattr(app, "marks", ()) and size > 2:
+            from .pane_drag import _replace
+            segments = _replace(segments, size - 1, "*" if ascii_ else "•", "warning+bold", size)
+            label += "; marked"
         rows[y].extend(segments)
         hits.append(_control(tab, ident, label, y, x, x + size, command))
     if not items and data_height:
@@ -559,6 +565,11 @@ def handle_mouse(app, y, x, button="left", shift=False):
     if any(type(value) is not int for value in (y, x)):
         return False
     state = initialize(app)
+    from .job_selection import handle_mouse as selection_mouse
+    if (button in ("motion", "drag", "release")
+            and getattr(app, "job_selection_state", {}).get("capture")):
+        if selection_mouse(app, y, x, button=button, shift=shift):
+            return True
     drag = state.get("drag")
     frame = _current(app)
     if button in ("press", "left"):
@@ -596,6 +607,8 @@ def handle_mouse(app, y, x, button="left", shift=False):
         return False
     if button in ("wheelup", "wheeldown", "wheel_up", "wheel_down", "wheel-up", "wheel-down"):
         _scroll(app, "up" if "up" in button else "down", lines=3)
+        return True
+    if button == "press" and selection_mouse(app, y, x, button=button, shift=shift):
         return True
     if button in ("right", "left", "press") and shift or button == "right":
         return True
@@ -670,7 +683,10 @@ def handle_key(app, key):
         if job_id:
             activate(app, job_id)
         return True
-    if key in ("enter", "space"):
+    if key == "space":
+        from .job_selection import handle_key as selection_key
+        return selection_key(app, key)
+    if key == "enter":
         group = _header(items[index])
         if group:
             from . import job_groups
@@ -699,7 +715,7 @@ def run_command(app, args):
             view["enabled"] = True
             _persist(app)
         state["focused"] = True
-        _say(app, "Job history: arrows select; PgUp/PgDn page; Esc returns to data")
+        _say(app, "Job history: arrows select; Space marks; g groups; u ungroups; PgUp/PgDn page; Esc returns to data")
         return True
     if command == "history-job" and len(values) == 1:
         activate(app, values[0])

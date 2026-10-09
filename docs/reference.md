@@ -252,6 +252,7 @@ Drag the `⠿` handle (`::` in ASCII) to an edge to use a column or horizontal s
 Use `:history-dock auto|left|right|top|bottom|next|off` and `:history-browser [on|off]` for command control.
 `:history-focus` gives keys to the browser; Esc returns them to the data.
 `:history-job JOBID` activates an exact available record.
+`:advisor-job JOBID` selects an available running-job row in Analytics → Advisor and keeps that view open.
 `:history-scroll up|down|page-up|page-down|home|end` changes its viewport without changing the data target.
 Each page retains its dock and history share when normal UI state is enabled.
 See [Dockable history](guides/adaptive-workspaces.md#keep-job-history-beside-the-data) for fallback dimensions and runtime updates.
@@ -359,9 +360,10 @@ without motion or pulses. One-frame reports are static as well.
 
 | keys | action |
 |---|---|
-| `↑` `↓` `j` `k` `PgUp` `PgDn` `Home` `End` `g` `G` | move; in Logs, move the logical line cursor before selection and extend it after `v` |
+| `↑` `↓` `j` `k` `PgUp` `PgDn` `Home` `End` `g` `G` | move; `g` instead groups two or more marked jobs in a focused job list. In Logs, move the logical line cursor before selection and extend it after `v` |
 | `Tab` `S-Tab` `]` `[` `1`..`9` | switch tabs (7 Analytics, 8 Group, 9 Deps) |
-| `Space` `a` `u` | mark the selected job, all visible jobs, none: actions apply to the marked jobs, else the selected one |
+| `Space` `a` `U` | mark the selected job, all visible jobs, none: actions apply to the marked jobs, else the selected one |
+| `g` `u` | in a focused job list, `g` creates a closed manual group from two or more marked jobs. `u` dissolves the selected closed group or detaches selected expanded members; it clears marks when no grouped target applies |
 | `p` | pin or unpin the marked or selected jobs: pinned jobs stay at the top of the Jobs table with a `⚲` mark; `:tag [ids] <tags>`, `:untag`, `:note [id] <text>` attach tags (a TAGS column, also on the History tab) and a note (shown in INFO and under the job); `/#tag` filters by tag; `j.tags` in expressions. All of it persists in `state/tags.json` across restarts. |
 | `A` | clone and resubmit the selected job (also `:resubmit [id] ...`, `tower run resubmit 123 --mem 12G --yes`): the palette opens with `resubmit <id> `, where `--mem 12G`, `--time 03:00:00`, `-c 4`, `--gres gpu:a100:2`, `-p gpu`, `--dependency=`, `--script PATH` override the original flags and `--advised` applies the advisor's suggestions. The clone is the job's own submit line (sacct's `SubmitLine`, Slurm 23.02+, so `#SBATCH` lines in the script still apply and the overrides win over them) or, without one, an `sbatch` command rebuilt from `scontrol show job` and the record (name, partition, account, QOS, nodes, CPUs, memory, limit, GRES, an output pattern with `%x-%j` in place of the old name and id, the script). The confirmation box shows the exact command, the working directory it runs in, the resources, what `sbatch --test-only` projects for it and any caveat (an array task without `--array`, a kept dependency); `y` submits. The new job is tagged `from-<old id>` and the audit event carries the command. |
 | `Enter` `d` `i` | the job's `scontrol show job` record with its **steps** (sstat per step: tasks, CPU time, peak memory and the task and node holding it, the slowest rank and how far behind the mean it is); `i` on the History or Group tab opens the same for that job (sacct -j for a finished one: steps, states, exit codes, peak memory). The selected panel shows the steps of a multi-task job, and the job's own GPU trace when `logs/gpu-util-<id>.csv` exists in its WorkDir (one nvidia-smi line per GPU per minute, see "The GPU trace" below): mean and current utilisation per GPU and the share of idle samples; the Analytics job view charts it. |
@@ -447,7 +449,21 @@ Click the down-pointing chevron on the closed summary to restore its members.
 During ordinary job-row navigation, Left closes the selected group and Right opens it.
 With directional button focus active, Right from a Jobs row enters Details instead.
 `:jobgroups [on|off]` toggles grouping; `:jobgroup toggle|open|close GROUP_ID` controls one known group.
+`:jobgroup create` and `:jobgroup ungroup` use the focused job list's current marked or selected records.
+`:jobgroup reset` removes all saved and session manual groups and explicit exclusions, allowing normal automatic deduction to apply again when grouping display is enabled.
+It preserves the current `:jobgroups on` or `:jobgroups off` setting.
+Reset changes local display preferences only and also releases the bounded manual identity storage.
 Fold preferences span the job views and their history browsers.
+Press `g` with at least two jobs marked in the focused list to create a manual group.
+The Jobs page includes marks in both Main and Recents; another workspace uses its focused list only.
+It starts closed and uses the same state-count summary and disclosure controls.
+With no applicable marks, select a closed summary and press `u` to dissolve that group.
+In an open group, mark the members to remove and press `u`; without marks, only the selected member is removed.
+Removed members stay outside automatic grouping for that execution attempt.
+Press `U` to clear marks without changing groups.
+Grouping keys do not act on stale job marks while an editor, menu, graph, log text, or another pane owns input.
+In particular, graph `u` still undoes zoom without clearing retained job marks. `U` explicitly clears job marks.
+See [Manual groups](guides/batch-launches.md#create-a-manual-group) for selection, persistence, and identity rules.
 A closed group keeps a real representative record and exact action ID.
 Hidden members are not automatically marked or added to cancellation.
 Closed INFO cells show themed, disjoint counts for running, pending, dependency wait, dependency never satisfied, completed, failed, cancelled, and other matching records.
@@ -908,6 +924,7 @@ tower/
   control_rows.py wrapped semantic control rows and translation into visible modal coordinates
   job_panels.py  shared Jobs/History inline workspaces, independent mode preferences, and Main/Details focus handoffs
   job_groups.py  snapshot-based launch deduction, shared folds, exact-job projections, and disjoint state counts
+  manual_job_groups.py  bounded attempt-specific manual membership and automatic-group exclusions
   job_group_ui.py themed, width-aware group badges and representative rows
   job_selection.py exact job-ID range capture for existing marked-job actions and confirmation
   scrolling.py   bounded PID viewport motion, immediate selection, and saved smooth-scroll preferences

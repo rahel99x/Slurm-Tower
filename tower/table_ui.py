@@ -63,11 +63,15 @@ def restore(app, data):
         app.table_state["groups"] = data.get("groups") is True
     from .job_groups import valid_group_id
     app.table_state["collapsed"] = [value for value in data.get("collapsed", [])[:256] if valid_group_id(value)] if isinstance(data.get("collapsed"), list) else []
+    from .manual_job_groups import validate_state
+    app.table_state["manual_groups"] = validate_state(data.get("manual_groups"))
 
 
 def save(app):
     result = {key: copy.deepcopy(app.table_state[key]) for key in ("hidden", "order", "widths", "filters", "facets", "views", "sorts", "groups", "collapsed")}
     result["column_layout_version"] = COLUMN_LAYOUT_VERSION
+    from .manual_job_groups import validate_state
+    result["manual_groups"] = validate_state(app.table_state.get("manual_groups"))
     return result
 
 
@@ -263,8 +267,21 @@ def run_command(app, args):
         return False
     command, values = args[0], list(args[1:])
     if command == "jobgroup":
+        if values == ["reset"]:
+            from .manual_job_groups import reset
+            result = reset(app)
+            app.say(result.message)
+            if result.changed:
+                app.job_selection_state["capture"] = None
+                app.interaction_state.update(active=False, focused=None, frame_required=True)
+                app.save()
+            return True
+        if values in (["create"], ["ungroup"]):
+            from .manual_group_ui import run_action
+            run_action(app, values[0], explicit=True)
+            return True
         if len(values) != 2 or values[0] not in ("toggle", "open", "close"):
-            app.fail("Usage: jobgroup toggle|open|close GROUP_ID")
+            app.fail("Usage: jobgroup create|ungroup|reset, or jobgroup toggle|open|close GROUP_ID")
             return True
         from .job_groups import fold, registry
         from .table_tools import snapshot

@@ -36,7 +36,7 @@ _MISSING = object()
 _EMPTY_VALUES = (_MISSING,) * 12
 _EMPTY_MAP = {}
 _RECORD_FIELDS = ("id", "name", "submit", "cluster", "user", "account", "workdir", "command",
-                  "TowerLaunchId", "LaunchId", "LaunchGroup", "JobGroup", "comment", "dependency")
+                  "TowerLaunchId", "LaunchId", "LaunchGroup", "JobGroup", "comment", "dependency", "start")
 
 
 def _value(record, key, default=""):
@@ -240,23 +240,36 @@ class _Evidence:
     comment: str = ""
 
 
-def _records(snap):
+def _records(snap, duplicates=None):
     """Queue records win over departed/accounting records of the same ID."""
     records = {}
+    from .manual_job_groups import selection_input
     for record in snap.get("group", ()):
         jid = _text(_value(record, "id"))
         if jid:
+            previous = records.get(jid)
+            if duplicates is not None and previous is not None and previous is not record:
+                duplicates.append(selection_input(previous, snap))
             records[jid] = record
     for record in snap.get("finished", ()):
         jid = _text(_value(record, "id"))
         if jid:
+            previous = records.get(jid)
+            if duplicates is not None and previous is not None and previous is not record:
+                duplicates.append(selection_input(previous, snap))
             records[jid] = record
     for jid, record in snap.get("departed_jobs", {}).items():
         if isinstance(jid, str):
+            previous = records.get(jid)
+            if duplicates is not None and previous is not None and previous is not record:
+                duplicates.append(selection_input(previous, snap))
             records[jid] = record
     for record in snap.get("jobs", ()):
         jid = _text(_value(record, "id"))
         if jid:
+            previous = records.get(jid)
+            if duplicates is not None and previous is not None and previous is not record:
+                duplicates.append(selection_input(previous, snap))
             records[jid] = record
     return records
 
@@ -340,7 +353,7 @@ def _input(record, jid, snap, *, details_map=None, tags_map=None):
                   get("workdir", _MISSING), get("command", _MISSING),
                   get("TowerLaunchId", _MISSING), get("LaunchId", _MISSING),
                   get("LaunchGroup", _MISSING), get("JobGroup", _MISSING),
-                  get("comment", _MISSING), get("dependency", _MISSING))
+                  get("comment", _MISSING), get("dependency", _MISSING), get("start", _MISSING))
     details_map = snap.get("details", _EMPTY_MAP) if details_map is None else details_map
     details = details_map.get(jid, _EMPTY_MAP)
     if not details or not (isinstance(details, dict) or isinstance(details, Mapping)):
@@ -365,13 +378,40 @@ class Registry:
     def __init__(self, collapsed=()):
         self.collapsed = set(value for value in collapsed if valid_group_id(value))
         self.index = Index(MappingProxyType({}), MappingProxyType({}))
+        self._automatic_index = self.index
+        self._source_revision = 0
+        self.selection_revision = 0
+        self.selection_snapshot = None
+        self._selection_inputs = None
+        self._unknown_identity_ids = set()
+        self._unknown_identity_refs = {}
+        from .manual_job_groups import ManualState
+        self.manual = ManualState()
         self._fingerprint = None
         self._evidence = {}
         self._inputs = {}
         self.inference_count = 0
 
     def ensure(self, snap):
-        records = _records(snap)
+        duplicates = []
+        records = _records(snap, duplicates)
+        automatic = self._ensure_automatic(snap, records)
+        from .manual_job_groups import _RecordRef
+        references = {}
+        for jid in self._unknown_identity_ids:
+            record = records.get(jid)
+            old = self._unknown_identity_refs.get(jid)
+            references[jid] = old if old is not None and old.record is record else _RecordRef(record)
+        self._unknown_identity_refs = references
+        identity_inputs = self._source_revision, tuple(duplicates), references
+        if identity_inputs != self._selection_inputs:
+            self._selection_inputs = identity_inputs
+            self.selection_revision += 1
+        self.selection_snapshot = snap
+        self.index = self.manual.apply(automatic, records, snap, self._source_revision)
+        return self.index
+
+    def _ensure_automatic(self, snap, records):
         updates = {}
         details_map, tags_map = snap.get("details", _EMPTY_MAP), snap.get("tags", _EMPTY_MAP)
         for jid, record in records.items():
@@ -382,7 +422,7 @@ class Registry:
         # An unchanged maintenance frame does not allocate and populate two
         # full inference dictionaries only to throw them away afterwards.
         if not updates and len(records) == len(self._inputs) and self._fingerprint is not None:
-            return self.index
+            return self._automatic_index
         evidence, inputs = {}, {}
         for jid, record in records.items():
             if jid not in updates:
@@ -405,19 +445,27 @@ class Registry:
                 # markers and retained live provenance on the next check.
                 impossible = (previous is None and values is _EMPTY_VALUES and not tags
                               and jid.isascii() and jid.isdigit()
-                              and not any(isinstance(item, str) and item for item in fields[8:])
+                              and not any(isinstance(item, str) and item for item in fields[8:14])
                               and not all(isinstance(fields[index], str) and fields[index]
                                           for index in (1, 2, 4, 5, 6)))
                 evidence[jid] = None if impossible else _evidence(record, snap, previous, inherited)
         self._inputs = inputs
+        from .manual_job_groups import _submit
+        self._unknown_identity_ids.intersection_update(inputs)
+        for jid, (fields, details, _, _) in updates.items():
+            if _submit(_text(fields[2]) or _text(details[4])):
+                self._unknown_identity_ids.discard(jid)
+            else:
+                self._unknown_identity_ids.add(jid)
+        self._source_revision += 1
         if evidence == self._evidence and self._fingerprint is not None:
-            return self.index
+            return self._automatic_index
         previous = self._evidence
         self._evidence = evidence
         self._fingerprint = True
         self.inference_count += 1
-        self.index = self._infer(evidence, previous)
-        return self.index
+        self._automatic_index = self._infer(evidence, previous)
+        return self._automatic_index
 
     def _infer(self, evidence, previous):
         assigned, candidates, claimed = set(), [], set()
@@ -517,13 +565,13 @@ class Registry:
     def _inferred_group(self, cohort, run, candidates, previous, kind, horizon, reason, claimed):
         members = tuple(entry[2].id for entry in run)
         start = run[0][0]
-        old = {self.index.by_job[jid] for jid in members if jid in self.index.by_job}
-        compatible = [self.index.groups[gid] for gid in old
-                      if gid not in claimed and self.index.groups[gid].kind == kind
-                      and self.index.groups[gid].cohort == cohort
-                      and abs(start - self.index.groups[gid].first_submit) <= horizon
+        old = {self._automatic_index.by_job[jid] for jid in members if jid in self._automatic_index.by_job}
+        compatible = [self._automatic_index.groups[gid] for gid in old
+                      if gid not in claimed and self._automatic_index.groups[gid].kind == kind
+                      and self._automatic_index.groups[gid].cohort == cohort
+                      and abs(start - self._automatic_index.groups[gid].first_submit) <= horizon
                       and any(previous.get(jid) is not None and previous[jid].submit == self._evidence[jid].submit
-                              for jid in members if jid in self.index.groups[gid].members)]
+                              for jid in members if jid in self._automatic_index.groups[gid].members)]
         gid = min((group.id for group in compatible), default=kind + ":" + _digest((*cohort, members[0], start)))
         label = f"Launch {cohort[-1]}" if kind == "burst" else f"Pipeline {members[0]}"
         candidates.append(Group(gid, label, kind, reason, "likely", members, cohort, start))
@@ -643,6 +691,7 @@ def registry(app):
         value = app.job_groups = Registry(state.get("collapsed", ()))
     else:
         value.collapsed = {item for item in state.get("collapsed", ()) if valid_group_id(item)}
+    value.manual.configure(state.get("manual_groups"))
     return value
 
 

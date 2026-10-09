@@ -262,6 +262,7 @@ def _viewport(app):
                    tuple(sorted(islice(table.get("widths", {}).get(name, {}).items(), 64))))
                   for name in tables),
             getattr(app, "filter", ""), table.get("groups"), tuple(islice(table.get("collapsed", ()), 256)),
+            getattr(app, "manual_job_groups_revision", 0),
             getattr(layout, "density", None), getattr(layout, "ratio", None),
             getattr(layout, "maximized", None),
             scroll.get(tab + ":main"), scroll.get(tab + ":details"),

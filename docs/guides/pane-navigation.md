@@ -46,6 +46,31 @@ Successive movements update its target instead of replaying old wheel positions.
 Set `animations` to `false`, select the reader theme, or use `:smoothscroll off` for immediate movement.
 These settings do not increase scheduler polling.
 
+## Group selected jobs
+
+Job marks identify scheduler jobs. Rendered line selections identify displayed text.
+Use job marks when you want to organize a job list.
+
+1. Click a row in the required job list to focus that pane.
+2. Mark at least two jobs with `Space`, or drag through supported job rows and release the mouse button.
+3. Press `g`.
+4. Open the resulting closed group with its down-pointing chevron when you need individual members.
+
+**Expected result:** The marked jobs appear in one manual group with the existing state-count summary.
+The group preference applies across job lists and their history browsers.
+On Jobs, grouping can combine marked rows from Main and Recents. In another workspace it uses the focused list only.
+Hidden members do not become selected action targets merely because their group is closed.
+
+Select a closed group and press `u` to dissolve it.
+To remove some members, open the group, mark those members, and press `u`.
+With no marks, `u` detaches only the selected expanded member.
+Use `U` to clear marks without changing groups.
+`g` retains its ordinary beginning-of-list behavior when no eligible multi-job selection exists.
+Menus, text selection, graph controls, and graph/slider drags retain their own input rules.
+Graph `u` still undoes zoom and leaves job marks in another pane unchanged.
+Click back into the job list before grouping a selection from that pane.
+See [Manual groups](batch-launches.md#create-a-manual-group) for saved state and exact-job rules.
+
 ## Select rendered lines
 
 Rendered selection copies the text displayed inside one pane.

@@ -274,7 +274,7 @@ def test_mark_all_keeps_historical_jobs_out_of_scheduler_action_targets(dashboar
     dashboard.app.handle("u")
     dashboard.app.handle("down")
     dashboard.app.handle("space")
-    assert not dashboard.app.marks
+    assert dashboard.app.marks == {"700"}
     assert dashboard.app.target_jobs() == []
 
 

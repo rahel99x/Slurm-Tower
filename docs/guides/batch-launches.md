@@ -1,10 +1,105 @@
-# Group jobs from one launch
+# Group jobs automatically or manually
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Project reporting standard](../PROJECT_STANDARD.md) · [Adjustable workspaces](adaptive-workspaces.md)
 
 Tower uses available scheduler evidence and explicit launch markers to group related jobs.
 Grouping works with jobs that were submitted before Tower started and jobs that arrive during the session.
 It changes the displayed rows. Each member keeps its actual Slurm job ID, logs, measurements, and action target.
+You can also create a manual group from selected jobs or remove members from an existing group.
+
+## Create a manual group
+
+1. Click a job row in the required list to focus that pane.
+2. Mark at least two jobs with `Space`. In a list that supports mouse ranges, drag through the required rows and release the button.
+3. Check the marked job IDs.
+4. Press `g`, or enter `:jobgroup create`.
+
+**Expected result:** Tower creates a closed manual group and selects its real representative row.
+The group uses the existing count and state-summary formatting.
+Tower clears the marks consumed by this operation.
+Creating a group enables grouping display if it was disabled.
+Click the down-pointing chevron to show its members.
+
+The selected jobs do not need to have matching names or submission times.
+Manual membership takes precedence over automatic launch deduction.
+You can select members from different existing groups to form a new group.
+On Jobs, the marked real records can come from both Main and Recents.
+In other workspaces, only the marked real records in the focused list are included.
+A marked closed summary contributes its representative job, not its hidden members.
+Open the old group and mark its members when you want to include those jobs.
+
+Marks outside that scope or excluded by its current filters are not included.
+They remain marked. After a membership change, Tower reports how many other job marks remain.
+Offscreen rows in the same filtered scope remain eligible.
+When fewer than two eligible jobs are marked, `g` retains its ordinary beginning-of-list behavior.
+The explicit `:jobgroup create` command instead reports that at least two marked jobs are required.
+Use Home when you need to move to the first row without grouping eligible marks.
+
+The controls apply to the job lists in Jobs, Recents, History, Group, Dependencies, Advisor, and the job-history panels in Analytics, Logs, and Research.
+The history browser and the underlying Advisor list are separate selection scopes even when both are visible.
+Focus must remain in a job list.
+An open menu, input editor, graph control, rendered text selection, or graph/slider drag keeps its own input behavior.
+Marks retained from a different pane do not make a graph or log key change job groups.
+For example, `u` still undoes a graph zoom while the graph owns input; it does not clear job marks retained in another pane.
+Click the intended job list before using its grouping keys.
+Release a job-row drag before grouping its selected range.
+If a grouping key ends an unfinished job-row drag, its delayed mouse release cannot extend the old selection or activate a different control.
+
+## Remove a group or some members
+
+| Required change | Procedure |
+| --- | --- |
+| Remove an entire closed group | Clear unrelated marks with `U`, select the closed summary, and press `u` |
+| Remove one member from an open group | Clear unrelated marks with `U`, select that member, and press `u` |
+| Remove several members from one or more open groups | Mark those members and press `u` |
+| Remove several closed groups | Mark their closed summary rows and press `u` |
+| Clear marks without changing any groups | Press `U` |
+
+You can use `:jobgroup ungroup` for the same operation as `u`.
+Applicable marks take precedence over the single selected row.
+A targeted closed summary removes the whole group, including its known members that are outside the current pane or hidden by filters.
+For a saved manual group, this includes saved members that are not in the currently fetched records.
+A targeted expanded row removes only that exact member.
+This rule applies to automatically identified groups and manual groups.
+The remaining members retain their group when enough members remain.
+A manual group with only one currently available member appears as an ordinary job row; that member does not merge into a different automatically detected group.
+
+Removed jobs remain individual rows instead of immediately returning to an automatically deduced group.
+You can include them in a later manual group with `g`.
+Within a focused job list, `u` keeps its previous clear-marks behavior when no applicable grouped target exists.
+Use `U` to clear job marks explicitly without changing membership.
+These commands change Tower's local organization. They do not alter Slurm jobs, array membership, dependencies, allocation, or report files.
+
+### Keep membership attached to the correct attempt
+
+Manual choices are shared across Tower's job lists and their history browsers.
+They apply to exact execution attempts rather than job numbers alone.
+Tower uses the available cluster, job ID, and submit-time evidence to retain these choices in saved UI state.
+A reused job number with a different submit time does not inherit an old manual group or removal.
+Filtering, sorting, or temporarily losing a member from the fetched history does not change the saved attempt identity.
+When the missing members return, the same manual membership applies.
+
+When the submit time is unavailable, Tower keeps the choice in the current session only.
+An ambiguous record replacement invalidates that temporary membership instead of assuming it is the same job.
+If current and historical records disagree about the same job ID's attempt, Tower refuses the membership change and asks you to select refreshed records.
+No scheduler query is issued merely to paint a group or move the pointer.
+Saved preferences are local to the current Tower state directory; another installation does not receive them automatically.
+The preference store accepts at most 256 manual groups and 8,192 saved or session identities across groups and explicit removals.
+An operation that exceeds a limit reports the problem without applying a partial change.
+Ungrouping retains an identity as an explicit removal, so it does not free an identity slot.
+Use `:jobgroup reset` when you want to discard all manual choices and release these slots.
+
+### Reset manual preferences
+
+Enter `:jobgroup reset` to remove every manual group and every explicit exclusion from automatic grouping.
+This includes saved preferences and temporary session choices across all job lists.
+Automatic grouping can then identify those jobs again from its normal evidence when grouping display is enabled.
+Reset preserves the current `:jobgroups on` or `:jobgroups off` setting.
+Use `:jobgroups on` if grouping display is currently disabled.
+
+Reset changes Tower's local display preferences only.
+It does not cancel or modify Slurm jobs, remove reports, or change scheduler arrays and dependencies.
+This command clears all manual grouping choices, not only the currently selected group.
 
 ## Fold and open a batch
 
@@ -17,7 +112,7 @@ It changes the displayed rows. Each member keeps its actual Slurm job ID, logs, 
 **Expected result:** One row represents the closed group.
 Opening it restores the matching members under the current filters and sort order.
 The fold preference applies across job lists and their history browsers.
-New groups start open.
+New automatically detected groups start open. New manual groups start closed.
 The chevron indicates the available action: `▸` closes an expanded group; `▾` opens a closed group.
 ASCII mode uses `>` to close and `v` to open.
 The first row follows the current grouping, filters, and sort order.
@@ -40,6 +135,7 @@ With directional button focus active, arrows move between controls instead.
 Use F8, arrows, and Enter to focus and activate a visible fold control.
 Use `:jobgroups off` to show individual jobs, or `:jobgroups on` to restore grouping.
 Use `:jobgroup open GROUP_ID`, `:jobgroup close GROUP_ID`, or `:jobgroup toggle GROUP_ID` to change a known group directly.
+Use `:jobgroup create` and `:jobgroup ungroup` with the focused list's current selection to change membership.
 Normal saved UI state retains grouping and closed-group preferences.
 
 ## Read the closed row
@@ -143,7 +239,8 @@ Array identities and available explicit markers remain usable under their own ru
 An inferred launch is **likely**, not proof that all jobs used the same input or belong to one experiment.
 Two independent submissions can satisfy these rules, and a sparse or slow real batch can fail them.
 Use a unique explicit marker for reliable project-defined membership.
-Use `:jobgroups off` to retain individual rows when a deduction is unsuitable.
+Use `u` to remove a particular group or member when a deduction is unsuitable.
+Use `:jobgroups off` to show individual rows throughout the interface.
 Batch and extern steps do not become separate launch members.
 A later submit time for a reused job ID identifies a new inferred attempt.
 
@@ -158,6 +255,8 @@ Check the displayed job ID before acting.
 Grouping does not select all hidden members for cancellation, export, comparison, or another bulk action.
 Open the group and mark the actual jobs that you need.
 Mouse range selection follows visible real rows and does not add hidden children.
+The membership-removal command is explicit: `u` on a closed summary dissolves its whole group.
+This rule does not change the target rules for cancellation or other scheduler actions.
 Existing dependency-chain actions retain their own confirmation and target rules.
 Review the target IDs in each confirmation.
 
@@ -204,5 +303,9 @@ The grouping layer reads supplied snapshots. It does not run Slurm commands or r
 | `job_groups.project_records(app, snap, records, tab, ...)` | Apply the current folds to a list and retain exact real records and representative metadata |
 | `job_groups.project_rows(app, rows, snap=None, tab="jobs", ...)` | Apply group presentation to prepared queue rows |
 | `job_groups.fold(app, group_id, collapsed=None)` | Change a known group's fold state and reanchor hidden list selection where required |
+| `manual_job_groups.create(app, snap, job_ids)` | Create a manual membership override from exact supplied records; do not expand closed summaries implicitly |
+| `manual_job_groups.detach(app, snap, job_ids=(), group_ids=())` | Remove exact member records or all members of explicitly targeted groups and prevent their automatic regrouping |
+| `manual_job_groups.validate_state(value)` | Validate and bound saved membership and removal records |
+| `manual_job_groups.reset(app)` | Clear all saved and session manual memberships and exclusions while preserving the grouping display setting |
 | `job_groups.status_counts(records)` | Count distinct observed records in disjoint state categories |
 | `job_groups.summary_segments(records, ...)` | Return themed status text without changing job identity or marks |

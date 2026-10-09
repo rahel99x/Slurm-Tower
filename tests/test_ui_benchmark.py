@@ -28,9 +28,11 @@ def benchmark():
 def test_benchmark_targets_real_graphs_and_controls_without_scheduler_or_file_access(
         benchmark, monkeypatch, ascii_, scenario, gesture, graphs, controls):
     from tower import screen
-    # A diagnostic's maintenance deadline is unrelated to passive pointer
-    # work. Keep this test deterministic even on a heavily loaded worker.
-    monkeypatch.setattr(screen, "MAINTENANCE_SECONDS", 3600.)
+    # Test input invalidation independently of scheduled maintenance, animation,
+    # and buffered-graph deadlines. CPU timings still use real perf_counter;
+    # a slow worker must not turn a valid timer refresh into a hover failure.
+    scheduled_now = screen.time.monotonic()
+    monkeypatch.setattr(screen.time, "monotonic", lambda: scheduled_now)
     args = SimpleNamespace(scenario=scenario, gesture=gesture, jobs=1, history=8,
                            points=40, metrics=2, width=140, height=48, repeats=6)
     result = benchmark.run_case(args, ascii_)

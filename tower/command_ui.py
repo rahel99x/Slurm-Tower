@@ -51,7 +51,7 @@ DESCRIPTIONS = {
     "panel-scroll": "Scroll the focused panel", "columns": "Choose visible job-table columns",
     "facet": "Filter jobs by state, partition, tag, name, or identity",
     "savedview": "Save or restore a filtered and sorted job table",
-    "jobgroups": "Show or hide automatically detected launch groups", "activity": "Inspect notifications and background work",
+    "jobgroups": "Show or hide detected and manual job groups", "jobgroup": "Group selected jobs, detach members, or open and close a group", "advisor-job": "Select a published running job in Advisor", "activity": "Inspect notifications and background work",
     "notifications": "Inspect retained activity notices", "task": "Inspect or cancel background work",
     "project": "Discover a standard project and its run inventory", "runs": "Select a project run and execution attempt",
     "run": "Bind, inspect, or clear a project run", "outputs": "Browse declared output artifacts",
@@ -79,6 +79,7 @@ ARGUMENTS = {"density": ("comfortable", "compact", "focused"), "focus": ("main",
              "panel-scroll": ("up", "down", "page-up", "page-down", "home", "end"),
              "columns": ("show", "hide", "reset", "jobs", "history"),
              "savedview": ("list", "save", "load", "delete"), "jobgroups": ("on", "off"),
+             "jobgroup": ("create", "ungroup", "reset", "open", "close", "toggle"),
              "activity": ("show", "clear"), "notifications": ("show", "clear"), "task": ("show", "cancel"),
              "run": ("select", "passport", "clear"), "logview": ("plain", "split", "json"),
              "logpreview": ("on", "off"), "dashboard": ("list", "reset", "search", "pin", "unpin", "hide", "show", "expand", "collapse", "move", "color"),
@@ -693,6 +694,7 @@ def _help_entries(app):
             ("This page", ":columns / :facet state=FAILED partition=gpu", "Choose columns and combine explicit field filters"),
             ("This page", ":savedview save NAME / load NAME", "Save or restore a useful filtered, sorted table"),
             ("This page", ":jobgroups", "Show or hide automatically detected launch groups"),
+            ("This page", "g / u / U", "Group marked jobs; ungroup a collapsed group or selected members; clear marks"),
         ]
     elif page == "log":
         contextual += [
