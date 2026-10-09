@@ -137,6 +137,7 @@ def test_log_mouse_selection_and_shift_extension_restore_lines_but_not_job(dashb
     app.handle("home")
     draw(d)
     right(d)
+    draw(d)  # Publish the deselected document before the next row gesture.
     first = next(y for y, kind, value in d.hits if kind == "log_line" and value == "2")
     last = next(y for y, kind, value in d.hits if kind == "log_line" and value == "5")
     app.click(first, app.history_browser_content_rect.x + 10, d.hits)
@@ -277,9 +278,10 @@ def test_alternate_log_panels_clear_cursor_and_restore_only_lines(dashboard, mon
     monkeypatch.setattr(W, "_alternate", lambda _: data)
     state = app.log_workbench_state
     state.update(view=view, cursor=1, scroll=0)
-    W.overlay(d.views, d.store.snapshot(), app, 160, 42)
+    d.views.overlay(d.store.snapshot(), app, 160, 42)
     right(d)
-    rendered = W.overlay(d.views, d.store.snapshot(), app, 160, 42)
+    draw(d)
+    rendered = d.views.overlay(d.store.snapshot(), app, 160, 42)
     assert not any("rev" in style for _, _, row in rendered for _, style in row)
     y, (left, _, index) = next(iter(state["mouse_rows"].items()))
     app.click(y, left, d.hits)
@@ -310,7 +312,7 @@ def source_page(d):
     state.update(page=page, page_source={"path": str(d.path), "label": "stdout"},
                  page_files=d.app.files, page_cursor=1, selection=(1, 3), page_return="main")
     d.app.mode = "log_tools_page"
-    T.overlay(d.views, d.store.snapshot(), d.app, 160, 42)
+    d.views.overlay(d.store.snapshot(), d.app, 160, 42)
     return state
 
 
@@ -344,6 +346,7 @@ def test_full_source_modal_shift_click_can_extend_after_own_clear(dashboard):
     open_log(d)
     state = source_page(d)
     right(d)
+    d.views.overlay(d.store.snapshot(), app, 160, 42)
     entries = list(state["mouse_rows"].items())
     y, first = entries[2]
     app.click(y, first[1], d.hits)
@@ -445,6 +448,9 @@ def test_cleared_array_cohort_enter_is_inert_and_pages_scroll_content_until_rese
     app.research_array_open, app.research_task_offset = True, 24
     app.research_scroll, app.research_rows = 0, 200
     app.last_hits = [(10, "research_array", "7"), (11, "research_array", "8")]
+    # Exercise the native cohort API with a manually supplied headless map.
+    # These synthetic rows have no composed document or pointer graph.
+    I.initialize(app)["graph"] = None
     right(d)
     app.handle("enter")
     assert app.research_array_open and app.research_task_offset == 24

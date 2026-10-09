@@ -101,10 +101,15 @@ def test_real_details_content_keeps_scroll_until_clicked_jobs_row(dashboard, mon
     assert app.job_panel_state["focus"] == "content" and app.layout_state.focus == "details"
     cursor, selected, marks = app.cursor["jobs"], app.selected_id, set(app.marks)
     before = app.layout_state.scroll.get("jobs:details", 0)
+    published_snapshot = dashboard.store.snapshot()
     monkeypatch.setattr(dashboard.store, "snapshot", forbidden)
     screen._apply_input(app, ("down", None), dashboard.hits, curses)
     assert app.layout_state.scroll["jobs:details"] == before + 1
     assert app.cursor["jobs"] == cursor and app.selected_id == selected
+    # A viewport change publishes its current controls before the next click.
+    # Rendering can reuse the existing snapshot; focus input still performs no
+    # scheduler snapshot or source work.
+    _, dashboard.hits = dashboard.views.compose(published_snapshot, app, 160, 42)
     mouse(dashboard, *row(dashboard, "6"), "press")
     mouse(dashboard, *row(dashboard, "6"), "release")
     screen._apply_input(app, ("down", None), dashboard.hits, curses)

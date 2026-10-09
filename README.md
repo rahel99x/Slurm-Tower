@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.8.1 |
+| Release | Tower 4.8.2 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -29,6 +29,17 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.8.2
+
+- Terminal mouse reports remain mouse input. Legacy X10 coordinates and fragmented control sequences cannot activate page shortcuts.
+- Clicks use the current published job, source, and pane. Stale row positions and changed hit payloads cannot open another job or page.
+- Graph crosshairs repaint changed cells. Unchanged native curves reuse bounded raster caches while axes, source age, and live controls continue to update.
+- Drag owners cancel stale captures after context changes. A new gesture retains its own release after an earlier gesture was cancelled.
+- Passive movement does not activate buttons, rebuild the page, or read measurement sources.
+
+See [the input audit](docs/guides/input-audit.md) for reproduced faults, regression coverage, and recovery checks.
+See [display performance](docs/guides/ui-performance.md) for reproducible measurements.
 
 ## Changes in Tower 4.8.1
 

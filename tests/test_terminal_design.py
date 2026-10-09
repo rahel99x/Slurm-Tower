@@ -47,6 +47,10 @@ def test_all_pages_keep_active_navigation_metrics_and_ascii(dashboard, width, he
         # Visible mouse targets lead to the tab printed at that exact position.
         for y, left, right, key in app.tab_hits:
             assert 0 <= left < right <= width
+            # Each target is tested from the page that painted these labels;
+            # navigating away invalidates that page's old control registry.
+            app.tab = tab
+            _, hits = views.compose(store.snapshot(), app, width, height, actions)
             app.click(y, left, hits)
             assert app.tab == key
 

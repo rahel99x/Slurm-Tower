@@ -390,6 +390,13 @@ def test_native_browser_click_consumes_history_column_before_log_line_selection(
     target = next(hit for hit in hits if hit[1] == 'control' and hit[2]['id'] == 'history:log:job:301')
     # A source line at the same y must not intercept a history-pane click.
     hits.append((target[0], 'log_line', 4))
+    from tower.interaction import publish
+    from tower.metric_live import descriptors as live_descriptors
+    from tower.scrollbars import descriptors as scroll_descriptors
+    publish(app, app.frame_rows, hits, 160, 50,
+            overlays=(getattr(app, 'content_overlay_rows', [])
+                      + getattr(app, 'toolbar_overlay_rows', [])),
+            extra_controls=live_descriptors(app) + scroll_descriptors(app))
     app.click(target[0], target[2]['left'] + 3, hits)
     assert app.log_job == '301'
     assert app.log_record.id == '301'

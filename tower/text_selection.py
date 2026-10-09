@@ -241,7 +241,14 @@ def _pane_at(state, y, x):
 
 def _current(app):
     state = initialize(app)
-    return state if state["token"] == _token(app) else None
+    if state["token"] == _token(app):
+        return state
+    # A source, mode or geometry can change between paint and input. End the
+    # old gesture now rather than letting its capture survive until a paint.
+    if state["capture"]:
+        state["capture"] = None
+        state["discard_release"] = True
+    return None
 
 
 def _protected(app, y, x, pane, control=None):
@@ -275,8 +282,18 @@ def _start(app, state, pane, y, explicit=False):
 
 
 def handle_mouse(app, y, x, button="left", shift=False):
+    if any(type(value) is not int for value in (y, x)):
+        return False
+    if button in ("press", "left"):
+        previous = initialize(app)
+        previous["capture"] = None
+        previous["discard_release"] = False
     state = _current(app)
     if state is None or getattr(app, "mode", "main") in EDIT_MODES:
+        stale = initialize(app)
+        if button == "release" and stale["discard_release"]:
+            stale["discard_release"] = False
+            return True
         return False
     if button == "right":
         if selected(app) or active(app):
@@ -296,9 +313,10 @@ def handle_mouse(app, y, x, button="left", shift=False):
             clear(app)
             return True
         index = pane.top + max(0, min(pane.page - 1, y - pane.rect.top))
-        state["selection"]["end"] = index
-        state["cursor"] = pane.key, index
-        _remember(state, pane)
+        if state["selection"]["end"] != index:
+            state["selection"]["end"] = index
+            state["cursor"] = pane.key, index
+            _remember(state, pane)
         if button == "release":
             state["capture"] = None
         return True
@@ -324,6 +342,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
         _start(app, state, pane, y, explicit=state["explicit"])
     if button == "press":
         state["capture"] = {"key": pane.key, "context": pane.context, "geometry": pane.rect}
+        state["discard_release"] = False
     return True
 
 

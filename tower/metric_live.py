@@ -23,6 +23,7 @@ DOCUMENT_INTERVAL = 0.1
 CAPTURE_TIMEOUT = 15.0
 MIN_RATE = 1
 MAX_RATE = 100
+_UNSET_INTERVAL = object()
 
 
 @dataclass(frozen=True)
@@ -434,15 +435,16 @@ def set_rate(app, identity, value):
     return True
 
 
-def _row(g, entry, width, *, app=None, identity=None):
+def _row(g, entry, width, *, app=None, identity=None, poll_interval=_UNSET_INTERVAL):
     """A stable one-row layout for both independent sliders, even at 24 cells."""
     from .metric_sampling import cadence, format_interval
 
-    def interval(rate=None):
-        value = cadence(app, identity, rate=rate) if app is not None else None
-        return format_interval(value, ascii_=g.ascii) if value is not None else "?"
-
-    current_interval = interval()
+    if poll_interval is _UNSET_INTERVAL:
+        poll_interval = cadence(app, identity) if app is not None else None
+    current_interval = (
+        format_interval(poll_interval, ascii_=g.ascii)
+        if poll_interval is not None else "?"
+    )
     # These are the requested polling domain. The current value above remains
     # the effective shared-source interval, including any source constraints.
     slow_interval = format_interval(5.0, ascii_=g.ascii)
@@ -923,6 +925,11 @@ def handle_mouse(app, y, x, button="left", shift=False):
         state["cancelled_release"] = False
     if any(not isinstance(v, int) or isinstance(v, bool) for v in (y, x)):
         return cancel(app)
+    # Hover and an orphaned drag/release cannot change a control. In
+    # particular, a chart drag passes through this handler on its way to the
+    # owning graph; do not revalidate every unrelated live metric for it.
+    if previous is None and button not in ("press", "left", "right"):
+        return False
     tick(app)
     capture = state["capture"]
     if previous and not capture and button in ("motion", "drag", "release"):
@@ -1139,15 +1146,29 @@ def feedback(app, g):
     tick(app)
     if _blocked(app) or state["context"] != _context(app):
         return []
+    from .metric_sampling import cadence
+
+    previous = state.get("feedback_rows", {})
+    current = {}
     output = []
     for control in state["records"]:
         entry = state["entries"].get(control.key)
         if not entry:
             continue
-        row, _ = _row(
-            g, entry, control.rect.right - control.rect.left,
-            app=app, identity=control.key,
+        poll_interval = cadence(app, control.key)
+        cache_key = (
+            control.key, control.token, control.rect, control.visible,
+            bool(g.ascii), state["revision"], entry["enabled"],
+            entry["delta"], entry.get("rate", MIN_RATE), poll_interval,
         )
+        row = previous.get(cache_key)
+        if row is None:
+            row, _ = _row(
+                g, entry, control.rect.right - control.rect.left,
+                app=app, identity=control.key, poll_interval=poll_interval,
+            )
+            row = tuple(row)
+        current[cache_key] = row
         left = control.visible.left - control.rect.left
         # Control text is one-cell terminal glyphs; cut in display coordinates.
         clipped = []
@@ -1165,6 +1186,9 @@ def feedback(app, g):
             app, [rendered], origin=(control.visible.top, control.visible.left)
         )[0]
         output.append((control.visible.top, control.visible.left, rendered))
+    # Retain only the currently published controls. A viewport/source change
+    # cannot grow this cache or reuse a prior attempt's row.
+    state["feedback_rows"] = current
     return output
 
 

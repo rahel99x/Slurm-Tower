@@ -14,6 +14,7 @@ from . import layout as L
 
 MAX_CONTROLS = 4096
 MAX_OVERLAY_ROWS = 4096
+MAX_HIT_ITEMS = MAX_CONTROLS * 64
 POINTER_STYLE = "bg:surface-raised+under+bold"
 FOCUS_STYLE = "bg:track+under+bold"
 ROW_KINDS = frozenset(("job", "recent", "fin", "source", "group", "dep", "log_file",
@@ -64,6 +65,39 @@ class Control:
 
 
 @dataclass(frozen=True)
+class _SpanIndex:
+    """Sparse vertical interval index for rails and other tall controls.
+
+    Each control is stored once. Looking up a terminal row visits one branch,
+    rather than testing the tall controls from every other visible pane.
+    """
+
+    center: int
+    entries: tuple
+    before: object = None
+    after: object = None
+
+    @classmethod
+    def build(cls, entries):
+        if not entries:
+            return None
+        centers = sorted((entry[1].rect.top + entry[1].rect.bottom - 1) // 2 for entry in entries)
+        center = centers[len(centers) // 2]
+        before, crossing, after = [], [], []
+        for entry in entries:
+            rect = entry[1].rect
+            (before if rect.bottom <= center else after if rect.top > center else crossing).append(entry)
+        return cls(center, tuple(sorted(crossing, key=lambda entry: entry[0], reverse=True)),
+                   cls.build(before), cls.build(after))
+
+    def at(self, y, x):
+        best = next((entry for entry in self.entries if entry[1].rect.contains(y, x)), None)
+        branch = self.before if y < self.center else self.after if y > self.center else None
+        candidate = branch.at(y, x) if branch is not None else None
+        return candidate if candidate and (best is None or candidate[0] > best[0]) else best
+
+
+@dataclass(frozen=True)
 class Graph:
     controls: tuple[Control, ...]
     token: tuple
@@ -76,6 +110,7 @@ class Graph:
     _identities: object = field(init=False, repr=False, compare=False)
     _rows: object = field(init=False, repr=False, compare=False)
     _spanning: tuple = field(init=False, repr=False, compare=False)
+    _span_index: object = field(init=False, repr=False, compare=False)
     _regions: object = field(init=False, repr=False, compare=False)
     _ordered: tuple = field(init=False, repr=False, compare=False)
     _order_indices: object = field(init=False, repr=False, compare=False)
@@ -108,6 +143,8 @@ class Graph:
             y: tuple(sorted(entries, key=lambda entry: entry[0], reverse=True))
             for y, entries in rows.items()}))
         object.__setattr__(self, "_spanning", tuple(sorted(spanning, key=lambda entry: entry[0], reverse=True)))
+        object.__setattr__(self, "_span_index", _SpanIndex.build([
+            entry for entry in spanning if entry[1].rect.top < entry[1].rect.bottom]))
         object.__setattr__(self, "_regions", MappingProxyType(regions))
         ordered = tuple(sorted((control for control in self.controls if control.enabled),
                                key=lambda control: (control.rect.top, control.rect.left, control.id)))
@@ -123,7 +160,7 @@ class Graph:
     def at(self, y, x):
         # Later / smaller controls win when a selectable row also contains a button.
         local = next((entry for entry in self._rows.get(y, ()) if entry[1].rect.contains(y, x)), None)
-        spanning = next((entry for entry in self._spanning if entry[1].rect.contains(y, x)), None)
+        spanning = self._span_index.at(y, x) if self._span_index is not None else None
         if local is None:
             return spanning[1] if spanning else None
         return spanning[1] if spanning and spanning[0] > local[0] else local[1]
@@ -157,6 +194,37 @@ def _state(app, name):
     return value if isinstance(value, dict) else {}
 
 
+def hit_token(hits):
+    """Copy native hit payloads into a bounded, immutable frame identity.
+
+    Controller activation must compare the registry that was painted, rather
+    than a mutable ``last_hits`` alias. Unsupported or oversized payloads fail
+    closed; this work runs at publication and explicit clicks, never hover.
+    """
+    remaining = MAX_HIT_ITEMS
+
+    def freeze(value, depth=0):
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 8:
+            raise ValueError("oversized hit payload")
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return (type(value).__name__, value)
+        if isinstance(value, (tuple, list)) and len(value) <= 128:
+            return tuple(freeze(item, depth + 1) for item in value)
+        if isinstance(value, dict) and len(value) <= 128:
+            entries = tuple((freeze(key, depth + 1), freeze(item, depth + 1))
+                            for key, item in value.items())
+            return ("mapping", tuple(sorted(entries, key=lambda item: item[0])))
+        raise ValueError("unsupported hit payload")
+
+    try:
+        token = tuple(freeze(hit) for hit in islice(hits or (), MAX_CONTROLS + 1))
+        return token if len(token) <= MAX_CONTROLS else None
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
 def _scope(app):
     """Overlay identities are distinct from ordinary viewport/row changes."""
     toolbar = _state(app, "toolbar_state")
@@ -180,24 +248,35 @@ def _viewport(app):
         browser = {}
     logs = getattr(app, "logs", None)
     recent = getattr(app, "recent_history_state", None)
+    panel = _state(app, "job_panel_state")
+    session = panel.get("session")
+    analysis = _state(app, "analysis_state")
+    project = _state(app, "project_state")
     from .table_ui import fingerprint
     tables = (tab, "recent") if tab == "jobs" else (tab,)
     return (tuple((name, top.get(name), cursor.get(name),
                    _state(app, "sort").get(name), _state(app, "reverse").get(name),
                    fingerprint(app, name),
-                   tuple(table.get("hidden", {}).get(name, ())[:64]),
-                   tuple(table.get("order", {}).get(name, ())[:64]),
-                   tuple(sorted(table.get("widths", {}).get(name, {}).items()))[:64])
+                   tuple(islice(table.get("hidden", {}).get(name, ()), 64)),
+                   tuple(islice(table.get("order", {}).get(name, ()), 64)),
+                   tuple(sorted(islice(table.get("widths", {}).get(name, {}).items(), 64))))
                   for name in tables),
-            getattr(app, "filter", ""), table.get("groups"), tuple(table.get("collapsed", ())[:256]),
+            getattr(app, "filter", ""), table.get("groups"), tuple(islice(table.get("collapsed", ()), 256)),
             getattr(layout, "density", None), getattr(layout, "ratio", None),
             getattr(layout, "maximized", None),
             scroll.get(tab + ":main"), scroll.get(tab + ":details"),
             browser.get("top"), browser.get("dock"), browser.get("ratio"),
+            browser.get("enabled"), browser.get("selected"), browser.get("explicit"),
             getattr(recent, "ratio", None), getattr(recent, "manual_split", None),
             getattr(app, "research_scroll", None), getattr(app, "research_task_offset", None),
             getattr(app, "deps_scope_top", None), getattr(logs, "top", None),
-            getattr(logs, "browser_top", None), _state(app, "analytics_document_state").get("top"))
+            getattr(logs, "browser_top", None), _state(app, "analytics_document_state").get("top"),
+            panel.get("file_id"), getattr(session, "path", None), getattr(session, "top", None),
+            tuple(analysis.get(name) for name in ("scroll", "cursor", "section", "evidence_cursor", "zoom", "pan",
+                                                  "window", "preset", "chart_box", "chart_live_window")),
+            tuple(project.get(name) for name in ("generation", "run_cursor", "run_top", "output_cursor", "output_top",
+                                                 "preview_scroll", "preview_page", "preview_column", "filter",
+                                                 "notices_open", "notices_scroll")))
 
 
 def _context(app):
@@ -208,6 +287,8 @@ def _context(app):
     project = _state(app, "project_state")
     table_tools = _state(app, "table_tools_state")
     execution = _state(app, "execution_state")
+    binding = project.get("binding")
+    binding = binding if isinstance(binding, dict) else {}
     logs = getattr(app, "logs", None)
     return (getattr(app, "mode", "main"), getattr(app, "tab", ""),
             getattr(app, "selected_id", None), getattr(app, "nodes_view", None),
@@ -220,7 +301,9 @@ def _context(app):
             id(getattr(app, "confirm", None)) if getattr(app, "mode", "main") == "confirm" else None,
             id(execution.get("review")) if getattr(app, "mode", "main") == "execution" else None,
             repr(execution.get("pending_action"))[:512] if getattr(app, "mode", "main") == "execution" else None,
-            _viewport(app))
+            _viewport(app),
+            getattr(app, "analytics_job", None), getattr(app, "research_job_id", None), getattr(app, "log_job", None),
+            tuple(binding.get(name) for name in ("project_root", "run_id", "job_id", "attempt")))
 
 
 def _current(app):
@@ -555,6 +638,9 @@ def publish(app, rows, hits, width, height, overlays=None, extra_controls=()):
     hits and modal registries are adapted without invoking any renderer.
     """
     state = initialize(app)
+    hits = tuple(islice(hits or (), MAX_CONTROLS))
+    state["published_hits"] = hits
+    state["published_hit_token"] = hit_token(hits)
     width = max(0, width) if _integer(width) else 0
     height = max(0, height) if _integer(height) else len(rows)
     spans = _overlay_spans(overlays, width, height)

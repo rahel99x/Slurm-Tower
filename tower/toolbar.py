@@ -217,7 +217,10 @@ def _open(app, menu=0, source="keyboard"):
 def _rate(app, value=None, delta=None, *, announce=True):
     from . import refresh_rate
     before = refresh_rate.multiplier(app)
-    after = refresh_rate.adjust(app, delta) if delta is not None else refresh_rate.set_multiplier(app, value)
+    after = (max(refresh_rate.MIN_MULTIPLIER, min(refresh_rate.MAX_MULTIPLIER, before + delta))
+             if delta is not None else refresh_rate.validate_multiplier(value))
+    if after != before:
+        refresh_rate.set_multiplier(app, after)
     if announce and before != after:
         app.say(refresh_rate.cadence_summary(app))
     return after
@@ -276,7 +279,8 @@ def render_bar(views, app, width, y=0):
         # Resize changes the coordinate space. Cancel capture instead of
         # interpreting an old terminal coordinate against a newly moved track.
         state.update(dragging=False, drag_width=None)
-    state.update(width=width, bar_y=y, hits=[], ascii=bool(views.g.ascii))
+    state.update(width=width, bar_y=y, hits=[], ascii=bool(views.g.ascii),
+                 frame_context=_frame_context(app))
     if width == 0:
         return []
     value = _polling_label(app, ascii_=views.g.ascii)
@@ -404,6 +408,11 @@ def _track_value(state, x):
     return 1 + round(49 * (max(start, min(end, x)) - start) / max(1, end - start))
 
 
+def _frame_context(app):
+    return (getattr(app, "mode", "main"), getattr(app, "tab", ""),
+            getattr(app, "width", None), getattr(app, "height", None))
+
+
 def _menu_corridor(state, y, x):
     """Borders and toolbar padding belong to the open dropdown's hover area."""
     rect = state.get("menu_rect")
@@ -425,7 +434,20 @@ def handle_interval_reset(app, y, x):
 
 
 def handle_mouse(app, y, x, button="left", shift=False):
+    if any(type(value) is not int for value in (y, x)):
+        return False
     state = initialize(app)
+    current_context = _frame_context(app)
+    painted_context = state.get("frame_context", current_context)
+    if painted_context != current_context:
+        # Context changes can precede the next paint. The old rectangles must
+        # never continue a drag or activate a dropdown item in the new page.
+        # Global toolbar buttons keep their fixed geometry over dialogs; in
+        # particular, Quit remains available during a pending confirmation.
+        state.update(dragging=False, drag_width=None, menu_hits=[],
+                     menu_token=None, hover=None, frame_context=current_context)
+        if painted_context[2:] != current_context[2:]:
+            state["hits"] = []
     if button == "release":
         # The pointer may be released over another page or outside the bar.
         # A release ends capture; it does not activate whatever is underneath.

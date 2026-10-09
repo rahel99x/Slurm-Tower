@@ -54,9 +54,17 @@ def initialize(app):
     state = getattr(app, "history_browser_state", None)
     if not isinstance(state, dict):
         state = {"views": {}, "frame": None, "drag": None, "focused": False,
+                 "discard_release": False,
                  "records": (), "record_key": None, "items": (), "index": 0}
         app.history_browser_state = state
+    state.setdefault("discard_release", False)
     return state
+
+
+def _cancel_drag(state):
+    if state.get("drag"):
+        state["drag"] = None
+        state["discard_release"] = True
 
 
 def _view(app):
@@ -381,7 +389,8 @@ def wrap_render(views, snap, app, width, height, content_renderer):
     state["frame"] = {"tab": app.tab, "mode": getattr(app, "mode", "main"), "width": width, "height": height,
         "origin": origin, "browser": browser, "content": content, "divider": divider, "dock": dock,
         "page": page, "columns": columns, "hits": browser_hits,
-        "geometry": (getattr(app, "width", None), getattr(app, "height", None))}
+        "geometry": (getattr(app, "width", None), getattr(app, "height", None)),
+        "preference": (view["dock"], view["enabled"], view["ratio"])}
     app.history_browser_content_rect = Rect(content.x, content.y + origin, content.width, content.height)
     app.history_browser_rect = Rect(browser.x, browser.y + origin, browser.width, browser.height)
     from . import chart_interaction
@@ -416,7 +425,7 @@ def wrap_render(views, snap, app, width, height, content_renderer):
             result_hits.append(hit)
     drag = state.get("drag")
     if drag and not _drag_valid(app, drag):
-        state["drag"] = None
+        _cancel_drag(state)
         drag = None
     if drag and _drag_valid(app, drag):
         preview = drag.get("preview")
@@ -473,6 +482,9 @@ def _current(app):
             frame["geometry"] != (getattr(app, "width", None), getattr(app, "height", None)) or
             isinstance(toolbar, dict) and (toolbar.get("menu") is not None or toolbar.get("panel"))):
         return None
+    view = _view(app)
+    if frame.get("preference", (view["dock"], view["enabled"], view["ratio"])) != (view["dock"], view["enabled"], view["ratio"]):
+        return None
     return frame
 
 
@@ -488,7 +500,7 @@ def tick(app):
     state = initialize(app)
     drag = state.get("drag")
     if drag and not _drag_valid(app, drag):
-        state["drag"] = None
+        _cancel_drag(state)
 
 
 def _drop(frame, y, x):
@@ -513,12 +525,21 @@ def header_control_contains(app, y, x):
 
 
 def handle_mouse(app, y, x, button="left", shift=False):
+    if any(type(value) is not int for value in (y, x)):
+        return False
     state = initialize(app)
     drag = state.get("drag")
     frame = _current(app)
+    if button in ("press", "left"):
+        state["discard_release"] = False
+    if button == "release" and not drag and state["discard_release"]:
+        state["discard_release"] = False
+        return True
     if drag:
         if not _drag_valid(app, drag):
-            state["drag"] = None
+            _cancel_drag(state)
+            if button in ("release", "press", "left"):
+                state["discard_release"] = False
             return button in ("motion", "drag", "release")
         if button in ("motion", "drag", "release"):
             start_y, start_x = drag["point"]
@@ -532,7 +553,9 @@ def handle_mouse(app, y, x, button="left", shift=False):
                     _view(app)["dock"] = target
                     _persist(app)
             return True
-        state["drag"] = None
+        _cancel_drag(state)
+        if button in ("press", "left"):
+            state["discard_release"] = False
     if frame is None:
         return False
     browser = getattr(app, "history_browser_rect", None)
@@ -555,6 +578,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
         if hit["id"].endswith(":drag") and button == "press":
             state["drag"] = {"context": (frame["tab"], frame["width"], frame["height"], frame["origin"]),
                              "preview": None, "point": (y, x), "moved": False}
+            state["discard_release"] = False
         else:
             arguments = shlex.split(hit["action"][1])
             if arguments[0] == "jobgroup":
@@ -581,7 +605,7 @@ def _scroll(app, action, *, lines=1):
 def handle_key(app, key):
     state = initialize(app)
     if state.get("drag") and key == "esc":
-        state["drag"] = None
+        _cancel_drag(state)
         return True
     frame = _current(app)
     if not frame or frame["dock"] == "off" or not state["focused"]:
@@ -665,14 +689,14 @@ def run_command(app, args):
                 view["dock"] = choices[(choices.index(current) + 1) % len(choices)] if current in choices else choices[0]
             else:
                 view["dock"] = values[0]
-        state["drag"] = None
+        _cancel_drag(state)
         _persist(app)
         return True
     if command == "history-browser" and len(values) <= 1 and (not values or values[0] in ("on", "off")):
         view["enabled"] = not view["enabled"] if not values else values[0] == "on"
         if not view["enabled"]:
             state["focused"] = False
-        state["drag"] = None
+        _cancel_drag(state)
         _persist(app)
         return True
     _say(app, "history-dock <auto|left|right|top|bottom|off>; history-browser [on|off]; history-job JOBID; history-scroll <up|down|page-up|page-down|home|end>", failure=True)

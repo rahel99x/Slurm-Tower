@@ -20,9 +20,15 @@ Clicks and drag reports also depend on the terminal's mouse support.
 The `mouse` configuration field must be `true`.
 
 Tower updates cosmetic pointer feedback from the last published page.
-It paints changed rows while data, actions, and resize still refresh the page.
+It paints changed cells while data, actions, and resize still refresh the page.
 Continuous movement does not postpone live results.
 See [Display and input performance](ui-performance.md) for validation and connection limits.
+
+SGR, legacy X10, and urxvt mouse reports remain pointer input.
+Their coordinate bytes cannot activate keyboard shortcuts.
+Clicks require the current published pane and job identity.
+After a pane changes, allow its next display update before clicking its content.
+See [the input audit](input-audit.md) for tested failure cases.
 
 Run `:terminaldoctor` to inspect terminal settings and connection evidence.
 Check the terminal emulator and any intervening SSH or tmux session when events are missing.

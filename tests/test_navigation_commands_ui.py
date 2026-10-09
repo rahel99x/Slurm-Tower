@@ -312,10 +312,10 @@ def test_confirmation_mouse_buttons_work_and_background_clicks_are_blocked(dashb
     called = []
     app.finish_confirm = called.append
     app.mode, app.confirm = "confirm", {"action": "cancel", "jobs": [Job("1", "one", "main", "RUNNING")]}
-    overlay_text(commands, app, views, store)
+    views.overlay(store.snapshot(), app, 100, 24)
     old_tab, old_selected = app.tab, app.selected_id
-    app.click(0, 2, app.last_hits)
-    assert called == [] and app.tab == old_tab and app.selected_id == old_selected
+    app.click(23, 0, app.last_hits)
+    assert called == [] and app.tab == old_tab and app.selected_id == old_selected and not app.quit
     y, start, end, _ = next(hit for hit in app.command_state["confirm_hits"] if hit[3] == "confirm")
     app.click(y, start + 1, app.last_hits)
     assert called == [True]
@@ -324,13 +324,13 @@ def test_confirmation_mouse_buttons_work_and_background_clicks_are_blocked(dashb
 def test_palette_and_workspace_mouse_selection_stays_in_modal(dashboard):
     app, views, store = dashboard
     palette(app, "")
-    overlay_text(commands, app, views, store)
+    views.overlay(store.snapshot(), app, 100, 24)
     y, index = app.command_state["result_hits"][1]
     app.click(y, 20, app.last_hits)
     assert app.command_state["result_cursor"] == index and app.mode == "palette"
     app.mode = "main"
     app.run_command("workspaces")
-    overlay_text(navigation, app, views, store)
+    views.overlay(store.snapshot(), app, 100, 24)
     y, index = app.navigation_state["picker_hits"][1]
     app.click(y, 20, app.last_hits)
     assert app.navigation_state["picker_cursor"] == index and app.mode == "workspace_picker"

@@ -232,3 +232,76 @@ def test_release_zoom_uses_latest_raw_bounds_when_curve_ink_covers_the_preview(a
     C.handle_mouse(app, 9, 56, button="release")
     assert C.bounds(app, item.key)["x"] == pytest.approx((100 * 8 / 59, 100 * 46 / 59))
     assert C.autofit(app, item.key) and not C.active(app)
+
+
+def expanded_feedback(overlays):
+    """Decode physical selector cells independently of its batching format."""
+    result = {}
+    for y, x, row in overlays:
+        for text, style in row:
+            for glyph in text:
+                width = L.vlen(glyph)
+                if not width:
+                    previous, old_style = result[(y, x - 1)]
+                    result[(y, x - 1)] = (previous + glyph, old_style)
+                else:
+                    assert width == 1
+                    result[(y, x)] = (glyph, style)
+                    x += width
+    return result
+
+
+@pytest.mark.parametrize("ascii_", [False, True])
+@pytest.mark.parametrize("capture", [False, True])
+@pytest.mark.parametrize("theme", P.THEME_NAMES)
+def test_batched_feedback_paints_exactly_the_same_theme_ink_and_annotations(app, clock, ascii_, capture, theme):
+    app.theme = theme
+    rows = [[(" " * 120, "bg:surface-sunken")]] * 40
+    rows[5] = [(" " * 19, "bg:surface-sunken"), ("界", "chart-1"),
+               (" " * 3, "bg:surface-sunken"), ("e\u0301", "chart-2"),
+               ("⠒" * 8, "chart-3+bold"), (" " * 87, "bg:surface-sunken")]
+    overlays = [(5, 27, [(" ", "bg:surface-raised"), ("/", "chart-1")])]
+    if capture:
+        C.handle_mouse(app, 5, 15, button="press")
+        C.handle_mouse(app, 9, 56, button="drag")
+    else:
+        C.hover(app, 5, 30)
+    clock.now = .025
+    expected = C.feedback(app, rows=rows, overlays=overlays, ascii_=ascii_)
+    compact = C.feedback(app, rows=rows, overlays=overlays, ascii_=ascii_, compact=True)
+    assert expanded_feedback(compact) == expanded_feedback(expected)
+    assert len(compact) < len(expected) / 3
+    # Neither side of a wide source character is overwritten by a merged run.
+    assert (5, 19) not in expanded_feedback(compact)
+    assert (5, 20) not in expanded_feedback(compact)
+    assert C.initialize(app)["revision"] == 0 and not C.bounds(app, C.initialize(app)["plots"][0].key)
+
+
+@pytest.mark.parametrize("capture,expected_calls", [(False, 2), (True, 4)])
+def test_pointer_strokes_are_constructed_once_per_edge_instead_of_per_cell(app, monkeypatch, capture, expected_calls):
+    calls = []
+    original = G.glyph
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(G, "glyph", counted)
+    if capture:
+        C.handle_mouse(app, 4, 18, button="press")
+        C.handle_mouse(app, 9, 56, button="drag")
+    else:
+        C.hover(app, 5, 30)
+    result = C.feedback(app, compact=True)
+    assert result and len(calls) == expected_calls
+
+
+def test_overlay_ink_is_protected_even_when_no_base_document_is_supplied(app):
+    C.hover(app, 5, 30)
+    overlays = [(5, 28, [("⠒", "chart-1+bg:surface-sunken"),
+                         (" ", "bg:surface-raised"), ("界", "chart-2")])]
+    result = expanded_feedback(C.feedback(app, overlays=overlays, compact=True))
+    assert result[(5, 28)] == ("⠒", "chart-1+bg:surface-sunken")
+    assert (5, 30) not in result and (5, 31) not in result
+    blank = P.resolve(P.cell_style(result[(5, 29)][1], app.theme), app.theme)
+    assert blank.background == P.resolve("bg:surface-raised", app.theme).background

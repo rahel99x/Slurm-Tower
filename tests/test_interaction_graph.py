@@ -594,3 +594,103 @@ def test_selected_screen_line_does_not_suppress_overlay_menu_feedback():
     painted = ui.decorate_overlays(app, overlay)
     assert any("under" in style for _, style in painted[0][2])
     assert L.row_text(painted[0][2]) == "| button |"
+
+
+@pytest.mark.parametrize("tab", ["jobs", "history", "analytics", "research", "deps", "log", "nodes", "sources"])
+@pytest.mark.parametrize("event", ["motion", "drag", "release", "press", "right", "wheel-up", "wheel-down"])
+def test_passive_events_over_research_control_never_switch_page_or_job(tab, event):
+    app = App(tab=tab)
+    app.tab_hits = [(1, 25, 40, "research")]
+    app.job_panel_state = {"mode": "analytics", "analytics_view": "job"}
+    paint(app, [button("plot-control", 7, 25, 40, action=("set", "research_view", "workflow")),
+                (7, "job", "7")])
+    for _ in range(15):
+        for y, x in ((7, 3), (7, 30), (1, 30), (8, 40)):
+            assert not ui.handle_mouse(app, y, x, button=event)
+    assert app.tab == tab and app.selected_id == "7"
+    assert app.job_panel_state["mode"] == "analytics"
+    assert not app.calls
+    assert not ui.initialize(app)["active"]
+
+
+@pytest.mark.parametrize("state_name,key,before,after", [
+    ("analysis_state", "scroll", 0, 4),
+    ("analysis_state", "section", 0, 1),
+    ("analysis_state", "zoom", 1.0, 2.0),
+    ("analysis_state", "pan", 0.0, .5),
+    ("analysis_state", "window", None, 15.0),
+    ("project_state", "run_top", 0, 5),
+    ("project_state", "output_top", 0, 5),
+    ("project_state", "preview_page", 0, 1),
+    ("job_panel_state", "file_id", "out", "err"),
+])
+def test_document_changes_reject_old_control_geometry_before_repaint(state_name, key, before, after):
+    app = App()
+    setattr(app, state_name, {key: before})
+    paint(app, [button("read-old-row", 4, 10, 20)])
+    ui.handle_key(app, "f8")
+    getattr(app, state_name)[key] = after
+    assert ui.controls(app) == ()
+    assert not ui.handle_mouse(app, 4, 15)
+    assert not ui.handle_key(app, "enter")
+    assert not app.calls
+
+
+def test_jobs_details_log_scroll_rejects_previous_visible_action():
+    app = App()
+    app.job_panel_state = {"session": SimpleNamespace(path="job-7.log", top=10)}
+    paint(app, [button("old-log-action", 4, 30, 45)])
+    app.job_panel_state["session"].top = 20
+    assert not ui.handle_mouse(app, 4, 35)
+    assert not app.calls
+
+
+@pytest.mark.parametrize("field,after", [("run_id", "run-b"), ("job_id", "8"),
+                                         ("attempt", "retry"), ("project_root", "/other")])
+def test_run_binding_changes_in_place_reject_previous_project_actions(field, after):
+    app = App(tab="research")
+    binding = {"project_root": "/project", "run_id": "run-a", "job_id": "7", "attempt": "first"}
+    app.project_state = {"root": "/project", "binding": binding}
+    paint(app, [button("old-report", 4, 10, 20)])
+    binding[field] = after
+    assert not ui.handle_mouse(app, 4, 15)
+    assert not app.calls
+
+
+def test_published_native_hit_token_copies_nested_actions_and_matches_mapping_order():
+    app = App()
+    action = ["command", "view research"]
+    descriptor = {"id": "research", "left": 3, "right": 10, "action": action}
+    hits = [(4, "control", descriptor)]
+    paint(app, hits)
+    state = ui.initialize(app)
+    recorded = state["published_hit_token"]
+    reordered = [(4, "control", dict(reversed(tuple(descriptor.items()))))]
+    assert ui.hit_token(reordered) == recorded
+    action[1] = "cancel 7"
+    assert ui.hit_token(hits) != recorded
+    assert state["published_hit_token"] == recorded
+    assert ui.hit_token([(True, "control", descriptor)]) != ui.hit_token(hits)
+
+
+def test_invalid_oversized_or_recursive_hit_payloads_fail_closed():
+    assert ui.hit_token([(1, "bad", object())]) is None
+    assert ui.hit_token([(1, "bad", list(range(129)))]) is None
+    assert ui.hit_token([(1, "job", "7")] * (ui.MAX_CONTROLS + 1)) is None
+    recursive = []
+    recursive.append(recursive)
+    assert ui.hit_token([(1, "bad", recursive)]) is None
+
+
+def test_nested_registry_signature_is_not_recomputed_by_pointer_or_feedback(monkeypatch):
+    app = App()
+    paint(app, [button("control", 4, 10, 20)])
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Passive pointer copied the native hit registry")
+
+    monkeypatch.setattr(ui, "hit_token", forbidden)
+    for y, x in ((4, 11), (5, 11), (4, 15), (8, 30)) * 10:
+        assert not ui.handle_mouse(app, y, x, "motion")
+        ui.feedback_rows(app)
+        ui.decorate(app, [[("line", "")]] * 12)

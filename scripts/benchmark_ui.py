@@ -67,7 +67,7 @@ class Measurements:
 
 
 def run_case(args, ascii_):
-    from tower import advisor, analysis_ui, charts, interaction, layout as L
+    from tower import advisor, analysis_ui, charts, clock, interaction, layout as L
     from tower import screen, scrolling, startup, toolbar
     from tower.config import Config
     from tower.controller import App
@@ -98,7 +98,24 @@ def run_case(args, ascii_):
     app.views_ref = views
     hub = app.research = ResearchHub(cfg, slurm=slurm)
     hub.interval = 86400
-    if args.scenario == "advisor":
+    native_series = args.scenario == "analytics" or args.gesture == "chart-hover" and args.scenario == "jobs"
+    if native_series or args.scenario == "advisor":
+        record = next((job for job in store.jobs if job.state == "RUNNING"), store.jobs[0])
+        # A one-job fixture otherwise contains only a pending allocation. The
+        # published native graph benchmark needs an actual running identity.
+        record.state = "RUNNING"
+        app.selected_id = record.id
+    if native_series:
+        end = clock.now()
+        for index in range(args.points):
+            store.record(record.id, {"k": "live", "t": end - (args.points - index - 1) * .5,
+                "cpu": .5 + .4 * math.sin(index / 20),
+                "rss": (1 + .4 * math.sin(index / 30)) * (1 << 30)})
+        if args.scenario == "analytics":
+            app.tab, app.analytics_view, app.analytics_job = "analytics", "job", record.id
+        else:
+            app.run_command("jobpanel analytics job")
+    elif args.scenario == "advisor":
         app.run_command("jobpanel analytics advisor")
     elif args.scenario == "research":
         app.tab, app.research_view, app.research_job_id = "research", "experiment", "1"
@@ -134,15 +151,31 @@ def run_case(args, ascii_):
     window = SimpleNamespace(erase=lambda: meter.counts.update(erase_calls=1))
     painter = screen._DifferentialPainter(window, paint) if cached else None
 
-    def input_event(iteration):
+    def input_event(iteration, effects):
         if args.gesture == "render" or not app.last_hits:
             return
-        if args.gesture == "hover":
-            controls = interaction.controls(app)
-            target = controls[iteration % len(controls)] if controls else None
+        if args.gesture == "chart-hover" and (app.tab != "jobs" or iteration % 3):
+            from tower.chart_interaction import initialize
+            plots = initialize(app)["plots"]
+            target = plots[iteration % len(plots)] if plots else None
             if target is None:
-                return
+                raise RuntimeError("Chart hover requires a visible published graph; increase width or height")
+            x = target.visible.left + iteration % (target.visible.right - target.visible.left)
+            y = target.visible.top + iteration % (target.visible.bottom - target.visible.top)
+            bits = curses.REPORT_MOUSE_POSITION
+            meter.counts["chart_hover_events"] += 1
+        elif args.gesture in ("hover", "chart-hover"):
+            controls = interaction.controls(app)
+            if args.gesture == "chart-hover":
+                controls = [value for value in controls if value.group == "job"]
+                target = next((value for value in controls if value.label == app.selected_id),
+                              controls[0] if controls else None)
+            else:
+                target = controls[iteration % len(controls)] if controls else None
+            if target is None:
+                raise RuntimeError("Hover requires a visible control; increase width or height")
             x, y, bits = target.rect.left, target.rect.top, curses.REPORT_MOUSE_POSITION
+            meter.counts["control_hover_events"] += 1
         else:
             rect = getattr(app, "job_panel_rect", None)
             if app.tab == "jobs" and rect is not None:
@@ -150,7 +183,9 @@ def run_case(args, ascii_):
             else:
                 x, y = 4, min(height - 2, getattr(app, "body_origin", 1) + 5)
             bits = curses.BUTTON5_PRESSED if iteration % 8 < 4 else curses.BUTTON4_PRESSED
-        meter.timed("input", lambda: screen._apply_input(app, ("mouse", (0, x, y, 0, bits)), app.last_hits, curses))
+        event = ("mouse", (0, x, y, 0, bits))
+        effects.record(app, event, curses)
+        meter.timed("input", lambda: screen._apply_input(app, event, app.last_hits, curses))
 
     def legacy_frame():
         # The published 4.3 screen always rebuilt the document after input.
@@ -183,11 +218,14 @@ def run_case(args, ascii_):
         meter.reset()
 
         def update():
-            input_event(iteration)
+            effects = (screen._InputEffects() if hasattr(screen, "_InputEffects") else
+                       SimpleNamespace(document=args.gesture not in ("hover", "chart-hover"),
+                                       record=lambda *_: None))
+            input_event(iteration, effects)
             if cache is None:
                 legacy_frame()
                 return
-            if args.gesture != "hover":
+            if effects.document or args.gesture == "render":
                 cache.dirty = True
             if cache.due(app, width, height):
                 meter.timed("document_rebuild", lambda: cache.rebuild(app, views, store, None, width, height))
@@ -211,14 +249,35 @@ def run_case(args, ascii_):
         # are outside steady-state measurements. Every source is already fake.
         for iteration in range(3):
             frame(iteration)
+        initial_tab = app.tab
+        initial_job = app.selected_id
         timings, counts = [], []
         with contextlib.ExitStack() as stack:
+            # Editable import finders can locate a new child module even
+            # under an older --source-root package. Inspect the actual row
+            # builder before choosing its corresponding diagnostic hook.
+            if "job_row_cache" in Views.job_rows.__code__.co_names:
+                from tower import job_row_cache
+            else:
+                job_row_cache = None
+            if job_row_cache is None:
+                meter.wrap(stack, views, "plugin_flags", count="prepared_job_rows")
+            else:
+                remember_rows = job_row_cache.remember
+
+                def prepared_rows(target_views, target_app, key, rows):
+                    meter.counts["prepared_job_rows"] += len(rows)
+                    return remember_rows(target_views, target_app, key, rows)
+
+                # An instance override of plugin_flags correctly disables the
+                # native row cache. Count actual cache misses through its
+                # publication function without changing renderer eligibility.
+                stack.enter_context(patch.object(job_row_cache, "remember", prepared_rows))
             for obj, name, phase, count in (
                 (app, "tick", "tick", "tick_calls"),
                 (store, "snapshot", "snapshot", "snapshot_calls"),
                 (views, "compose", "compose", "compose_calls"),
                 (views, "overlay", "overlay", "overlay_calls"),
-                (views, "plugin_flags", None, "prepared_job_rows"),
                 (advisor, "advise_names", None, "advisor_aggregations"),
                 (advisor, "advise_running", None, "running_advice"),
                 (analysis_ui, "chart_rows", None, "chart_cards"),
@@ -233,6 +292,10 @@ def run_case(args, ascii_):
                 stack.enter_context(patch.object(obj, name, forbidden(kind)))
             for iteration in range(args.repeats):
                 timing, count = frame(iteration)
+                if app.tab != initial_tab:
+                    raise RuntimeError("Pointer feedback unexpectedly changed the active page")
+                if args.scenario == "jobs" and args.gesture == "chart-hover" and app.selected_id != initial_job:
+                    raise RuntimeError("Crossing a job and its graphs unexpectedly changed the selected job")
                 timings.append(timing)
                 counts.append(count)
         phase_keys = set().union(*(item.keys() for item in timings))
@@ -246,6 +309,8 @@ def run_case(args, ascii_):
             "history": args.history, "metrics": args.metrics, "points": args.points,
             "width": width, "height": height, "glyphs": "ascii" if ascii_ else "unicode",
             "pipeline": "cached screen" if cached else "4.3 screen", "repeats": args.repeats,
+            "pointer_targets": {"graphs": sum(item.get("chart_hover_events", 0) for item in counts),
+                                "controls": sum(item.get("control_hover_events", 0) for item in counts)},
             "phases_ms": {name: summary([1000 * item.get(name, 0) for item in timings]) for name in sorted(phase_keys)},
             "counts_per_frame": {name: summary([item.get(name, 0) for item in counts]) for name in sorted(count_keys)},
             "io_attempts": dict(io_counts)}
@@ -255,8 +320,9 @@ def run_case(args, ascii_):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("jobs", "advisor", "research"), default="jobs")
-    parser.add_argument("--gesture", choices=("hover", "wheel", "render"), default="hover")
+    parser.add_argument("--scenario", choices=("jobs", "advisor", "analytics", "research"), default="jobs")
+    parser.add_argument("--gesture", choices=("hover", "chart-hover", "wheel", "render"), default="hover",
+                        help="chart-hover crosses Jobs rows and native Details graphs, or published page graphs")
     parser.add_argument("--jobs", type=positive, default=100)
     parser.add_argument("--history", type=positive, default=100)
     parser.add_argument("--repeats", type=positive, default=20)
@@ -271,6 +337,8 @@ def main():
     parser.add_argument("--output", type=Path, help="save the full JSON report")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a short report")
     args = parser.parse_args()
+    if args.gesture == "chart-hover" and args.scenario == "advisor":
+        parser.error("chart-hover supports jobs, analytics, and research; use hover for advisor controls")
     if args.metrics > 64:
         parser.error("--metrics must be at most 64")
     if args.repeats > 1000:

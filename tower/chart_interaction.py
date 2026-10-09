@@ -820,7 +820,36 @@ def _painted_cells(app, visible, y, layers):
     return result
 
 
-def feedback(app, *, ascii_=None, rows=None, overlays=()):
+def _compact_feedback(cells):
+    """Batch adjacent selector cells without changing their painted result.
+
+    A terminal accepts a styled run as one operation. Wide annotations leave
+    holes in the selector and must still split those runs; combining marks
+    remain attached to the single cell that owns them. All input cells here
+    have already passed the bounded plot and source-ink checks.
+    """
+    by_row = {}
+    for y, x, row in cells:
+        by_row.setdefault(y, []).append((x, row[0]))
+    output = []
+    for y, row_cells in by_row.items():
+        start, previous, segments = None, None, []
+        for x, (char, style) in sorted(row_cells):
+            if previous is None or x != previous + 1:
+                if segments:
+                    output.append((y, start, [("".join(parts), ink) for parts, ink in segments]))
+                start, segments = x, []
+            if segments and segments[-1][1] == style:
+                segments[-1][0].append(char)
+            else:
+                segments.append(([char], style))
+            previous = x
+        if segments:
+            output.append((y, start, [("".join(parts), ink) for parts, ink in segments]))
+    return output
+
+
+def feedback(app, *, ascii_=None, rows=None, overlays=(), compact=False):
     """Follow the newest cell with thin strokes while retaining all plot ink.
 
     Terminals cannot alpha blend a glyph. When supplied, cached document rows
@@ -829,6 +858,7 @@ def feedback(app, *, ascii_=None, rows=None, overlays=()):
     retain the curve's geometry and legend colour at intersections. Blank cells
     show the theme accent on their exact painted background. Cached character
     lookups are reused across reports; no graph is rasterized or source read.
+    ``compact`` batches adjacent cells into row runs for terminal painting.
     """
     state = initialize(app)
     tick(app)
@@ -847,9 +877,9 @@ def feedback(app, *, ascii_=None, rows=None, overlays=()):
     if rows is not None:
         for y in range(plot.visible.top, min(plot.visible.bottom, len(rows))):
             layers[y] = [(0, rows[y])]
-        for y, x, row in overlays:
-            if plot.visible.top <= y < plot.visible.bottom:
-                layers.setdefault(y, []).append((x, row))
+    for y, x, row in overlays:
+        if plot.visible.top <= y < plot.visible.bottom:
+            layers.setdefault(y, []).append((x, row))
 
     def cell_at(y, x):
         if not layers.get(y):
@@ -889,20 +919,26 @@ def feedback(app, *, ascii_=None, rows=None, overlays=()):
         start = G.locate(sy + .5, sx + .5)
         left, right = sorted((start.column, cursor.column))
         top, bottom = sorted((start.row, cursor.row))
+        start_horizontal = G.glyph(start.y_slot, start.x_slot, horizontal=True, ascii_=ascii_)
+        cursor_horizontal = G.glyph(cursor.y_slot, cursor.x_slot, horizontal=True, ascii_=ascii_)
+        start_vertical = G.glyph(start.y_slot, start.x_slot, vertical=True, ascii_=ascii_)
+        cursor_vertical = G.glyph(cursor.y_slot, cursor.x_slot, vertical=True, ascii_=ascii_)
         for x in range(left, right + 1):
-            put(start.row, x, G.glyph(start.y_slot, start.x_slot, horizontal=True, ascii_=ascii_))
-            put(cursor.row, x, G.glyph(cursor.y_slot, cursor.x_slot, horizontal=True, ascii_=ascii_))
+            put(start.row, x, start_horizontal)
+            put(cursor.row, x, cursor_horizontal)
         for y in range(top, bottom + 1):
-            put(y, start.column, G.glyph(start.y_slot, start.x_slot, vertical=True, ascii_=ascii_))
-            put(y, cursor.column, G.glyph(cursor.y_slot, cursor.x_slot, vertical=True, ascii_=ascii_))
+            put(y, start.column, start_vertical)
+            put(y, cursor.column, cursor_vertical)
         if ascii_:
             for y, x in {(top, left), (top, right), (bottom, left), (bottom, right)}:
                 put(y, x, "+")
     elif pointer:
+        horizontal = G.glyph(cursor.y_slot, cursor.x_slot, horizontal=True, ascii_=ascii_)
+        vertical = G.glyph(cursor.y_slot, cursor.x_slot, vertical=True, ascii_=ascii_)
         for column in range(plot.visible.left, plot.visible.right):
-            put(cursor.row, column, G.glyph(cursor.y_slot, cursor.x_slot, horizontal=True, ascii_=ascii_))
+            put(cursor.row, column, horizontal)
         for row in range(plot.visible.top, plot.visible.bottom):
-            put(row, cursor.column, G.glyph(cursor.y_slot, cursor.x_slot, vertical=True, ascii_=ascii_))
+            put(row, cursor.column, vertical)
         if ascii_:
             put(cursor.row, cursor.column, "+")
     for (y, x), char in marks.items():
@@ -914,4 +950,4 @@ def feedback(app, *, ascii_=None, rows=None, overlays=()):
             # duplicated or split by a one-cell overlay.
             continue
         output.append((y, x, [(char, style_at(original[1] if original is not None else None))]))
-    return output
+    return _compact_feedback(output) if compact else output

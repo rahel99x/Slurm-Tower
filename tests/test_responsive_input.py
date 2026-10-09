@@ -69,8 +69,7 @@ def test_passive_motion_can_be_coalesced_over_every_modal(mode):
 
 @pytest.mark.parametrize("state", [curses.BUTTON1_PRESSED, curses.BUTTON1_CLICKED,
     curses.BUTTON1_DOUBLE_CLICKED, curses.BUTTON1_RELEASED, curses.BUTTON3_PRESSED,
-    curses.BUTTON3_CLICKED, curses.BUTTON4_PRESSED, curses.BUTTON5_PRESSED,
-    curses.REPORT_MOUSE_POSITION | curses.BUTTON1_PRESSED])
+    curses.BUTTON3_CLICKED, curses.BUTTON4_PRESSED, curses.BUTTON5_PRESSED])
 def test_deliberate_gestures_always_rebuild_the_document(dashboard, state):
     effects = screen._InputEffects()
     effects.record(dashboard.app, mouse_report(2, 9, state), curses)
@@ -197,9 +196,9 @@ def test_differential_painter_restores_removed_overlay_and_only_changes_affected
     assert not painted
     assert painter.draw(base, [], 12, 3) == (1,)
     assert len(erased) == 1
-    assert painted[0][0:2] == (1, 0)
-    assert L.vlen(L.row_text(painted[0][2])) == 12
-    assert "AB界e\u0301" in L.row_text(painted[0][2])
+    assert painted[0][0:2] == (1, 2)
+    assert L.vlen(L.row_text(painted[0][2])) == 4
+    assert "界e\u0301" in L.row_text(painted[0][2])
     assert painter.draw(base, [], 8, 3) == (0, 1, 2)
     assert len(erased) == 2
     painter.invalidate()

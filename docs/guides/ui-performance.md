@@ -6,6 +6,7 @@ Tower 4.3.1 introduced the cached pointer display and bounded long inline views.
 Tower 4.4.0 retains that path for draggable workspaces, shared launch groups, history browsers, and Quick Advisor.
 Tower 4.5.0 extends it to current-viewport directional focus and metric crosshair feedback.
 Tower 4.7.0 adds pane scrollbars, pinned rendered-line selections, and finer continuous Braille curves.
+Tower 4.8.2 separates protocol-safe pointer input from keyboard shortcuts and repaints changed cells.
 Theme changes repaint the document with the selected canvas and surfaces.
 Live metric windows use display deadlines while source sampling retains its own limits.
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
@@ -32,7 +33,7 @@ See [Mouse and button navigation](pointer-navigation.md) for the complete contro
 ## Keep the display responsive
 
 Tower retains the last published page while pointer feedback changes.
-It updates the affected terminal rows instead of rebuilding the whole page for each movement report.
+It updates the affected terminal cells instead of rebuilding the whole page for each movement report.
 The page still refreshes for changed data, deliberate input, resize, and active animations.
 Continuous pointer movement does not postpone background-result publication.
 
@@ -59,6 +60,13 @@ Running-job metric series are read only for cards in that window.
 Long notes and suggested SBATCH flags remain available at narrow widths.
 Metric charts retain bounded prepared data for the current view.
 Caches have fixed bounds and do not retain unlimited jobs, views, or terminal sizes.
+Native curve rasters compare the complete values, timestamps, scale, style, and sampling settings.
+Interior sample corrections invalidate the raster without relying on a changed point count.
+Source age, axes, live controls, and exact job identity still publish on each document update.
+The raster cache retains at most 64 entries, 512,000 combined values and timestamps, and 65,536 display cells.
+These bounds accommodate native and trace curves for four GPUs in the tested display sizes.
+Native Jobs rows reuse one bounded prepared table while grouping, selection, and progress animation remain current.
+Custom plugin and action callbacks retain their original calculation path.
 
 Clicks, keyboard commands, and mouse releases retain their input order.
 Drag selection keeps exact job IDs.
@@ -204,11 +212,45 @@ The hover result is a three-burst median; each other row describes one observed 
 These observations include queued input and exclude SSH transport and terminal-emulator presentation.
 They show bounded cached feedback and fewer wheel updates in this fixture, not a universal improvement for every workload.
 
+## Tower 4.8.2 pointer measurements
+
+The comparison used Tower 4.8.1 at `f5c2a3e` and the final 4.8.2 source on the same Python 3.12 Linux runner.
+Each revision processed 300 movements across the selected job row and its Details graphs.
+The fixture contained 1,000 jobs, 3,000 history records, and 4,000 native samples in a 200-column by 60-row display.
+Both revisions used the same benchmark and a counting paint sink.
+
+| Workload or operation | 4.8.1 | 4.8.2 |
+| --- | ---: | ---: |
+| Unicode hover frame, median | 2.42 ms | 1.30 ms |
+| ASCII hover frame, median | 2.32 ms | 1.28 ms |
+| Unicode paint calls per frame, median | 1,363 | 12.5 |
+| Unicode painted cells per frame, median | 2,713 | 98 |
+| ASCII painted cells per frame, median | 2,714 | 141 |
+| Prepared job rows on unchanged maintenance | 1,000 | 0 |
+| Native rasters on unchanged maintenance | 2 | 0 |
+
+The Unicode 95th percentile changed from 3.84 ms to 4.57 ms in this pair.
+The ASCII 95th percentile changed from 4.71 ms to 2.25 ms.
+The median and write counts improved; this run does not establish an improvement for every frame.
+No scheduler, file, or worker I/O occurred during the measured frames.
+The times exclude terminal transport and terminal-emulator presentation.
+
+A separate four-GPU fixture tested native and trace sources together.
+It contained 36 curve and area rasters in Jobs Details.
+Changing only the old cache bounds to the release bounds reduced unchanged raster calls from 36 to zero.
+Observed maintenance composition decreased from 138.73 ms to 46.70 ms in that fixture.
+The source values, chart cards, live controls, and graph geometry remained available.
+
 ## Validate a source change
 
 Use the reproducible benchmark to measure UI work on your computer:
 
 ```bash
+python3 scripts/benchmark_ui.py \
+  --scenario jobs --gesture chart-hover \
+  --jobs 1000 --history 3000 --points 4000 --width 200 --height 60 \
+  --glyphs both --repeats 300 --output jobs-graph-hover.json
+
 python3 scripts/benchmark_ui.py \
   --scenario advisor --gesture hover \
   --jobs 500 --history 2000 --width 120 --height 36 \
@@ -226,6 +268,9 @@ Its times exclude terminal and network transport.
 The report includes median and 95th-percentile frame times, work counts, and attempted I/O.
 Use identical options on the same computer when comparing revisions.
 Use `--scenario research --metrics 64 --points 10000` to exercise metric charts.
+Use `--scenario analytics --gesture chart-hover` to exercise native Analytics curves.
+Jobs `chart-hover` alternates between the selected job row and its published Details graphs.
+The benchmark rejects a changed page or selected job during that crossing.
 Use `--gesture render` to measure a full document refresh.
 Use `--source-root PATH --label REVISION` to benchmark a separate source checkout.
 

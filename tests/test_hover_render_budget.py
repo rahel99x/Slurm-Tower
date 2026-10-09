@@ -185,3 +185,69 @@ def test_unicode_width_cache_is_bounded_and_long_log_lines_are_not_retained():
     assert L.vlen("界" * 10000) == 20000
     assert L._short_unicode_width.cache_info() == before
     assert L.vlen("ASCII" * 10000) == 50000
+
+
+def test_hover_lookup_skips_tall_controls_from_unrelated_rows(monkeypatch):
+    controls = tuple(ui.Control(str(index), "rail", ui.Rect(index * 4, 5, index * 4 + 3, 8),
+                                ("key", "enter")) for index in range(1000))
+    graph = ui.Graph(controls, (), 80, 4000, 1)
+    calls = []
+    original = ui.Rect.contains
+
+    def contains(rect, y, x):
+        calls.append(rect)
+        return original(rect, y, x)
+
+    monkeypatch.setattr(ui.Rect, "contains", contains)
+    assert graph.at(333, 6).id == "83"
+    assert len(calls) <= 11
+    # Sparse storage keeps a tall rail once, including on very tall terminals.
+    assert len(graph._spanning) == len(controls)
+
+
+def test_empty_direct_control_rectangles_do_not_create_recursive_span_indexes():
+    controls = (ui.Control("empty", "empty", ui.Rect(5, 1, 5, 8), ("key", "enter")),
+                ui.Control("inverted", "inverted", ui.Rect(7, 1, 2, 8), ("key", "enter")))
+    graph = ui.Graph(controls, (), 80, 40, 1)
+    assert graph.at(3, 4) is None
+    assert graph.at(5, 4) is None
+
+
+def test_sparse_interval_hit_lookup_keeps_exact_layer_area_and_paint_order():
+    import random
+
+    randomizer = random.Random(713)
+    controls = []
+    for index in range(160):
+        top, left = randomizer.randrange(40), randomizer.randrange(70)
+        rect = ui.Rect(top, left, top + randomizer.randrange(1, 12), left + randomizer.randrange(1, 12))
+        controls.append(ui.Control(str(index), str(index), rect, ("key", "enter"),
+                                   button=bool(index % 2), layer=index % 5))
+    graph = ui.Graph(tuple(controls), (), 90, 60, 1)
+    for y in range(60):
+        for x in range(0, 90, 3):
+            matching = [(control.layer, control.button,
+                         -(control.rect.right - control.rect.left) * (control.rect.bottom - control.rect.top),
+                         -index, control)
+                        for index, control in enumerate(controls) if control.rect.contains(y, x)]
+            expected = max(matching, key=lambda item: item[:4])[-1] if matching else None
+            assert graph.at(y, x) is expected
+
+
+def test_hover_viewport_signature_does_not_materialize_long_preference_collections():
+    class BoundedSequence:
+        def __init__(self, limit):
+            self.limit = limit
+            self.visited = 0
+
+        def __iter__(self):
+            for index in range(100000):
+                self.visited += 1
+                assert self.visited <= self.limit
+                yield str(index)
+
+    app = application()
+    hidden, order, collapsed = BoundedSequence(64), BoundedSequence(64), BoundedSequence(256)
+    app.table_state = {"hidden": {"jobs": hidden}, "order": {"jobs": order}, "collapsed": collapsed}
+    ui._viewport(app)
+    assert hidden.visited == 64 and order.visited == 64 and collapsed.visited == 256

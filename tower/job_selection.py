@@ -187,7 +187,10 @@ def _order(app):
 
 
 def _hit(app, y, x):
-    if x < 0 or x >= getattr(app, "width", 120):
+    if any(type(value) is not int for value in (y, x)):
+        return None
+    if not (0 <= x < getattr(app, "width", 120)
+            and 0 <= y < getattr(app, "height", 100000)):
         return None
     if getattr(app, "tab", "") == "jobs":
         from .job_panels import contains
@@ -250,6 +253,9 @@ def _range(app, capture, identifier):
 def handle_mouse(app, y, x, button="left", shift=False):
     state = initialize(app)
     capture = state["capture"]
+    if any(type(value) is not int for value in (y, x)):
+        state["capture"] = None
+        return bool(capture)
     if capture:
         if not _valid(app, capture):
             state["capture"] = None

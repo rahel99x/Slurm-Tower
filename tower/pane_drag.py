@@ -48,8 +48,10 @@ class Divider:
 def initialize(app):
     state = getattr(app, "pane_drag_state", None)
     if not isinstance(state, dict):
-        state = {"dividers": {}, "capture": None, "focus": None, "focus_context": None, "size": None}
+        state = {"dividers": {}, "capture": None, "focus": None, "focus_context": None, "size": None,
+                 "discard_release": False}
         app.pane_drag_state = state
+    state.setdefault("discard_release", False)
     return state
 
 
@@ -69,6 +71,7 @@ def _restore_capture(state):
     if capture:
         capture["setter"](capture["original"])
         state["capture"] = None
+        state["discard_release"] = True
 
 
 def begin_frame(app, width, height):
@@ -215,14 +218,29 @@ def _bounded_button(app, y, x):
 
 
 def handle_mouse(app, y, x, button="left", shift=False):
+    if any(type(value) is not int for value in (y, x)):
+        return False
     state = initialize(app)
     capture = state["capture"]
+    if button in ("press", "left"):
+        state["discard_release"] = False
+    if button == "right":
+        # A context/deselect gesture ends an unfinished resize. Later hover
+        # must not resume resizing after the user has cancelled the gesture.
+        _restore_capture(state)
+        blur(app)
+        return False
+    if button == "release" and not capture and state["discard_release"]:
+        state["discard_release"] = False
+        return True
     if button in ("wheel-up", "wheel-down") and not capture:
         blur(app)
         return False
     if capture:
         if not _valid(app, capture):
             _restore_capture(state)
+            if button in ("release", "press", "left"):
+                state["discard_release"] = False
             return button in ("motion", "drag", "release")
         if button in ("motion", "drag", "release"):
             coordinate = x if capture["axis"] == "vertical" else y
@@ -236,11 +254,13 @@ def handle_mouse(app, y, x, button="left", shift=False):
                 capture["current"] = value
             if button == "release":
                 state["capture"] = None
+                state["discard_release"] = False
                 if capture["current"] != capture["original"]:
                     _save(app)
             return True
         if button in ("press", "left"):
             _restore_capture(state)
+            state["discard_release"] = False
         else:
             return False
     if (button not in ("press", "left") or _blocked(app) or
@@ -270,6 +290,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
                         "pointer": x if divider.axis == "vertical" else y,
                         "original": divider.value, "current": divider.value,
                         "setter": divider.setter}
+    state["discard_release"] = False
     return True
 
 

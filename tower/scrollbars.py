@@ -253,6 +253,11 @@ def _thumb(pane):
 
 def _set(app, pane, target):
     target = max(0, min(pane.limit, int(target)))
+    current = manual(app, pane.key, context=pane.context)
+    if current is not None and target == current:
+        # Many terminal reports land in the same thumb cell. They must not
+        # mark the entire document dirty or restart smoothing needlessly.
+        return
     pane.setter(target)
     set_manual(app, pane.key, target, context=pane.context)
     scrolling.note_input(app, 'wheel')
@@ -329,6 +334,8 @@ def handle_mouse(app, y, x, button='left', shift=False, *, rail_only=False):
             return True
         else:
             cancel(app)
+    if button in ('press', 'left'):
+        state['discard_release'] = False
     if button == 'release' and state['discard_release']:
         state['discard_release'] = False
         return True

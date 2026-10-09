@@ -219,16 +219,31 @@ def handle_key(app, key):
 def handle_mouse(app, y, x, button="left", shift=False):
     if getattr(app, "tab", "") != "jobs" or getattr(app, "mode", "main") != "main":
         return False
+    if any(type(value) is not int for value in (y, x)):
+        return False
+    if not (0 <= x < getattr(app, "width", 120)
+            and 0 <= y < getattr(app, "height", 100000)):
+        return False
     state = initialize(app)
     for row, kind, value in getattr(app, "last_hits", []):
         if row != y or kind not in ("job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"):
             continue
+        # A resize or job change can precede the next document publication.
+        # Old Details controls must not act on the Main pane underneath them.
+        if not contains(app, y, x):
+            continue
+        if not isinstance(value, (tuple, list)) or len(value) != 3:
+            continue
         target, left, right = value
+        if type(left) is not int or type(right) is not int:
+            continue
         if left <= x < right:
             if button == "left":
                 if kind == "job_panel_tab":
                     _activate(app, target)
                 elif kind == "job_panel_view":
+                    if not isinstance(target, str) or ":" not in target:
+                        return True
                     group, view = target.split(":", 1)
                     _activate(app, group, view=view)
                 elif kind == "job_panel_action":
@@ -813,6 +828,8 @@ def _quick(views, app, job, width):
 def _content_action(app, target):
     """Dispatch explicit content actions in their exact-job rendering context."""
     state = initialize(app)
+    if not isinstance(target, (tuple, list)) or len(target) != 2:
+        return False
     kind, value = target
     if kind in ("quick_refresh", "quick_cancel"):
         if value != getattr(app, "selected_id", None) or state["mode"] != "quick":
@@ -837,7 +854,8 @@ def _content_action(app, target):
         return True
     retained = state["view_states"].get(_view_key(state), {})
     proxy = retained.get("proxy")
-    if proxy is None or state.get("job") != getattr(proxy, "selected_id", None):
+    if (proxy is None or state.get("job") != getattr(proxy, "selected_id", None)
+            or state.get("job") != getattr(app, "selected_id", None)):
         return False
     if kind == "research_array":
         ids = [item["id"] for item in proxy.research_groups]

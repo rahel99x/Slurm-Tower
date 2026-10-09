@@ -14,7 +14,7 @@ import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from .model import stamp
+from .model import Finished, Job, stamp
 
 BURST_SECONDS = 10
 MAX_ID_GAP = 1
@@ -203,9 +203,10 @@ def _evidence(record, snap, previous=None, inherit=()):
                      explicit, structural)
 
 
-def _input(record, jid, snap):
+def _input(record, jid, snap, *, details_map=None, tags_map=None):
     """Cheap exact field comparison before parsing or constructing evidence."""
-    source = record if isinstance(record, dict) or callable(getattr(record, "get", None)) else getattr(record, "__dict__", None)
+    native = type(record) is Job or type(record) is Finished
+    source = record.__dict__ if native else (record if isinstance(record, dict) or callable(getattr(record, "get", None)) else getattr(record, "__dict__", None))
     if source is None:
         fields = tuple(getattr(record, key, _MISSING) for key in _RECORD_FIELDS)
     else:
@@ -215,7 +216,8 @@ def _input(record, jid, snap):
                   get("workdir", _MISSING), get("command", _MISSING),
                   get("TowerLaunchId", _MISSING), get("LaunchId", _MISSING),
                   get("LaunchGroup", _MISSING), get("JobGroup", _MISSING))
-    details = snap.get("details", _EMPTY_MAP).get(jid, _EMPTY_MAP)
+    details_map = snap.get("details", _EMPTY_MAP) if details_map is None else details_map
+    details = details_map.get(jid, _EMPTY_MAP)
     if not details or not (isinstance(details, dict) or isinstance(details, Mapping)):
         values = _EMPTY_VALUES
     else:
@@ -224,7 +226,8 @@ def _input(record, jid, snap):
                   get("Command", _MISSING), get("SubmitTime", _MISSING), get("Cluster", _MISSING),
                   get("TowerLaunchId", _MISSING), get("LaunchId", _MISSING),
                   get("LaunchGroup", _MISSING), get("JobGroup", _MISSING))
-    tags = snap.get("tags", _EMPTY_MAP).get(jid, _EMPTY_MAP)
+    tags_map = snap.get("tags", _EMPTY_MAP) if tags_map is None else tags_map
+    tags = tags_map.get(jid, _EMPTY_MAP)
     tags = tags.get("tags", ()) if isinstance(tags, dict) or isinstance(tags, Mapping) else ()
     tags = tuple(tags) if isinstance(tags, (list, tuple, set, frozenset)) else ()
     return fields, values, tags, type(record)
@@ -243,14 +246,23 @@ class Registry:
 
     def ensure(self, snap):
         records = _records(snap)
-        evidence, inputs = {}, {}
-        changed = len(records) != len(self._inputs)
+        updates = {}
+        details_map, tags_map = snap.get("details", _EMPTY_MAP), snap.get("tags", _EMPTY_MAP)
         for jid, record in records.items():
-            value = inputs[jid] = _input(record, jid, snap)
-            if jid in self._evidence and self._inputs.get(jid) == value:
-                evidence[jid] = self._evidence[jid]
+            value = _input(record, jid, snap, details_map=details_map, tags_map=tags_map)
+            if self._inputs.get(jid, _MISSING) != value:
+                updates[jid] = value
+        # Every input is still compared, including in-place field corrections.
+        # An unchanged maintenance frame does not allocate and populate two
+        # full inference dictionaries only to throw them away afterwards.
+        if not updates and len(records) == len(self._inputs) and self._fingerprint is not None:
+            return self.index
+        evidence, inputs = {}, {}
+        for jid, record in records.items():
+            if jid not in updates:
+                inputs[jid], evidence[jid] = self._inputs[jid], self._evidence[jid]
             else:
-                changed = True
+                value = inputs[jid] = updates[jid]
                 previous = self._evidence.get(jid)
                 fields, values, tags, record_type = value
                 old_input = self._inputs.get(jid)
@@ -268,10 +280,6 @@ class Registry:
                               and not all(isinstance(fields[index], str) and fields[index]
                                           for index in (4, 5, 6, 7)))
                 evidence[jid] = None if impossible else _evidence(record, snap, previous, inherited)
-        # Equality checks exact relevant content, including in-place detail,
-        # command, submit, and tag corrections; Store revision alone is unsafe.
-        if not changed and self._fingerprint is not None:
-            return self.index
         self._inputs = inputs
         if evidence == self._evidence and self._fingerprint is not None:
             return self.index

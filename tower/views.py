@@ -213,6 +213,8 @@ class Views:
         self.files = files or LocalFiles()
         self._preview_cache = OrderedDict()
         self._preview_pending = set()
+        from .metric_raster import MetricRasterCache
+        self._metric_rasters = MetricRasterCache()
         self.history_advice_cache = advisor.HistoryAdviceCache()
         self.plugins = plugins                             # PluginAPI or None: extra tabs and flags
         self.extra_tabs: Dict[str, object] = {}
@@ -283,9 +285,9 @@ class Views:
                               if charts._finite(timestamp) is not None and bounds[0] <= timestamp <= bounds[1]]
             if not zoom and not captured and options.get("hi") is None:
                 options["lo"], options["hi"] = charts._bounds(visible_values, options.get("lo", 0.0), None)
-        metadata = {}
-        painter = charts.vbar_chart if filled else charts.braille_chart
-        rows = painter(self.g, values, width, height, metadata=metadata, **options)
+        rows, metadata = self._metric_rasters.render(
+            self.g, values, width, height, filled=filled,
+            theme=getattr(getattr(app, "_chart_owner", app), "theme", ""), **options)
         if options.get("title") and visible_values is not None and rows:
             rows[0] = charts._header(self.g, visible_values, width, options["title"],
                                      options.get("unit", ""), options.get("indent", "   "))
@@ -636,6 +638,11 @@ class Views:
         cascade = chain(app, "jobs")
         from .job_progress import published, observation
         progress_sources = published(app, snap)
+        from .job_row_cache import lookup, remember
+        cache_key, cached_rows = lookup(self, snap, app, actions, progress_sources, cascade)
+        if cached_rows is not None:
+            from .table_ui import group_rows
+            return group_rows(app, cached_rows, snap)
         rows = []
         for j in snap["jobs"]:
             if not matches(app, "jobs", j, snap):
@@ -714,6 +721,7 @@ class Views:
             else:
                 rows = [r for r in rows if flt in r["name"].lower() or flt in r["id"].lower() or flt in r["part"].lower() or flt in r["info"].lower() or flt in r["tags"].lower()]
         from .table_ui import group_rows
+        remember(self, app, cache_key, rows)
         return group_rows(app, rows, snap)
 
     def selected_panel(self, snap: dict, j: Optional[Job], width: int, log_lines: int, app) -> List[Row]:

@@ -1835,7 +1835,56 @@ class App:
 
         Shift-click extends text selection; other right-clicks clear selections.
         """
-        self.last_hits = list(hits)
+        # A pointer report must never replace the frame's published hit map.
+        # In particular, a late event can retain rows from a previous tab or
+        # an inline Research view after the selected job has changed.
+        if any(type(value) is not int for value in (y, x)):
+            return
+        from .interaction import initialize as pointer_state, _current as current_graph, _scope as pointer_scope
+        pointer = pointer_state(self)
+        published_graph = pointer.get("graph")
+        fresh_activation = button in ("press", "left")
+        if fresh_activation and (not isinstance(hits, Sequence) or
+                                 isinstance(hits, (str, bytes, bytearray)) or
+                                 any(not isinstance(hit, (tuple, list)) or len(hit) != 3
+                                     for hit in hits)):
+            return
+        if fresh_activation and not (0 <= x < self.width and
+                                     0 <= y < getattr(self, "height", 100000)):
+            return
+        content_current = True
+        tab_target = None
+        if fresh_activation and published_graph is not None:
+            # A selected row changes the Details identity without moving the
+            # global tabs. They remain usable until the next content frame.
+            tab_frame_current = (published_graph.scope == pointer_scope(self) and
+                                 all(getattr(self, name, None) == expected for name, expected in
+                                     zip(("width", "height"), published_graph.observed_geometry)))
+            if self.mode == "main" and tab_frame_current:
+                tab_target = next((key for ty, left, right, key in self.tab_hits
+                                   if y == ty and left <= x < right), None)
+            from .interaction import hit_token
+            published_hit_token = pointer.get("published_hit_token")
+            content_current = (current_graph(self) is not None and
+                               published_hit_token is not None and
+                               hit_token(hits) == published_hit_token)
+        if fresh_activation and content_current:
+            # Published tokens above bind supplied maps to the real frame;
+            # unpublished/headless renderers retain the original row API.
+            self.last_hits = list(hits)
+        if fresh_activation:
+            # A new gesture supersedes every earlier owner's cancelled release.
+            # The new owner can claim the press before lower-priority handlers
+            # run; their old markers must not steal its eventual release.
+            for name, marker in (("scrollbar_state", "discard_release"),
+                                 ("pane_drag_state", "discard_release"),
+                                 ("history_browser_state", "discard_release"),
+                                 ("text_selection_state", "discard_release"),
+                                 ("chart_interaction_state", "cancelled_release"),
+                                 ("metric_live_state", "cancelled_release")):
+                state = getattr(self, name, None)
+                if isinstance(state, dict):
+                    state[marker] = False
         if button in ("press", "left"):
             from .scrollbars import commit_selection_gesture
             commit_selection_gesture(self)
@@ -1877,6 +1926,13 @@ class App:
             chart_interaction.cancel(self)
             metric_live.cancel(self)
             return
+        if tab_target is not None and not shift:
+            self.enter_tab(tab_target)
+            return
+        if fresh_activation and not content_current:
+            # Global controls validate their own published tokens above.
+            # Content controls and native row fallbacks require this frame.
+            return
         from .text_selection import handle_mouse as text_mouse
         if getattr(self, "text_selection_state", {}).get("explicit") and text_mouse(self, y, x, button=button, shift=shift):
             return
@@ -1912,6 +1968,11 @@ class App:
         elif button in ("motion", "drag", "release") and self.mode != "terminal_probe":
             return
         if workbench.handle_mouse(self, y, x, button, shift):
+            return
+        if button != "left":
+            # Motion and release belong to captures, while wheels and other
+            # buttons belong to their explicit handlers. None may activate a
+            # tab, sort header, row, file, or Research link through fallthrough.
             return
         from .table_tools import handle_click_hit
         if handle_click_hit(self, y, x, hits, button=button, shift=shift):

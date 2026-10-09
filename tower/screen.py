@@ -32,8 +32,18 @@ _ESCAPE_KEYS = {"\x1b[1;5D": "ctrl-left", "\x1b[1;5C": "ctrl-right",
                 "\x1bb": "alt-b", "\x1bf": "alt-f", "\x1bd": "alt-d",
                 "\x1bu": "alt-u", "\x1br": "alt-r", "\x1b\x7f": "alt-backspace",
                 "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left"}
+_ESCAPE_KEYS.update({"\x1b[H": "home", "\x1b[F": "end", "\x1b[Z": "btab",
+                     "\x1b[1~": "home", "\x1b[4~": "end", "\x1b[7~": "home", "\x1b[8~": "end",
+                     "\x1b[3~": "delete", "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
+                     "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right", "\x1bOD": "left",
+                     "\x1bOH": "home", "\x1bOF": "end", "\x1bOP": "f1", "\x1bOQ": "f2",
+                     "\x1bOR": "f3", "\x1bOS": "f4"})
 _PASTE_START, _PASTE_END = "\x1b[200~", "\x1b[201~"
 _SGR_MOUSE = re.compile(r"\x1b\[<(\d{1,5});(\d{1,5});(\d{1,5})([Mm])\Z", re.ASCII)
+_URXVT_MOUSE = re.compile(r"\x1b\[(\d{1,5});(\d{1,5});(\d{1,5})M\Z", re.ASCII)
+_SGR_PREFIX = re.compile(r"\x1b\[<[0-9;]*\Z", re.ASCII)
+_CSI_PREFIX = re.compile(r"\x1b\[[0-?]*[ -/]*\Z", re.ASCII)
+_CSI_COMPLETE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]\Z", re.ASCII)
 _ESCAPE_KEYS.update({"\x1b" + chr(code): "alt-" + chr(code) for code in range(ord("a"), ord("z") + 1)})
 for _modifier, _number in (("alt", 3), ("ctrl", 5)):
     for _suffix, _key in (("A", "up"), ("B", "down"), ("C", "right"), ("D", "left"), ("H", "home"), ("F", "end")):
@@ -42,6 +52,8 @@ for _modifier, _number in (("alt", 3), ("ctrl", 5)):
         _ESCAPE_KEYS[f"\x1b[{_code};{_number}~"] = f"{_modifier}-{_key}"
 _ESCAPE_KEYS["\x1b[127;5u"] = "ctrl-backspace"
 del _modifier, _number, _suffix, _key, _code
+_ESCAPE_PREFIXES = frozenset(sequence[:end] for sequence in (*_ESCAPE_KEYS, _PASTE_START)
+                             for end in range(1, len(sequence)))
 
 
 class _InputReader:
@@ -55,24 +67,46 @@ class _InputReader:
         self.text = []
         self.queue = deque()
         self.discard_mouse = False
+        self.mouse_tail = False
+        self.discard_csi = False
 
     def read(self, curses):
         if self.queue:
             return self.queue.popleft()
-        deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting or self.discard_mouse else None
+        deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting or self.discard_mouse or self.mouse_tail or self.discard_csi else None
         for _ in range(256):
             try:
                 value = self.window.get_wch()
             except curses.error:
-                if self.discard_mouse and time.monotonic() - self.escape_time >= .03:
-                    self.discard_mouse = False
                 if self.escape and time.monotonic() - self.escape_time >= .03:
-                    pending, self.escape = self.escape, ""
+                    pending = self.escape
                     if pending.startswith("\x1b[<"):
+                        self.escape = ""
+                        self.mouse_tail = True
                         return None, None  # Incomplete reports never become commands.
+                    if pending.startswith("\x1b["):
+                        # A delayed X10/numeric report must keep its prefix:
+                        # its coordinates can be ordinary shortcut letters.
+                        return None, None
+                    self.escape = ""
                     self.queue.extend((key_name(ch, curses), None) for ch in pending[1:])
                     return "esc", None
                 return None
+            if self.mouse_tail:
+                # A timed-out SGR report can resume in a later input batch.
+                # Discard its numeric suffix but preserve a subsequent key.
+                if isinstance(value, str) and ((value.isascii() and value.isdigit()) or value == ";"):
+                    continue
+                self.mouse_tail = False
+                if value in ("M", "m"):
+                    continue
+            if self.discard_csi:
+                if value == "\x1b":
+                    self.discard_csi = False
+                    self.escape, self.escape_time = value, time.monotonic()
+                elif isinstance(value, str) and "@" <= value <= "~":
+                    self.discard_csi = False
+                continue
             if self.discard_mouse:
                 if value in ("M", "m"):
                     self.discard_mouse = False
@@ -96,7 +130,17 @@ class _InputReader:
             elif self.escape:
                 char = value if isinstance(value, str) else ""
                 candidate = self.escape + char
-                if candidate.startswith("\x1b[<"):
+                if char == "\x1b":
+                    self.escape, self.escape_time = char, time.monotonic()
+                elif candidate.startswith("\x1b[M"):
+                    # Legacy X10 reports encode three raw characters. A
+                    # coordinate such as 'r' is data, never a Research key.
+                    if len(candidate) < 6:
+                        self.escape = candidate
+                    else:
+                        self.escape = ""
+                        return "mouse", _x10_mouse(candidate, curses)
+                elif candidate.startswith("\x1b[<"):
                     # Some tmux/screen terminfo entries advertise legacy X10
                     # input even though the terminal supports requested SGR.
                     # Decode fragmented reports without executing their bytes.
@@ -104,7 +148,7 @@ class _InputReader:
                     if match:
                         self.escape = ""
                         return "mouse", _sgr_mouse(match, curses)
-                    if len(candidate) <= 23 and re.fullmatch(r"\x1b\[<[0-9;]*", candidate, re.ASCII):
+                    if len(candidate) <= 23 and _SGR_PREFIX.fullmatch(candidate):
                         self.escape = candidate
                     else:
                         self.escape = ""
@@ -117,8 +161,24 @@ class _InputReader:
                 elif candidate in _ESCAPE_KEYS:
                     self.escape = ""
                     return _ESCAPE_KEYS[candidate], None
-                elif any(seq.startswith(candidate) for seq in (*_ESCAPE_KEYS, _PASTE_START)):
+                elif candidate in _ESCAPE_PREFIXES:
                     self.escape = candidate
+                elif _URXVT_MOUSE.fullmatch(candidate):
+                    self.escape = ""
+                    match = _URXVT_MOUSE.fullmatch(candidate)
+                    code, x, y = (int(match.group(index)) for index in (1, 2, 3))
+                    return "mouse", _mouse_report(code - 32, x, y, "M", curses)
+                elif _CSI_COMPLETE.fullmatch(candidate):
+                    # Unknown terminal control sequences are indivisible;
+                    # replaying their bytes can activate unrelated shortcuts.
+                    self.escape = ""
+                    return None, None
+                elif len(candidate) <= 64 and _CSI_PREFIX.fullmatch(candidate):
+                    self.escape = candidate
+                elif candidate.startswith("\x1b["):
+                    self.escape = ""
+                    self.discard_csi = not (char and "@" <= char <= "~")
+                    return None, None
                 else:
                     self.escape = ""
                     self.queue.extend((key_name(ch, curses), None) for ch in candidate[1:])
@@ -141,22 +201,47 @@ class _InputReader:
         return None
 
 
+class MouseReport(tuple):
+    """Curses-compatible report with explicit held-button evidence when known.
+
+    Native curses tuples cannot distinguish omitted button bits from a lost
+    release. Decoded terminal protocols can, without changing the tuple API.
+    """
+
+    def __new__(cls, values, *, held=None):
+        result = super().__new__(cls, values)
+        result.held = held
+        return result
+
+
 def _sgr_mouse(match, curses):
     code, x, y = (int(match.group(index)) for index in (1, 2, 3))
-    if code > 255 or x < 1 or y < 1:
+    return _mouse_report(code, x, y, match.group(4), curses)
+
+
+def _x10_mouse(report, curses):
+    if len(report) != 6 or any(ord(char) < 32 for char in report[3:]):
+        return None
+    code, x, y = (ord(char) - 32 for char in report[3:])
+    return _mouse_report(code, x, y, "M", curses)
+
+
+def _mouse_report(code, x, y, ending, curses):
+    if code < 0 or code > 127 or x < 1 or y < 1:
         return None
     button = code & 3
     modifiers = sum(getattr(curses, flag, 0) for bit, flag in
                     ((4, "BUTTON_SHIFT"), (8, "BUTTON_ALT"), (16, "BUTTON_CTRL")) if code & bit)
     if code & 64:
         state = getattr(curses, "BUTTON4_PRESSED" if button == 0 else "BUTTON5_PRESSED", 0) if button < 2 else 0
-    elif match.group(4) == "m" or button == 3 and not code & 32:
+    elif ending == "m" or button == 3 and not code & 32:
         state = getattr(curses, f"BUTTON{button + 1 if button < 3 else 1}_RELEASED", 0)
     else:
         state = getattr(curses, f"BUTTON{button + 1}_PRESSED", 0) if button < 3 else 0
         if code & 32:
             state |= getattr(curses, "REPORT_MOUSE_POSITION", 0)
-    return 0, x - 1, y - 1, 0, state | modifiers
+    held = None if code & 64 else ending != "m" and button < 3
+    return MouseReport((0, x - 1, y - 1, 0, state | modifiers), held=held)
 
 
 def style_attr(style: str, theme: str, base: dict, colors: dict, bold: int) -> int:
@@ -374,15 +459,53 @@ def _navigation_context(app):
             panels.get("mode"), panels.get("focus"))
 
 
+def _motion_report(buttons, curses):
+    """Held-left reports are positions; completed clicks remain actions."""
+    actions = 0
+    for flag in ("BUTTON1_CLICKED", "BUTTON1_DOUBLE_CLICKED", "BUTTON1_RELEASED",
+                 "BUTTON3_CLICKED", "BUTTON3_PRESSED", "BUTTON4_PRESSED", "BUTTON5_PRESSED"):
+        actions |= getattr(curses, flag, 0)
+    return bool(buttons & getattr(curses, "REPORT_MOUSE_POSITION", 0) and not buttons & actions)
+
+
+def _finish_unheld_pointer(app, mouse, curses):
+    """A decoded no-button report ends gestures whose release was lost.
+
+    Bare native curses position tuples are deliberately inconclusive: some
+    drivers omit held bits during a valid drag. Preserve their capture path.
+    """
+    if getattr(mouse, "held", None) is not False or not _motion_report(mouse[4], curses):
+        return
+    selection = getattr(app, "job_selection_state", {}) or {}
+    text = getattr(app, "text_selection_state", {}) or {}
+    if selection.get("capture") or text.get("capture"):
+        from .scrollbars import commit_selection_gesture
+        commit_selection_gesture(app)
+    if (getattr(app, "chart_interaction_state", {}) or {}).get("capture"):
+        from .chart_interaction import cancel
+        cancel(app)
+    if (getattr(app, "metric_live_state", {}) or {}).get("capture"):
+        from .metric_live import cancel
+        cancel(app)
+    if (getattr(app, "pane_drag_state", {}) or {}).get("capture"):
+        from .pane_drag import cancel
+        cancel(app)
+    if (getattr(app, "scrollbar_state", {}) or {}).get("capture"):
+        from .scrollbars import cancel
+        cancel(app)
+    if (getattr(app, "history_browser_state", {}) or {}).get("drag"):
+        from .history_browser import handle_key
+        handle_key(app, "esc")
+    toolbar = getattr(app, "toolbar_state", {}) or {}
+    if toolbar.get("dragging") or toolbar.get("pressed"):
+        toolbar.update(dragging=False, pressed=False, drag_width=None)
+
+
 def _batchable_input(app, event, curses):
     name, mouse = event
     # Passive movement has no document action, including over a modal. Keeping
     # it outside the navigation whitelist avoids one modal render per report.
-    if (name == "mouse" and mouse is not None and
-            mouse[4] & getattr(curses, "REPORT_MOUSE_POSITION", 0) and
-            not mouse[4] & (getattr(curses, "BUTTON1_RELEASED", 0) |
-                            getattr(curses, "BUTTON4_PRESSED", 0) |
-                            getattr(curses, "BUTTON5_PRESSED", 0))):
+    if name == "mouse" and mouse is not None and _motion_report(mouse[4], curses):
         return True
     mode = app.mode
     traversal = (mode in ("session_inbox", "log_tools_page", "log_tools_results", "log_tools_marks",
@@ -410,7 +533,7 @@ def _batchable_input(app, event, curses):
     # the current frame; a release cannot disappear into a hover burst.
     if buttons & getattr(curses, "BUTTON1_RELEASED", 0):
         return False
-    if buttons & getattr(curses, "REPORT_MOUSE_POSITION", 0):
+    if _motion_report(buttons, curses):
         return True
     # Clicks use the hit map of the freshly painted frame. Wheels and passive
     # position reports can share a redraw without changing event order.
@@ -452,15 +575,16 @@ def _apply_input(app, event, hits, curses):
     if not getattr(app, "cfg", {}).get("mouse", True) and app.mode != "terminal_probe":
         return
     _, mx, my, _, bstate = mouse
+    _finish_unheld_pointer(app, mouse, curses)
     shift = bool(bstate & getattr(curses, "BUTTON_SHIFT", 0))
     from .toolbar import handle_mouse as toolbar_mouse
     button = ("wheel-up" if bstate & getattr(curses, "BUTTON4_PRESSED", 0) else
               "wheel-down" if bstate & getattr(curses, "BUTTON5_PRESSED", 0) else
               "release" if bstate & getattr(curses, "BUTTON1_RELEASED", 0) else
               "right" if bstate & (getattr(curses, "BUTTON3_CLICKED", 0) | getattr(curses, "BUTTON3_PRESSED", 0)) else
+              "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED) else
               "drag" if bstate & getattr(curses, "REPORT_MOUSE_POSITION", 0) and bstate & getattr(curses, "BUTTON1_PRESSED", 0) else
               "motion" if bstate & getattr(curses, "REPORT_MOUSE_POSITION", 0) else
-              "left" if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED) else
               "press" if bstate & curses.BUTTON1_PRESSED else "motion")
     from .scrolling import note_input, handle_wheel
     note_input(app, "wheel" if button.startswith("wheel-") else button)
@@ -573,16 +697,37 @@ def _apply_input(app, event, hits, curses):
     elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
         origin = app.tab
         from .job_panels import contains as in_job_panel
-        double_target = (not shift and app.mode == "main" and not in_job_panel(app, my, mx) and any(
-            y == my and ((origin == "jobs" and kind in ("job", "recent"))
-                         or (origin == "history" and kind == "fin")
-                         or (origin == "log" and app.logs.browser and kind == "log_file"))
-            for y, kind, _ in hits))
+        double_target = None
+        if (bstate & curses.BUTTON1_DOUBLE_CLICKED and not shift and app.mode == "main"
+                and type(mx) is int and type(my) is int
+                and 0 <= mx < getattr(app, "width", 100000)
+                and 0 <= my < getattr(app, "height", 100000)
+                and not in_job_panel(app, my, mx)):
+            double_target = next(((kind, key) for y, kind, key in hits
+                                  if y == my and ((origin == "jobs" and kind in ("job", "recent"))
+                                  or (origin == "history" and kind == "fin")
+                                  or (origin == "log" and app.logs.browser and kind == "log_file"))), None)
+            pointer = getattr(app, "interaction_state", {}) or {}
+            if double_target is not None and pointer.get("graph") is not None:
+                from .interaction import _current, hit_token
+                graph = _current(app)
+                kind, key = double_target
+                control = graph.get(f"{kind}:{key}") if graph is not None else None
+                pointed = graph.at(my, mx) if graph is not None else None
+                # Leading row-marker padding still belongs to the row, while
+                # another published button or empty space past its end does not.
+                if (control is None or control.rect.top != my or mx >= control.rect.right
+                        or (pointed is not None and pointed.id != control.id)
+                        or pointer.get("published_hit_token") is None
+                        or hit_token(hits) != pointer.get("published_hit_token")):
+                    double_target = None
         # Actual applications distinguish a held press from a completed click.
         # Small compatibility controllers without drag state retain left-click.
         pressed = button == "press" and hasattr(app, "job_selection_state")
         app.click(my, mx, hits, button="press" if pressed else "left", shift=shift)
-        if bstate & curses.BUTTON1_DOUBLE_CLICKED and double_target and app.tab == origin and app.mode == "main":
+        selected_target = (double_target is not None and
+                           (origin == "log" or getattr(app, "selected_id", None) == double_target[1]))
+        if bstate & curses.BUTTON1_DOUBLE_CLICKED and selected_target and app.tab == origin and app.mode == "main":
             app.handle("enter")
     elif bstate & getattr(curses, "BUTTON4_PRESSED", 0):
         for _ in range(3 if app.tab == "log" else 1):
@@ -616,17 +761,21 @@ def _consume_input_batch(app, stdscr, curses, hits, first, *, effects=None):
     def is_motion(value):
         if value[0] != "mouse" or value[1] is None:
             return False
-        buttons = value[1][4]
-        release_wheel = (getattr(curses, "BUTTON1_RELEASED", 0) |
-                         getattr(curses, "BUTTON4_PRESSED", 0) |
-                         getattr(curses, "BUTTON5_PRESSED", 0))
-        return bool(buttons & getattr(curses, "REPORT_MOUSE_POSITION", 0) and not buttons & release_wheel)
+        return _motion_report(value[1][4], curses)
 
     while event is not None:
         batchable = _batchable_input(app, event, curses)
         if batchable and is_motion(event):
             # Keep the latest position only. Drag selection and slider position
             # are functions of the endpoint, not of the number of reports.
+            if (motion is not None and getattr(event[1], "held", None) is False
+                    and (getattr(motion[1], "held", None) is True
+                         or motion[1][4] & getattr(curses, "BUTTON1_PRESSED", 0))):
+                # Apply the final held endpoint before a report proving the
+                # gesture ended; cancellation must retain its selected range.
+                apply(motion)
+                if app.quit or _navigation_context(app) != context or needs_frame(app):
+                    return event
             motion = event
         else:
             if motion is not None:
@@ -663,21 +812,10 @@ class _InputEffects:
         if name is None:
             return
         state = mouse[4] if name == "mouse" and mouse is not None else 0
-        deliberate = (getattr(curses, "BUTTON1_PRESSED", 0) |
-                      getattr(curses, "BUTTON1_CLICKED", 0) |
-                      getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0) |
-                      getattr(curses, "BUTTON1_RELEASED", 0) |
-                      getattr(curses, "BUTTON3_PRESSED", 0) |
-                      getattr(curses, "BUTTON3_CLICKED", 0) |
-                      getattr(curses, "BUTTON4_PRESSED", 0) |
-                      getattr(curses, "BUTTON5_PRESSED", 0))
-        hover = name == "mouse" and bool(state & getattr(curses, "REPORT_MOUSE_POSITION", 0)) and not state & deliberate
+        hover = name == "mouse" and _motion_report(state, curses)
         chart = getattr(app, "chart_interaction_state", {}) or {}
         live = getattr(app, "metric_live_state", {}) or {}
-        if ((chart.get("capture") or live.get("capture") or getattr(app, "text_selection_state", {}).get("capture")) and state & getattr(curses, "REPORT_MOUSE_POSITION", 0) and
-                not state & (getattr(curses, "BUTTON1_RELEASED", 0) |
-                             getattr(curses, "BUTTON4_PRESSED", 0) |
-                             getattr(curses, "BUTTON5_PRESSED", 0))):
+        if ((chart.get("capture") or live.get("capture") or getattr(app, "text_selection_state", {}).get("capture")) and hover):
             # Pointer feedback uses the published raster. Live slider motion
             # redraws its control immediately; its curve keeps a 10 Hz limit.
             return
@@ -694,15 +832,93 @@ class _InputEffects:
 
 
 class _DifferentialPainter:
-    """Paint changed physical rows and retain every overlay's original order."""
+    """Paint changed cells after composing overlays in their original order."""
 
     def __init__(self, window, paint):
         self.window, self.paint = window, paint
         self.previous = None
+        self.pixels = None
+        self.base_pixels = None
         self.geometry = None
 
     def invalidate(self):
         self.previous = None
+        self.pixels = None
+        self.base_pixels = None
+
+    @staticmethod
+    def _raster(layer, width, *, base=None):
+        cells = list(base) if base is not None else [(" ", "text+bg:canvas", 1)] * max(0, width)
+
+        def clear(x):
+            head = x
+            while head > 0 and cells[head][2] == 0:
+                head -= 1
+            _, style, size = cells[head]
+            for column in range(head, min(width, head + max(1, size))):
+                cells[column] = (" ", style, 1)
+
+        for left, row in layer:
+            x = left
+            for text, style in row:
+                for char in text:
+                    size = L.vlen(char)
+                    if not size:
+                        if 0 < x <= width:
+                            head = x - 1
+                            while head > 0 and cells[head][2] == 0:
+                                head -= 1
+                            prior, prior_style, prior_size = cells[head]
+                            cells[head] = (prior + char, prior_style, prior_size)
+                        continue
+                    if x >= width:
+                        break
+                    if x < 0 or x + size > width:
+                        x += size
+                        continue
+                    for column in range(x, x + size):
+                        clear(column)
+                    cells[x] = (char, style, size)
+                    for column in range(x + 1, x + size):
+                        cells[column] = ("", style, 0)
+                    x += size
+        return tuple(cells)
+
+    @staticmethod
+    def _changed_runs(before, after):
+        width = len(after)
+        dirty = [before is None or before[x] != after[x] for x in range(width)]
+        # A terminal cell in the middle of a wide glyph is not writable on
+        # its own. Include both halves of old and new glyphs before painting.
+        for x in range(width):
+            if not dirty[x]:
+                continue
+            for row in (before, after):
+                if row is None:
+                    continue
+                head = x
+                while head > 0 and row[head][2] == 0:
+                    head -= 1
+                for column in range(head, min(width, head + max(1, row[head][2]))):
+                    dirty[column] = True
+        left = 0
+        while left < width:
+            if not dirty[left]:
+                left += 1
+                continue
+            right = left + 1
+            while right < width and dirty[right]:
+                right += 1
+            segments = []
+            for text, style, size in after[left:right]:
+                if not size:
+                    continue
+                if segments and segments[-1][1] == style:
+                    segments[-1] = (segments[-1][0] + text, style)
+                else:
+                    segments.append((text, style))
+            yield left, segments
+            left = right
 
     def draw(self, rows, overlays, width, height, *, bar=None):
         layers = [[(0, tuple(rows[y]) if y < len(rows) else ())] for y in range(max(0, height))]
@@ -717,17 +933,27 @@ class _DifferentialPainter:
         if reset:
             self.window.erase()
         changed = []
+        pixels, base_pixels = [], []
         for y, layer in enumerate(current):
             if not reset and layer == self.previous[y]:
+                pixels.append(self.pixels[y])
+                base_pixels.append(self.base_pixels[y])
                 continue
-            changed.append(y)
-            # Filling the base clears a previous menu/longer line without
-            # erasing untouched rows or relying on terminal erase attributes.
-            _, base = layer[0]
-            self.paint(y, 0, L.fill_row(base, width, "text+bg:canvas"), width, height)
-            for x, row in layer[1:]:
+            # Pointer overlays usually move over an unchanged report. Reuse
+            # its base raster instead of re-reading every chart glyph.
+            base = (self.base_pixels[y] if not reset and layer[0] == self.previous[y][0]
+                    else self._raster(layer[:1], width))
+            base_pixels.append(base)
+            raster = self._raster(layer[1:], width, base=base) if len(layer) > 1 else base
+            pixels.append(raster)
+            runs = list(self._changed_runs(None if reset else self.pixels[y], raster))
+            if runs:
+                changed.append(y)
+            for x, row in runs:
                 self.paint(y, x, row, width, height)
         self.previous, self.geometry = current, (width, height)
+        self.pixels = tuple(pixels)
+        self.base_pixels = tuple(base_pixels)
         return tuple(changed)
 
 
@@ -840,7 +1066,7 @@ class _FrameCache:
         overlays = self.welcome + decorate_overlays(app, self.content + self.toolbar)
         from .chart_interaction import feedback as chart_feedback
         overlays += chart_feedback(app, ascii_=bool(getattr(getattr(views, "g", None), "ascii", False)),
-                                   rows=rows, overlays=overlays)
+                                   rows=rows, overlays=overlays, compact=True)
         from .chart_interaction import next_deadline
         self.next_selector = next_deadline(app)
         from .metric_live import feedback as live_feedback

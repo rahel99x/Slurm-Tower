@@ -1019,7 +1019,10 @@ def test_dependency_graph_tab_and_chain_actions(tmp_path):
     app.run_command("chain hold 12480005"); assert app.mode == "confirm" and [j.id for j in app.confirm["jobs"]] == ["12480005"]
     app.handle("n")
     app.run_command("chain fly"); assert app.message.startswith("chain <cancel|hold|release>")
-    app.handle("9"); app.click(hits[0][0], 5, hits); assert app.cursor["deps"] == 0
+    app.handle("9")
+    rows, hits = views.compose(store.snapshot(), app, W, H, actions)
+    app.click(hits[0][0], 5, hits)
+    assert app.cursor["deps"] == 0
 
 
 def test_tags_pins_notes_filter_and_compare(tmp_path):
