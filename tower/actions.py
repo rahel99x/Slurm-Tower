@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import os
 import subprocess
-import threading
 import time
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import clock
 from .model import Job, Store
 from .slurm import Slurm
+from .worker_scheduler import WorkerScheduler
 
 VERBS = {"cancel": ("scancel", "cancelling"), "hold": ("scontrol hold", "holding"), "release": ("scontrol release", "releasing"),
          "requeue": ("scontrol requeue", "requeueing"), "top": ("scontrol top", "moving up")}
@@ -80,8 +80,17 @@ class Actions:
 class Notifier:
     """Runs ``command`` (through the shell) for the configured event kinds with the event in the environment."""
 
-    def __init__(self, command: str, kinds: Sequence[str], bell: Callable[[], None] = None, bell_kinds: Sequence[str] = ("started",)):
+    def __init__(self, command: str, kinds: Sequence[str], bell: Callable[[], None] = None, bell_kinds: Sequence[str] = ("started",), *, worker_scheduler=None):
         self.command, self.kinds, self.bell, self.bell_kinds = command, set(kinds), bell, set(bell_kinds)
+        self._owns_worker_scheduler = worker_scheduler is None
+        self.worker_scheduler = worker_scheduler or WorkerScheduler(lanes=("notification",))
+        self.pool = self.worker_scheduler.lane("notification")
+        self.error = ""
+
+    def close(self):
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        if self._owns_worker_scheduler:
+            self.worker_scheduler.shutdown(wait=False, cancel_futures=True)
 
     def __call__(self, ev: dict):
         kind = ev.get("kind", "")
@@ -100,4 +109,7 @@ class Notifier:
             except (OSError, subprocess.TimeoutExpired):
                 pass
 
-        threading.Thread(target=go, daemon=True).start()
+        try:
+            return self.pool.submit(go)
+        except RuntimeError as exc:
+            self.error = str(exc)[:512]

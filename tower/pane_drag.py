@@ -372,7 +372,7 @@ def control_hit(app, key, *, origin_y=0):
             "action": ("command", "pane-focus " + key), "group": "pane-dividers"})
 
 
-def _replace(row, start, text, style, width):
+def _replace(row, start, text, style, width, *, fitted=False):
     """Replace display cells without splitting a wide glyph or copying styles."""
     before = L.clip_row(row, start)
     used = L.vlen(L.row_text(before))
@@ -380,28 +380,39 @@ def _replace(row, start, text, style, width):
         before.append((" " * (start - used), "bg:canvas"))
     end = start + L.vlen(text)
     after, position = [], 0
-    for segment, segment_style in row:
+    for offset, (segment, segment_style) in enumerate(row):
+        if position >= end:
+            if position == end and not L.vlen(segment):
+                continue
+            # The suffix is already fitted to the canvas. Its graph cells do
+            # not need another width scan merely to paint a divider before it.
+            after.extend(row[offset:])
+            break
         length = L.vlen(segment)
         if position + length <= end:
             position += length
             continue
-        if position >= end:
-            after.append((segment, segment_style))
+        skipped, index = 0, 0
+        for index, character in enumerate(segment):
+            cells = L._character_width(character)
+            if position + skipped >= end:
+                break
+            skipped += cells
         else:
-            skipped, index = 0, 0
-            for index, character in enumerate(segment):
-                cells = 1 if character.isascii() else L.vlen(character)
-                if position + skipped >= end:
-                    break
-                skipped += cells
-            else:
-                index = len(segment)
-            if position + skipped > end:
-                after.append((" " * (position + skipped - end), segment_style))
-            if index < len(segment):
-                after.append((segment[index:], segment_style))
+            index = len(segment)
+        if position + skipped > end:
+            after.append((" " * (position + skipped - end), segment_style))
+        if index < len(segment):
+            after.append((segment[index:], segment_style))
         position += length
-    return L.clip_row(before + [(text, style)] + after, width)
+    result = before + [(text, style)] + after
+    if fitted:
+        # clip_row stops at the exact edge before trailing empty/combining
+        # segments; preserve that rule without rescanning the full suffix.
+        while result and not L.vlen(result[-1][0]):
+            result.pop()
+        return result
+    return L.clip_row(result, width)
 
 
 def paint(canvas, app, key, *, origin_x=0, origin_y=0, ascii_=False):
@@ -430,5 +441,5 @@ def paint(canvas, app, key, *, origin_x=0, origin_y=0, ascii_=False):
             style = "accent+bold+bg:canvas" if diamond else line_style
         else:
             text, style = ("-" if ascii_ else "─") * span, line_style
-        canvas[y] = _replace(canvas[y], x, text, style, width)
+        canvas[y] = _replace(canvas[y], x, text, style, width, fitted=True)
     return canvas

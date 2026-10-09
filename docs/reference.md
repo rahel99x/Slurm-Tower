@@ -737,6 +737,13 @@ See [Update rate](guides/live-workbench.md#set-the-update-rate) for controls and
 
 ## Configuration
 
+`worker_mode` accepts `single` or `multi` (default). The toolbar and
+`:workers single|multi|toggle|status` control background concurrency at runtime.
+`--workers single|multi` overrides saved startup preferences. Single retains
+the separate UI thread. A reduction drains running task groups and their
+callbacks before queued work starts under the new limit. See
+[Background workers](guides/background-workers.md) for the operating procedure.
+
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
 commented defaults without replacing an existing config (JSON on Python 3.10, TOML on 3.11+).  Sections: top level (`user`, `account`, `ascii`, `color`, `history_days`, `log_lines`,
 `gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`, `startup_animation`, `smooth_scrolling`), `[research]`, `[logs]`, `[exports]`, `[clipboard]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
@@ -896,6 +903,8 @@ tower/
   log_bundle.py  exact-job multi-source full-file bundles, source hashes, confined destination listings and folder creation
   history_log_export.py asynchronous History export menus, directory picker, missing-source alerts and receipts
   research.py    the shared bounded worker for research inspections, log catalogs, and full-log copies
+  worker_scheduler.py  shared worker permits, bounded queues, cooperative GPU waits, and live mode drains
+  worker_ui.py   toolbar worker state, palette commands, and saved mode preferences
   clipboard.py   complete OSC 52 requests, streamed local clipboard tools, and private atomic text fallbacks
   editor_yank.py bounded register delivery to running local Vim/Neovim; clipboard fallback
   text_selection.py pinned rendered-line ranges over published panes; complete-cache copy checks

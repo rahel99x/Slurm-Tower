@@ -2,6 +2,7 @@
 frame of text (--once) or JSON (--json)."""
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -39,12 +40,16 @@ _ESCAPE_KEYS.update({"\x1b[H": "home", "\x1b[F": "end", "\x1b[Z": "btab",
                      "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right", "\x1bOD": "left",
                      "\x1bOH": "home", "\x1bOF": "end", "\x1bOP": "f1", "\x1bOQ": "f2",
                      "\x1bOR": "f3", "\x1bOS": "f4"})
+_ESCAPE_KEYS.update({f"\x1b[{number}~": f"f{index}" for index, number in
+                     enumerate((15, 17, 18, 19, 20, 21, 23, 24), 5)})
 _PASTE_START, _PASTE_END = "\x1b[200~", "\x1b[201~"
 _SGR_MOUSE = re.compile(r"\x1b\[<(\d{1,5});(\d{1,5});(\d{1,5})([Mm])\Z", re.ASCII)
 _URXVT_MOUSE = re.compile(r"\x1b\[(\d{1,5});(\d{1,5});(\d{1,5})M\Z", re.ASCII)
 _SGR_PREFIX = re.compile(r"\x1b\[<[0-9;]*\Z", re.ASCII)
 _CSI_PREFIX = re.compile(r"\x1b\[[0-?]*[ -/]*\Z", re.ASCII)
 _CSI_COMPLETE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]\Z", re.ASCII)
+_SS3_PREFIX = re.compile(r"\x1bO[0-?]*[ -/]*\Z", re.ASCII)
+_SS3_COMPLETE = re.compile(r"\x1bO[0-?]*[ -/]*[@-~]\Z", re.ASCII)
 _ESCAPE_KEYS.update({"\x1b" + chr(code): "alt-" + chr(code) for code in range(ord("a"), ord("z") + 1)})
 for _modifier, _number in (("alt", 3), ("ctrl", 5)):
     for _suffix, _key in (("A", "up"), ("B", "down"), ("C", "right"), ("D", "left"), ("H", "home"), ("F", "end")):
@@ -60,10 +65,54 @@ _POINTER_ESCAPE_SECONDS = .2
 _RECENT_POINTER_SECONDS = .5
 
 
+def _terminal_keys(curses):
+    """Read keyboard capabilities without handing mouse framing to ncurses."""
+    keys = dict(_ESCAPE_KEYS)
+    capabilities = {"kcuu1": "up", "kcud1": "down", "kcub1": "left", "kcuf1": "right",
+                    "khome": "home", "kend": "end", "kpp": "pgup", "knp": "pgdn",
+                    "kdch1": "delete", "kich1": "insert", "kcbt": "btab", "kent": "enter",
+                    "kbs": "backspace"}
+    capabilities.update({f"kf{number}": f"f{number}" for number in range(1, 25)})
+    for capability, name in (("kUP", "up"), ("kDN", "down"), ("kLFT", "left"),
+                             ("kRIT", "right"), ("kHOM", "home"), ("kEND", "end"),
+                             ("kPRV", "pgup"), ("kNXT", "pgdn"), ("kDC", "delete")):
+        for number, modifier in ((3, "alt"), (5, "ctrl")):
+            capabilities[capability + str(number)] = modifier + "-" + name
+    for capability, name in capabilities.items():
+        try:
+            sequence = curses.tigetstr(capability)
+        except (AttributeError, curses.error):
+            continue
+        if sequence:
+            # Ignore mouse capabilities and ordinary printable characters.
+            # Bracketed paste and reports retain their dedicated parsers.
+            try:
+                text = sequence.decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            if text.startswith("\x1b") and len(text) <= 64:
+                keys[text] = name
+    return keys
+
+
 class _InputReader:
-    """Decode fragmented terminal reports and pastes without replaying bytes."""
+    """Own byte framing, including UTF-8/legacy mouse and terminal keyboards.
+
+    Ncurses mouse decoding consumes three bytes of a legacy report even when
+    a terminal sends UTF-8 coordinates. The remaining coordinate byte can be
+    a page shortcut. Raw getch with keypad disabled prevents that split owner;
+    UTF-8 decoding here is incremental and never waits inside get_wch.
+    """
     def __init__(self, window):
         self.window = window
+        self.raw = callable(getattr(window, "getch", None))
+        self.raw_values = deque()
+        self.utf8 = codecs.getincrementaldecoder("utf-8")("surrogateescape")
+        self.escape_keys = _ESCAPE_KEYS
+        self.escape_prefixes = _ESCAPE_PREFIXES
+        self.configured = False
+        if self.raw:
+            window.keypad(False)
         self.escape = ""
         self.escape_time = 0.0
         self.pasting = False
@@ -79,6 +128,57 @@ class _InputReader:
         self.escape_grace = _ESCAPE_SECONDS
         self.timed_out_mouse = False
 
+    def _value(self, curses):
+        if not self.raw:
+            return self.window.get_wch()
+        if not self.configured:
+            self.escape_keys = _terminal_keys(curses)
+            self.escape_prefixes = frozenset(sequence[:end] for sequence in (*self.escape_keys, _PASTE_START)
+                                             for end in range(1, len(sequence)))
+            self.configured = True
+        deadline = time.monotonic() + INPUT_BATCH_SECONDS
+        for _ in range(256):
+            if self.raw_values:
+                char = self.raw_values.popleft()
+                # Surrogateescape keeps malformed UTF-8 bytes intact. Legacy
+                # X10 coordinates may legitimately be arbitrary 8-bit values.
+                if isinstance(char, str) and 0xdc80 <= ord(char) <= 0xdcff and self.escape.startswith("\x1b[M"):
+                    return chr(ord(char) - 0xdc00)
+                return char
+            value = self.window.getch()
+            if value == -1:
+                # A UTF-8 coordinate prefix has at most three pending bytes.
+                # Keep it until more input arrives: flushing it on a timer
+                # could release an ASCII coordinate suffix as a page shortcut.
+                raise curses.error("no input")
+            if value == 3 and not self.pasting:
+                # Interrupt is not a valid byte in any mouse report. Deliver
+                # it before UTF-8 error recovery can queue an older high byte.
+                self.utf8.reset()
+                self.raw_values.clear()
+                return "\x03"
+            if value > 255:
+                # Resize is still delivered by ncurses with keypad disabled.
+                # Do not let it consume a partial multibyte keyboard character.
+                return value
+            pending_utf8 = self.utf8.getstate()[0]
+            if value < 128 and not pending_utf8:
+                return chr(value)
+            if value == 0x9b and not pending_utf8 and not self.escape.startswith("\x1b[M"):
+                return "\x9b"
+            self.raw_values.extend(self.utf8.decode(bytes((value,))))
+            if self.utf8.getstate()[0]:
+                # Only the first byte read may use the frame's idle timeout.
+                # A fragmented UTF-8 character must not block a whole frame.
+                self.window.timeout(0)
+            if time.monotonic() >= deadline and not self.raw_values:
+                raise curses.error("pending UTF-8")
+        raise curses.error("input budget")
+
+    @property
+    def pending(self):
+        return bool(self.escape or self.pasting or self.utf8.getstate()[0])
+
     def _mouse_result(self, report):
         if report is not None:
             self.mouse_time = time.monotonic()
@@ -91,7 +191,7 @@ class _InputReader:
         deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting or self.discard_mouse or self.discard_csi else None
         for _ in range(256):
             try:
-                value = self.window.get_wch()
+                value = self._value(curses)
             except curses.error:
                 elapsed = time.monotonic() - self.escape_time if self.escape else 0.0
                 if self.escape and elapsed >= _ESCAPE_SECONDS:
@@ -104,9 +204,11 @@ class _InputReader:
                         # here loses pointer updates and makes hover lag.
                         self.timed_out_mouse = True
                         return None, None
-                    if pending.startswith("\x1b["):
-                        # A delayed X10/numeric report must keep its prefix:
-                        # its coordinates can be ordinary shortcut letters.
+                    if (pending.startswith(("\x1b[", "\x1bO")) or
+                            len(pending) > 1 and pending in self.escape_prefixes):
+                        # Retain bounded report and terminfo key prefixes.
+                        # Replaying an SS3 prefix would turn its 'O' into the
+                        # log-files shortcut before a delayed arrow arrives.
                         return None, None
                     self.escape = ""
                     self.after_escape = pending == "\x1b"
@@ -115,6 +217,21 @@ class _InputReader:
                     self.queue.extend((key_name(ch, curses), None) for ch in pending[1:])
                     return "esc", None
                 return None
+            if value == "\x03" and not self.pasting:
+                # A corrupt report must not trap the global interrupt behind
+                # its quarantine. Pasted control bytes remain inert payload.
+                self.escape = ""
+                self.after_escape = self.recovered_escape = False
+                self.discard_mouse = self.discard_csi = False
+                self.timed_out_mouse = False
+                self.utf8.reset()
+                self.raw_values.clear()
+                self.queue.clear()
+                return "ctrl-c", None
+            if self.raw and value == getattr(curses, "KEY_RESIZE", None):
+                # A signal can interrupt any byte position, including paste
+                # or a UTF-8 coordinate. Preserve the prefix across resize.
+                return "resize", None
             if isinstance(value, int) and not self.pasting:
                 # Ncurses can resume decoding between fragments. A complete
                 # native key/mouse event resolves an older partial raw prefix
@@ -176,7 +293,8 @@ class _InputReader:
                     self.end = self.end[1:]
                 if self.end == _PASTE_END:
                     self.pasting, self.end = False, ""
-                    self.window.keypad(True)
+                    if not self.raw:
+                        self.window.keypad(True)
                     text, self.text = "".join(self.text), []
                     return "paste", text
             elif self.escape:
@@ -221,12 +339,13 @@ class _InputReader:
                 elif candidate == _PASTE_START:
                     self.escape, self.pasting = "", True
                     self.text, self.end = [], ""
-                    self.window.keypad(False)
-                elif candidate in _ESCAPE_KEYS:
+                    if not self.raw:
+                        self.window.keypad(False)
+                elif candidate in self.escape_keys:
                     self.escape = ""
                     self.recovered_escape = False
-                    return _ESCAPE_KEYS[candidate], None
-                elif candidate in _ESCAPE_PREFIXES:
+                    return self.escape_keys[candidate], None
+                elif candidate in self.escape_prefixes:
                     self.escape = candidate
                 elif _URXVT_MOUSE.fullmatch(candidate):
                     self.escape = ""
@@ -245,15 +364,23 @@ class _InputReader:
                         self.queue.extend((key_name(ch, curses), None) for ch in candidate[2:])
                         return "[", None
                     return None, None
-                elif len(candidate) <= 64 and _CSI_PREFIX.fullmatch(candidate):
+                elif _SS3_COMPLETE.fullmatch(candidate):
+                    self.escape = ""
+                    return None, None
+                elif len(candidate) <= 64 and (_CSI_PREFIX.fullmatch(candidate) or _SS3_PREFIX.fullmatch(candidate)):
                     self.escape = candidate
                     if char.isdigit():
                         # A numeric CSI may be a urxvt mouse report; its bytes
                         # must never be replayed as tab-number shortcuts.
                         self.recovered_escape = False
-                elif candidate.startswith("\x1b["):
+                elif candidate.startswith(("\x1b[", "\x1bO")):
                     self.escape = ""
                     self.discard_csi = not (char and "@" <= char <= "~")
+                    return None, None
+                elif len(self.escape) > 1 and self.escape in self.escape_prefixes:
+                    # An unsupported suffix after a framed SS3/custom key is
+                    # one invalid control, not a series of keyboard shortcuts.
+                    self.escape = ""
                     return None, None
                 else:
                     self.escape = ""
@@ -968,8 +1095,12 @@ class _DifferentialPainter:
                     if x < 0 or x + size > width:
                         x += size
                         continue
-                    for column in range(x, x + size):
-                        clear(column)
+                    # Replacing one ordinary cell cannot leave half a wide
+                    # glyph behind. Most graph and text cells take this path;
+                    # only wide heads/tails need the clearing walk.
+                    if size != 1 or cells[x][2] != 1:
+                        for column in range(x, x + size):
+                            clear(column)
                     cells[x] = (char, style, size)
                     for column in range(x + 1, x + size):
                         cells[column] = ("", style, 0)
@@ -1051,8 +1182,49 @@ class _DifferentialPainter:
 
 def _toolbar_feedback_token(app):
     state = getattr(app, "toolbar_state", {}) or {}
+    from .worker_ui import token as worker_token
     return tuple(state.get(key) for key in ("menu", "cursor", "top", "panel", "panel_scroll", "focus")) + (
-        getattr(app, 'cfg', {}).get('clipboard', {}).get('destination', 'copy'),)
+        getattr(app, 'cfg', {}).get('clipboard', {}).get('destination', 'copy'),
+        worker_token(app))
+
+
+def _drain_prepaint_motion(app, stdscr, curses, hits, pending_input=None):
+    """Paint the newest queued passive pointer after a document rebuild.
+
+    A rebuild may outlast several position reports. Keep their newest endpoint
+    before painting, while leaving every deliberate event for normal dispatch.
+    Captures and partial key/paste/report framing retain their ordinary owner.
+    """
+    if pending_input is not None or app.mode != "main" or _protect_pointer_escape(app):
+        return pending_input
+    reader = _INPUT_READERS.get(id(stdscr))
+    if reader is not None and reader.pending:
+        return pending_input
+    deliberate = 0
+    for button in range(1, 6):
+        for action in ("CLICKED", "PRESSED", "RELEASED", "DOUBLE_CLICKED", "TRIPLE_CLICKED"):
+            deliberate |= getattr(curses, f"BUTTON{button}_{action}", 0)
+    stdscr.timeout(0)
+    deadline = time.monotonic() + POINTER_BATCH_SECONDS
+    motion = None
+    for _ in range(POINTER_BATCH_LIMIT):
+        if time.monotonic() >= deadline:
+            break
+        event = _read_input(stdscr, curses)
+        if event is None:
+            break
+        mouse = event[1] if event[0] == "mouse" else None
+        if (mouse is None or not _motion_report(mouse[4], curses)
+                or mouse[4] & deliberate or getattr(mouse, "held", None) is True):
+            pending_input = event
+            break
+        motion = event
+    if motion is not None:
+        trace = getattr(app, "ui_trace", None)
+        if trace is not None:
+            trace.input(app, motion)
+        _timed_ui(app, "input_dispatch", _apply_input, app, motion, hits, curses)
+    return pending_input
 
 
 class _FrameCache:
@@ -1182,8 +1354,8 @@ def _mouse_reporting(enabled):
 
     Older terminals that do not support any-event mode retain button-event
     mode. Both are disabled explicitly on exit, including exceptional exits.
-    Clear inherited extended/pixel encodings before requesting cell-based SGR:
-    ncurses and raw decoding must agree about where each report ends.
+    Clear inherited extended/pixel encodings before requesting cell-based SGR.
+    Tower's byte decoder owns the complete report, including fallback formats.
     """
     if not sys.stdout.isatty():
         return
@@ -1208,7 +1380,9 @@ def run_curses(app, views, sampler, store, actions, cfg):
         except curses.error:
             pass
         stdscr.timeout(200)
-        stdscr.keypad(True)
+        # Tower owns both mouse and keyboard escape framing. Ncurses must not
+        # consume a legacy mouse header and leak UTF-8 coordinate tail bytes.
+        stdscr.keypad(False)
         if hasattr(curses, "set_escdelay") and "ESCDELAY" not in os.environ:
             curses.set_escdelay(25)
         mouse_enabled = cfg.get("mouse", True) or app.mode == "terminal_probe"
@@ -1267,13 +1441,15 @@ def run_curses(app, views, sampler, store, actions, cfg):
             height, width = stdscr.getmaxyx()
             if cache.due(app, width, height):
                 _timed_ui(app, "document", cache.rebuild, app, views, store, actions, width, height)
+                pending_input = _timed_ui(app, "prepaint_input", _drain_prepaint_motion,
+                                         app, stdscr, curses, cache.hits, pending_input)
             rows, overlays, bar = _timed_ui(app, "feedback", cache.feedback, app, views)
             hits, snap = cache.hits, cache.snapshot
             stdscr.timeout(cache.wait_ms())
             reader = _INPUT_READERS.get(id(stdscr))
             if reader:
                 reader.protect_escape = _protect_pointer_escape(app)
-                if reader.escape or reader.pasting:
+                if reader.pending:
                     stdscr.timeout(5)
             _timed_ui(app, "paint", painter.draw, rows, overlays, width, height, bar=bar)
             started = sum(1 for e in snap["events"] if e.get("kind") == "started" and not e.get("old"))

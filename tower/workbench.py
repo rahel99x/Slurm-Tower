@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 from functools import lru_cache
 
-FEATURES = ("startup", "history_log_export", "refresh_rate", "toolbar", "scrollbars", "pane_drag", "metric_live", "chart_interaction", "history_browser", "job_selection", "interaction", "scrolling", "recent_history", "job_panels", "analytics_document", "workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
+FEATURES = ("startup", "history_log_export", "refresh_rate", "worker_ui", "toolbar", "scrollbars", "pane_drag", "metric_live", "chart_interaction", "history_browser", "job_selection", "interaction", "scrolling", "recent_history", "job_panels", "analytics_document", "workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
             "table_ui", "table_tools", "activity_ui", "session_tools", "project_ui",
             "log_workbench", "log_tools", "analysis_ui", "execution_ui", "job_progress")
 

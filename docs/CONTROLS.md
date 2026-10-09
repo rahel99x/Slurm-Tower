@@ -53,6 +53,15 @@ Key bindings in configuration can replace the defaults below.
 Run `type tower` to identify which shell command will run.
 Use the [runbook](runbook.md#use-one-tower-shell-command) to install or inspect the managed alias.
 
+### Background worker mode
+
+Click the toolbar worker switch, or use `:workers single`, `:workers multi`,
+`:workers toggle`, and `:workers status`. F8 includes the switch in directional
+button navigation. Single keeps one background worker and a separate UI thread.
+Start with `tower --workers single` or `tower --workers multi` to override the
+saved preference. See [Background workers](guides/background-workers.md) for
+pending transitions, result collection, and limits.
+
 ### Select a local setup profile
 
 | Command | Function |

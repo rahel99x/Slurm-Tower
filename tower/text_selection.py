@@ -7,6 +7,7 @@ Raw log selection remains owned by LogSession and keeps original source bytes.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
 
@@ -37,6 +38,28 @@ class Pane:
     @property
     def page(self):
         return self.rect.bottom - self.rect.top
+
+
+class _VisibleLines(Sequence):
+    """Lazy, frame-owned view preserving the published visible-lines API."""
+    def __init__(self, rows, pane):
+        self.rows, self.pane, self.values = rows, pane, None
+
+    def _values(self):
+        if self.values is None:
+            state, pane = {"rows": self.rows}, self.pane
+            self.values = tuple((pane.top + y - pane.rect.top, _line(state, pane, y))
+                                for y in range(pane.rect.top, pane.rect.bottom))
+        return self.values
+
+    def __len__(self):
+        return self.pane.page
+
+    def __getitem__(self, index):
+        return self._values()[index]
+
+    def __iter__(self):
+        return iter(self._values())
 
 
 def initialize(app):
@@ -100,8 +123,21 @@ def _slice(row, left, right):
             # At the exact right edge, the next segment may begin with
             # combining marks belonging to the last included character.
             continue
+        # Most published segments already fit wholly inside one pane. Keep
+        # their complete Unicode text instead of visiting every chart cell.
+        # A leading combining mark still needs the boundary rules below.
+        if len(text) <= 512:
+            end = column + L.vlen(text)
+            if end <= left:
+                column = end
+                continue
+            if (column >= left and end <= right
+                    and (L._character_width(text[0]) or result and left < column)):
+                result.append(text)
+                column = end
+                continue
         for char in text:
-            size = L.vlen(char)
+            size = L._character_width(char)
             if size == 0:
                 if result and left < column <= right:
                     result.append(char)
@@ -172,7 +208,7 @@ def _candidates(app, width, height, overlays):
 
 
 def publish(app, rows, width, height, *, overlays=()):
-    """Cache visible text once per document paint; never read a source file."""
+    """Publish text geometry; extract only the pane a user selects or copies."""
     state = initialize(app)
     if height is None or width <= 0 or height <= 1:
         state.update(panes=(), rows={}, token=None)
@@ -184,8 +220,9 @@ def publish(app, rows, width, height, *, overlays=()):
         if 0 <= y < height:
             source_rows.setdefault(y, []).append((x, row))
     state.update(panes=panes, rows=source_rows, token=_token(app))
-    state["visible"] = {pane.key: tuple((pane.top + y - pane.rect.top, _line(state, pane, y))
-                       for y in range(pane.rect.top, pane.rect.bottom)) for pane in panes}
+    # Text extraction is unnecessary during ordinary graph/queue refreshes.
+    # Keep this exact painted frame and materialize each pane only when used.
+    state["visible"] = {pane.key: _VisibleLines(source_rows, pane) for pane in panes}
     selection = state["selection"]
     matching = next((pane for pane in panes if selection and pane.key == selection["key"]
                      and pane.context == selection["context"]), None)
@@ -226,7 +263,12 @@ def _remember(state, pane):
     selection = state["selection"]
     lo, hi = sorted((selection["anchor"], selection["end"])) if selection else (-1, -1)
     cache = state["cache"]
-    for index, text in state["visible"].get(pane.key, ()):
+    visible = state["visible"].get(pane.key)
+    if visible is None:
+        visible = tuple((pane.top + y - pane.rect.top, _line(state, pane, y))
+                        for y in range(pane.rect.top, pane.rect.bottom))
+        state["visible"][pane.key] = visible
+    for index, text in visible:
         if lo <= index <= hi and index in cache:
             continue
         if text is not None:

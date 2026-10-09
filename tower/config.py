@@ -26,6 +26,7 @@ DEFAULTS: Dict[str, Any] = {
     "animations": True,                  # short completion motion and two History pulses (reader is static)
     "startup_animation": True,           # brief, dismissible welcome on interactive terminal launches
     "smooth_scrolling": True,            # bounded scroll easing; animations=false and reader keep direct scrolling
+    "worker_mode": "multi",              # single: one background worker; multi: governed concurrent workers; UI stays separate
     "polling_multiplier": 1,             # polling slider position 1..50: 5s..500ms; source floors and backoff still apply
     "workspace": {"density": "comfortable", "split": 45},
     "intervals": {                       # base seconds for other sources; native polls use polling_multiplier
@@ -92,6 +93,7 @@ bell = false                    # terminal bell when one of your jobs starts
 animations = true               # short completion motion and two History pulses; false keeps static notices
 startup_animation = true        # brief welcome on interactive launches; :startup off disables it
 smooth_scrolling = true         # bounded scroll easing; :smoothscroll off restores direct scrolling
+worker_mode = "multi"           # single | multi; change live with the toolbar or :workers toggle
 polling_multiplier = 1           # logarithmic polling position 1..50: 5s..500ms; source limits and backoff stay intact
 
 # partitions = ["gpu", "main"]  # cluster tab: partitions to show (empty: those with GPUs or with your jobs)

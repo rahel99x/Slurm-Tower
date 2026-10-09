@@ -119,6 +119,73 @@ def test_source_updates_cannot_replace_already_selected_text():
     assert T.selection_text(app) == "memory 8 G\ncpu 40%\n"
 
 
+def test_idle_document_publication_does_not_extract_any_rendered_text(monkeypatch):
+    app = instance()
+    monkeypatch.setattr(T, '_slice', lambda *args, **kwargs:
+                        pytest.fail('An idle publication sliced rendered text'))
+    for index in range(20):
+        paint(app, [f'fresh metric {index}', 'other pane'], count=100)
+        assert not T.handle_mouse(app, 3, 2, button='motion')
+        assert T.initialize(app)['panes']
+
+
+def test_lazy_selection_extracts_only_selected_pane_once_and_pins_fresh_frames(monkeypatch):
+    app = instance(tab='sources')
+    calls, original = [], T._line
+
+    def line(state, pane, y):
+        calls.append((pane.key, y))
+        return original(state, pane, y)
+
+    monkeypatch.setattr(T, '_line', line)
+
+    def publish(label):
+        rows = [[('', '')] for _ in range(app.height)]
+        for y in range(3, 8):
+            rows[y] = [(f'left {y}'.ljust(20) + f'{label} {y}', 'text')]
+        S.begin_frame(app)
+        for key, rect in [('left', (3, 0, 8, 18)), ('right', (3, 20, 8, 40))]:
+            S.register(app, key, rect, 10, 5, 0, 0, lambda value: None, context='same-source')
+        S.publish(app, app.width, app.height)
+        T.publish(app, rows, app.width, app.height)
+
+    publish('old')
+    assert not calls
+    assert T.handle_mouse(app, 3, 22, button='press')
+    assert len(calls) == 6 and {key for key, _ in calls} == {'right'}
+    assert T.handle_mouse(app, 4, 22, button='release')
+    assert len(calls) == 6, 'Extending a selection recopied the same painted pane'
+    assert T.selection_text(app) == 'old 3\nold 4\n'
+    calls.clear()
+    publish('new')
+    assert len(calls) == 5 and {key for key, _ in calls} == {'right'}
+    assert T.selection_text(app) == 'old 3\nold 4\n'
+    T.clear(app)
+    calls.clear()
+    publish('latest')
+    assert not calls
+
+
+def test_lazy_pane_copy_uses_latest_published_lines_without_selection(monkeypatch):
+    app = instance()
+    paint(app, ['outdated', 'outdated second'], count=10)
+    paint(app, ['latest', 'latest second'], count=10)
+    copied = []
+    monkeypatch.setattr(clipboard, 'copy', lambda text, *args, **kwargs: copied.append(text) or 'copied')
+    assert T.copy_visible_pane(app)
+    assert copied == ['latest\nlatest second\n\n\n\n']
+
+
+def test_published_visible_lines_can_be_requested_lazily_and_keep_their_frame():
+    app = instance()
+    paint(app, ['first frame', 'second line'], count=10)
+    first = T.initialize(app)['visible']['advisor']
+    assert len(first) == 5
+    paint(app, ['new frame', 'new second'], count=10)
+    assert dict(first) == {0: 'first frame', 1: 'second line', 2: '', 3: '', 4: ''}
+    assert dict(T.initialize(app)['visible']['advisor'])[0] == 'new frame'
+
+
 def test_source_switch_cancels_capture_and_consumes_late_release():
     app = instance()
     paint(app, ["first job"], context="job1", count=10)

@@ -90,7 +90,9 @@ def test_explicit_button_starts_one_shared_worker_and_publishes_only_on_ui_threa
     dashboard.release.append(release)
     original = Q.capture
     calls = []
+    ui_thread = current_thread()
     def held(store, jid, event):
+        assert current_thread() is not ui_thread
         calls.append((jid, current_thread().name))
         entered.set()
         assert release.wait(3)
@@ -111,7 +113,8 @@ def test_explicit_button_starts_one_shared_worker_and_publishes_only_on_ui_threa
     assert state["status"] == "loading"  # Worker never mutates UI state.
     hub.poll_task()
     assert state["status"] == "ok" and state["result"]["job"] == "900"
-    assert calls == [("900", "tower-research_0")]
+    assert len(calls) == 1 and calls[0][0] == "900"
+    assert calls[0][1].startswith("tower-research")
 
 
 @pytest.mark.parametrize("transition", ["job", "off", "tab", "attempt", "accounting"])

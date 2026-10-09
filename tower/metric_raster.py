@@ -16,6 +16,22 @@ MAX_CELLS = 65536
 _UNCACHEABLE = object()
 
 
+def coalesce_row(row):
+    """Join adjacent equal styles without changing any glyph or style byte."""
+    result, fragments, previous = [], [], None
+    for text, style in row:
+        if (fragments and type(style) is str and type(previous) is str
+                and style == previous):
+            fragments.append(text)
+        else:
+            if fragments:
+                result.append(("".join(fragments), previous))
+            fragments, previous = [text], style
+    if fragments:
+        result.append(("".join(fragments), previous))
+    return result
+
+
 def _freeze(value, depth=0):
     """Keep exact numeric representations and detect in-place corrections."""
     if depth > 4:
@@ -46,7 +62,7 @@ class MetricRasterCache:
         self.entries = OrderedDict()
         self.points = self.cells = 0
 
-    def render(self, glyphs, values, width, height, *, filled=False, theme="", **options):
+    def render(self, glyphs, values, width, height, *, filled=False, theme="", compact_rows=False, **options):
         painter = charts.vbar_chart if filled else charts.braille_chart
         metadata = {}
         # Unknown extension options use the original painter. The cache must
@@ -54,7 +70,7 @@ class MetricRasterCache:
         data = _freeze(values)
         settings = _freeze(options)
         zone = (os.environ.get("TZ"), time.tzname, time.timezone, time.daylight)
-        key = (filled, width, height, glyphs.ascii, glyphs.spark, glyphs.box,
+        key = (filled, compact_rows, width, height, glyphs.ascii, glyphs.spark, glyphs.box,
                glyphs.full, glyphs.dot, glyphs.rule, theme, zone, data, settings)
         cacheable = data is not _UNCACHEABLE and settings is not _UNCACHEABLE
         entry = self.entries.get(key) if cacheable else None
@@ -62,6 +78,8 @@ class MetricRasterCache:
             self.entries.move_to_end(key)
             return [list(row) for row in entry["rows"]], copy.deepcopy(entry["metadata"])
         rows = painter(glyphs, values, width, height, metadata=metadata, **options)
+        if compact_rows:
+            rows = [coalesce_row(row) for row in rows]
         if not cacheable:
             return rows, metadata
         count = len(values) + len(options.get("sample_times") or ())

@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tower import charts, clock, layout as L, metric_live as M
+from tower import chart_interaction as C, charts, clock, layout as L, metric_live as M
 from tower.config import Config
 from tower.views import Views, _metric_observations
+from tower.native_series_cache import ObservationIndex
 
 
 @pytest.mark.parametrize("envelope", [False, True])
@@ -69,7 +70,8 @@ def test_no_explicit_cadence_keeps_full_history_for_median_gap_inference(monkeyp
                           selected_id="7", cfg=Config(), theme="dark", width=100, height=30)
     identity = ("resource-series", "7", "cpu-rate", "%", "job", "attempt")
     M.set_delta(app, identity, 1.)
-    M.set_enabled(app, identity, True)
+    M.set_running(app, identity, True)
+    assert M.set_enabled(app, identity, True)
     monkeypatch.setattr(clock, "now", lambda: 10.)
     views = Views(L.Glyphs(False), app.cfg)
     recorded = []
@@ -81,3 +83,49 @@ def test_no_explicit_cadence_keeps_full_history_for_median_gap_inference(monkeyp
     views.metric_curve(app, values, 100, 8, identity, sample_times=times, times=(1., 10.),
                        sample_interval=interval)
     assert recorded == [(values, times)]
+
+
+@pytest.mark.parametrize("captured", [False, True])
+@pytest.mark.parametrize("filled", [False, True])
+def test_indexed_live_zoom_and_capture_read_only_window_and_exclude_future_records(monkeypatch, captured, filled):
+    app = SimpleNamespace(mode="main", tab="analytics", analytics_job="7", analytics_view="job",
+                          selected_id="7", cfg=Config(), theme="dark", width=100, height=30)
+    identity = ("resource-series", "7", "cpu-rate", "%", "job", "attempt")
+    M.set_delta(app, identity, 1.)
+    M.set_running(app, identity, True)
+    assert M.set_enabled(app, identity, True)
+    monkeypatch.setattr(clock, "now", lambda: 9.7)
+    bounds = {"x": (9.2, 9.8), "y": (0., 100.)}
+    monkeypatch.setattr(C, "bounds", lambda *args, **kwargs: bounds)
+    monkeypatch.setattr(C, "autofit", lambda *args, **kwargs: True)
+    monkeypatch.setattr(C, "captured_bounds", lambda *args, **kwargs: bounds if captured else None)
+    views = Views(L.Glyphs(False), app.cfg)
+    samples, stamps = [float(index % 100) for index in range(10000)], [index * .001 for index in range(10000)]
+    expected = views.metric_curve(app, samples, 100, 8, identity, filled=filled,
+                                 sample_times=stamps, times=(0., 10.), sample_interval=.001)
+    index, reads = ObservationIndex(stamps), []
+
+    class WindowValues:
+        def __getitem__(self, item):
+            reads.append(item)
+            return samples[item]
+
+        def __iter__(self):
+            pytest.fail("An indexed Live zoom or capture scanned the entire retained history")
+
+    monkeypatch.setattr("tower.views._metric_observations", lambda *args, **kwargs:
+                        pytest.fail("An indexed Live curve performed a full observation scan"))
+    rendered, original = [], views._metric_rasters.render
+
+    def render(glyphs, values, *args, **kwargs):
+        rendered.append((len(values), max(kwargs["sample_times"])))
+        return original(glyphs, values, *args, **kwargs)
+
+    monkeypatch.setattr(views._metric_rasters, "render", render)
+    actual = views.metric_curve(app, WindowValues(), 100, 8, identity, filled=filled,
+                                sample_times=stamps, times=(0., 10.), sample_interval=.001,
+                                observation_index=index)
+    assert actual == expected
+    assert rendered and rendered[0][0] <= 502 and rendered[0][1] <= 9.7
+    # One retained interval for paint, plus one for fitting when not held.
+    assert len(reads) <= (2004 if not captured else 1002)

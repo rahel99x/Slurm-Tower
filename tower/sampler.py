@@ -13,6 +13,7 @@ from . import clock
 from .model import Health, Job, Store
 from .refresh_rate import validate_multiplier
 from .slurm import CommandError, Slurm
+from .worker_scheduler import WorkerScheduler, WorkerQueueFull
 
 
 HISTORY_REFRESH_MIN = 5.0
@@ -26,7 +27,8 @@ METRIC_SAMPLING_MAX = 128
 class Sampler(threading.Thread):
     def __init__(self, slurm: Slurm, store: Store, intervals: Dict[str, float], gpu_types: List[str], history_days: float = 2.0,
                  account: str = "", gpu_sampling: bool = True, workers: int = 4, on_event: Optional[Callable[[dict], None]] = None,
-                 weather: bool = True, probes: Optional[List[dict]] = None, budget: bool = True, files=None, polling_multiplier: int = 1):
+                 weather: bool = True, probes: Optional[List[dict]] = None, budget: bool = True, files=None, polling_multiplier: int = 1,
+                 worker_scheduler=None):
         super().__init__(daemon=True, name="tower-sampler")
         self.polling_multiplier = validate_multiplier(polling_multiplier)
         self.slurm, self.store, self.intervals = slurm, store, dict(intervals)
@@ -42,11 +44,13 @@ class Sampler(threading.Thread):
         # Positive allocation evidence omitted by %b, never persisted. Access
         # and queue reapplication share Store.lock with sampler publication.
         self._gpu_allocation_cache: Dict[str, dict] = {}
-        self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tower-src")
-        # GPU sampling waits for child tasks; sharing the source executor can deadlock
-        # with one worker and starve unrelated sources with any pool size.
+        self._owns_worker_scheduler = worker_scheduler is None
+        self.worker_scheduler = worker_scheduler or WorkerScheduler(workers=workers, lanes=("source", "gpu"))
+        self.pool = self.worker_scheduler.lane("source")
+        # GPU waits cooperate with the shared governor. A queued child can use
+        # the waiting parent's permit instead of requiring a second worker.
         self.gpu_workers = min(workers, 4)
-        self.gpu_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.gpu_workers, thread_name_prefix="tower-gpu")
+        self.gpu_pool = self.worker_scheduler.lane("gpu")
         self._schedule_lock = threading.RLock()
         # Metric demand changes never edit configured source intervals. Keep
         # only exact current attempts and completion marks for accelerated jobs.
@@ -373,10 +377,17 @@ class Sampler(threading.Thread):
                     break
                 for name in self.sources:
                     if name not in submitted and self.due(name, now):
-                        self.last_run[name] = now
-                        self.health(name).inflight = True
+                        previous = self.last_run[name]
+                        health = self.health(name)
+                        self.last_run[name], health.inflight = now, True
+                        try:
+                            future = self.pool.submit(self.run_source, name)
+                        except RuntimeError as exc:
+                            self.last_run[name], health.inflight = previous, False
+                            health.error = str(exc)[:512]
+                            continue
                         submitted.add(name)
-                        batch.append(self.pool.submit(self.run_source, name))
+                        batch.append(future)
             futures.extend(batch)
             if not wait or not batch:
                 break
@@ -411,6 +422,8 @@ class Sampler(threading.Thread):
             self.pool.shutdown(wait=False, cancel_futures=True)
             self.gpu_pool.shutdown(wait=False, cancel_futures=True)
         self.store.configure_series_loader(None)
+        if self._owns_worker_scheduler:
+            self.worker_scheduler.shutdown(wait=False, cancel_futures=True)
 
     def enable_series_background(self):
         """Restore interactive metric histories on the existing source pool."""
@@ -449,13 +462,44 @@ class Sampler(threading.Thread):
         """Observers consume sampled jobs; they never request additional Slurm commands."""
         if not self.job_observers:
             return
-        from dataclasses import asdict
+        from copy import copy
+        from dataclasses import asdict, fields
+        native_fields = tuple(field.name for field in fields(Job))
+        scalar_types = (str, int, float, bool, type(None))
         with self._job_observer_lock:
+            # Keep this publication coherent without recursively converting
+            # every field while UI snapshots wait for the Store lock. Native
+            # scheduler fields are scalars; its one mutable list is detached.
             with self.store.lock:
-                jobs = [asdict(j) for j in self.store.jobs[:10000]]
+                captured = []
+                for job in self.store.jobs[:10000]:
+                    values = (vars(job).copy() if type(job) is Job else
+                              {field.name: getattr(job, field.name) for field in fields(job)})
+                    if type(values.get("hosts")) is list:
+                        values["hosts"] = values["hosts"].copy()
+                    captured.append((job, values))
+            jobs = []
+            for job, values in captured:
+                if type(job) is Job:
+                    values = {name: values[name] for name in native_fields}
+                    hosts = values["hosts"]
+                    native = (type(hosts) is list and
+                              all(type(value) in scalar_types for value in hosts) and
+                              all(type(value) in scalar_types for name, value in values.items() if name != "hosts"))
+                    if native:
+                        jobs.append((values, True))
+                        continue
+                # Preserve asdict's representation for nested plugin values,
+                # custom dataclasses and mutable containers, off the UI lock.
+                detached = copy(job)
+                for name, value in values.items():
+                    object.__setattr__(detached, name, value)
+                jobs.append((asdict(detached), False))
             for index, observer in enumerate(tuple(self.job_observers[:8])):
                 try:
-                    observer(deepcopy(jobs))
+                    isolated = [dict(values, hosts=values["hosts"].copy()) if native else deepcopy(values)
+                                for values, native in jobs]
+                    observer(isolated)
                     self.observer_errors.pop(index, None)
                 except Exception as exc:
                     self.observer_errors[index] = str(exc)[:512]
@@ -605,7 +649,8 @@ class Sampler(threading.Thread):
                     pending[self.gpu_pool.submit(self.slurm.gpu, job)] = job
             if not pending:
                 break
-            done, _ = concurrent.futures.wait(pending, timeout=0.5, return_when=concurrent.futures.FIRST_COMPLETED)
+            done, _ = self.worker_scheduler.gather_children(pending, timeout=0.5,
+                                                           return_when=concurrent.futures.FIRST_COMPLETED)
             for fut in done:
                 job = pending.pop(fut)
                 try:

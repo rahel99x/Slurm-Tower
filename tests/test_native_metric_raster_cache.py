@@ -6,7 +6,7 @@ import pytest
 from tower import charts, chart_interaction as C, clock, layout as L, metric_live as M, refresh_rate as R
 from tower.config import Config
 from tower.controller import App
-from tower.metric_raster import MetricRasterCache, MAX_ENTRIES, MAX_POINTS, MAX_CELLS, _freeze
+from tower.metric_raster import MetricRasterCache, MAX_ENTRIES, MAX_POINTS, MAX_CELLS, _freeze, coalesce_row
 from tower.model import Job, Store
 from tower.views import Views
 
@@ -135,3 +135,38 @@ def test_mutable_axis_metadata_never_changes_cached_geometry():
     assert second['x_bounds'] == [1, 2]
     second['x_bounds'][1] = 888
     assert cache.render(g, [1, 2], 80, 5, times=[1, 2], sample_times=[1, 2])[1]['x_bounds'] == [1, 2]
+
+
+@pytest.mark.parametrize('ascii_', [False, True])
+@pytest.mark.parametrize('filled', [False, True])
+def test_coalesced_cached_chart_preserves_each_glyph_style_and_metadata(ascii_, filled):
+    cache, g = MetricRasterCache(), L.Glyphs(ascii_)
+    values = [None if index % 11 == 0 else 50 + 40 * math.sin(index / 20) for index in range(200)]
+    options = dict(title='Exact curve', unit='%', sample_times=[index * .5 for index in range(200)],
+                   times=(0., 99.5), sample_interval=.5, lo=0., hi=100.)
+    original_rows, original_meta = cache.render(g, values, 140, 8, filled=filled, **options)
+
+    def expanded(rows):
+        return [[(char, style) for text, style in row for char in text] for row in rows]
+
+    rows, metadata = cache.render(g, values, 140, 8, filled=filled, compact_rows=True, **options)
+    assert expanded(rows) == expanded(original_rows) and metadata == original_meta
+    assert sum(len(row) for row in rows) < sum(len(row) for row in original_rows) / 3
+    expected = [list(row) for row in rows]
+    rows[0][:] = [('caller selection', 'sel')]
+    metadata.clear()
+    warm, restored = cache.render(g, values, 140, 8, filled=filled, compact_rows=True, **options)
+    assert warm == expected and restored == original_meta
+
+
+def test_coalescing_preserves_combining_marks_and_extension_styles():
+    row = [('界', 'cyan'), ('e', 'cyan'), ('\u0301', 'cyan'), ('x', 'dim'), ('y', 'dim')]
+    assert coalesce_row(row) == [('界e\u0301', 'cyan'), ('xy', 'dim')]
+
+    class Style(str):
+        def __eq__(self, other):
+            pytest.fail('An extension style ran equality during chart coalescing')
+
+    style = Style('cyan')
+    result = coalesce_row([('x', style), ('y', style)])
+    assert len(result) == 2 and all(segment[1] is style for segment in result)

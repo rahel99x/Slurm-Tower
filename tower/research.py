@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 import math
 import os
 import threading
@@ -12,6 +11,7 @@ import copy
 from . import clock
 from .remote import LocalFiles
 from .planning import PLANNING_VIEWS
+from .worker_scheduler import WorkerScheduler
 
 RESEARCH_VIEWS = [("experiment", "Experiment"), ("arrays", "Arrays"),
                   ("evidence", "Evidence"), ("artifacts", "Artifacts"),
@@ -57,7 +57,7 @@ def detach_manual_source(app):
 
 
 class ResearchHub:
-    def __init__(self, cfg, files=None, *, demo=False, settings=None, slurm=None):
+    def __init__(self, cfg, files=None, *, demo=False, settings=None, slurm=None, worker_scheduler=None):
         self.files = files or LocalFiles()
         self.slurm = slurm
         self.demo = demo
@@ -74,7 +74,9 @@ class ResearchHub:
         from .refresh_rate import validate_multiplier
         self.polling_multiplier = validate_multiplier(cfg.get("polling_multiplier", 1))
         self.lock = threading.RLock()
-        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tower-research")
+        self._owns_worker_scheduler = worker_scheduler is None
+        self.worker_scheduler = worker_scheduler or WorkerScheduler(mode=cfg.get("worker_mode", "multi"), lanes=("research",))
+        self.pool = self.worker_scheduler.lane("research")
         self.future = None
         self.pending = None
         self.closed = False
@@ -93,6 +95,8 @@ class ResearchHub:
         with self.lock:
             self.closed = True
         self.pool.shutdown(wait=False, cancel_futures=True)
+        if self._owns_worker_scheduler:
+            self.worker_scheduler.shutdown(wait=False, cancel_futures=True)
 
     def configure(self, **values):
         with self.lock:
@@ -145,7 +149,10 @@ class ResearchHub:
         with self.lock:
             if self.closed or self.pending:
                 return False
-            self.future = self.pool.submit(fn)
+            try:
+                self.future = self.pool.submit(fn)
+            except RuntimeError:
+                return False
             self.pending = (self.future, completion)
             return True
 
@@ -224,7 +231,10 @@ class ResearchHub:
                     self.cache.move_to_end(self._key(context))
                     return entry[1]
                 if self.future is None or self.future.done():
-                    self.future = self.pool.submit(self._publish, context)
+                    try:
+                        self.future = self.pool.submit(self._publish, context)
+                    except RuntimeError:
+                        return {"status": "loading", "summary": "The background queue is busy; this view will retry."}
                 future = self.future
             if not wait:
                 break

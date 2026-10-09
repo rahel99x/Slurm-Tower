@@ -74,8 +74,13 @@ def terminal(tmp_path, monkeypatch):
     def read(stdscr, curses_module):
         assert stdscr is window
         assert queue, "Curses loop exhausted the scripted input without quitting."
+        # None represents one idle input wait, not a queued terminal event.
+        # A nonblocking prepaint poll cannot consume that wait or advance time.
+        if queue[0] is None and window.timeouts[-1] == 0:
+            return None
         value = queue.popleft()
-        clock[0] += .1
+        if window.timeouts[-1] != 0:
+            clock[0] += .1
         return value() if callable(value) else value
 
     monkeypatch.setattr(screen, "_read_input", read)
@@ -222,9 +227,9 @@ def test_ui_trace_covers_actual_curses_phases(terminal):
     from tower.ui_trace import UITrace
     terminal.app.ui_trace = UITrace()
     terminal.cfg.set("animations", False)
-    terminal.run([("2", None), ("ctrl-c", None)])
+    terminal.run([None, ("2", None), ("ctrl-c", None)])
     report = terminal.app.ui_trace.report()
     assert {"maintenance", "snapshot", "compose", "document", "feedback", "paint",
-            "terminal_flush", "input_wait", "input_batch", "input_dispatch"} <= set(report["phases"])
+            "terminal_flush", "prepaint_input", "input_wait", "input_batch", "input_dispatch"} <= set(report["phases"])
     assert report["inputs"]["keyboard"] == 2
     assert any(event["after"]["tab"] == "cluster" for event in report["transitions"])

@@ -454,3 +454,16 @@ def test_split_minimums_hold_at_all_drag_percentages(width, height):
                 assert all(rect.width >= 24 for rect in rects.values())
             else:
                 assert all(rect.height >= 3 for rect in rects.values())
+
+
+def test_fitted_divider_keeps_suffix_styles_and_discards_replaced_edge_marks():
+    row = [("x", "text"), ("\u0301", "text"), ("yz", "accent"),
+           ("", "empty"), ("\u0301", "text")]
+    assert P._replace(row, 0, "│", "border", 3, fitted=True) == [
+        ("│", "border"), ("yz", "accent")]
+
+
+def test_fitted_divider_preserves_combining_marks_inside_a_suffix_segment():
+    row = [("b▁", "text"), ("é▁b\u0301 ", "accent"), ("", "empty")]
+    assert P._replace(row, 0, "│", "border", 6, fitted=True) == [
+        ("│", "border"), ("▁", "text"), ("é▁b\u0301 ", "accent")]

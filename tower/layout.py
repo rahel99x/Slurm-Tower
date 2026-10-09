@@ -294,7 +294,7 @@ def truncate(text: str, width: int) -> str:
         return text[:max(0, width)]
     out, used = [], 0
     for ch in text:
-        w = vlen(ch)
+        w = _character_width(ch)
         if used + w > width:
             break
         out.append(ch)
@@ -302,28 +302,39 @@ def truncate(text: str, width: int) -> str:
     return "".join(out)
 
 
-def clip_row(row: Row, width: int) -> Row:
-    """Cut a row to ``width`` display columns."""
+def _clip_row(row: Row, width: int):
+    """Clip once and retain its measured width for callers that fill cells."""
     out, used = [], 0
     for text, style in row:
         if used >= width:
             break
-        size = vlen(text)
+        size = _character_width(text) if len(text) == 1 else vlen(text)
         if size > width - used:
             text = truncate(text, width - used)
             size = vlen(text)
         out.append((text, style))
         used += size
-    return out
+    return out, used
+
+
+def clip_row(row: Row, width: int) -> Row:
+    """Cut a row to ``width`` display columns."""
+    return _clip_row(row, width)[0]
+
+
+@lru_cache(maxsize=4096)
+def _filled_style(style, cell_style):
+    return "+".join(part for part in (style, cell_style) if part)
 
 
 def fill_row(row: Row, width: int, style: str = "bg:surface") -> Row:
     """Fit a row and fill its entire canvas, preserving explicit cell colours."""
     width = max(0, width)
-    fitted = clip_row(row, width)
-    out = [(text, "+".join(part for part in (style, cell_style) if part))
+    fitted, used = _clip_row(row, width)
+    out = [(text, _filled_style(style, cell_style) if len(style) <= 512 and len(cell_style) <= 512
+            else "+".join(part for part in (style, cell_style) if part))
            for text, cell_style in fitted]
-    gap = width - vlen(row_text(fitted))
+    gap = width - used
     if gap:
         out.append((" " * gap, style))
     return out

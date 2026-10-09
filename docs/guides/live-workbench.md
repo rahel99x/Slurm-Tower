@@ -344,9 +344,11 @@ See [Charts](charts.md#follow-a-running-metric) for commands, keyboard controls,
 
 ## Use the terminal toolbar
 
-The first display row contains File, Edit, View, Help, a copy-destination switch, and a quit control.
+The first display row contains File, Edit, View, Help, copy and worker switches, and a quit control.
 Use the menus for file workflows, preferences, navigation, and diagnostics.
 Job-changing actions retain their existing review and confirmation.
+The worker switch changes background concurrency without restarting Tower.
+See [Background workers](background-workers.md) for Single, Multi, and pending changes.
 
 ### Open and traverse a menu
 
@@ -466,6 +468,10 @@ See [Tables](tables.md), [Log display](log-view.md), and [Navigation](navigation
 | Wrap / unwrap current log | Change wrapping on the full Logs page |
 | Refresh all sources now | Request an immediate source refresh |
 | Focus update-rate slider | Focus the polling control's keyboard controls |
+| Switch background workers to Single / Multi | Toggle the requested background concurrency mode |
+| Use one background worker | Request Single after running task groups finish |
+| Use concurrent background workers | Request Multi within shared limits |
+| Background worker status | Show applied mode, pending change, and work counts |
 | Reset queue polling to INTERVAL | Restore the default global fetching request; the label shows the resulting Jobs interval |
 | Navigate buttons with arrow keys (F8) | Focus visible buttons and links for directional navigation |
 | Enable / Disable smooth scrolling | Toggle mouse-wheel viewport smoothing |

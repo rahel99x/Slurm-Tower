@@ -9,7 +9,7 @@ from tower import chart_interaction as C, clock, layout as L, metric_live as M
 from tower.config import Config
 from tower.controller import App
 from tower.model import Job, Store
-from tower.views import Views, _native_series
+from tower.views import Views, _native_series, _prepare_native_metrics
 
 
 @pytest.fixture
@@ -128,6 +128,19 @@ def test_native_summary_sanitizer_copies_only_malformed_counters():
     assert output == [dict(malformed, cpu=None, eff=None, rss=None, cpu_time=None), clean, unknown]
     assert output[1] is clean and output[2] is unknown
     assert malformed["rss"] == {}
+
+
+@pytest.mark.parametrize('bad', [None, [], {}, 'invalid', True, math.nan, math.inf, -1.])
+def test_prepared_cpu_preserves_chronology_duplicate_order_and_valid_efficiency_fallback(bad):
+    observations = [{'k': 'live', 't': 3., 'cpu': 1.5, 'rss': 0},
+                    {'k': 'live', 't': 1., 'cpu': bad, 'eff': .5, 'rss': 0},
+                    {'k': 'live', 't': 2., 'cpu': .4, 'rss': 0},
+                    {'k': 'live', 't': 2., 'cpu': .6, 'rss': 0}]
+    prepared = _prepare_native_metrics(observations, 0, False, {'live': .5, 'gpu': .5})
+    plot = prepared['plots'][0]
+    assert list(plot[1]) == [50., 40., 60., 150.]
+    assert list(plot[5]) == [1., 2., 2., 3.]
+    assert observations[1]['cpu'] is bad
 
 
 def test_archived_job_inventory_preserves_order_and_avoids_duplicate_ids(dashboard, monkeypatch):

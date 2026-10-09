@@ -9,6 +9,8 @@ Tower 4.7.0 adds pane scrollbars, pinned rendered-line selections, and finer con
 Tower 4.8.2 separates protocol-safe pointer input from keyboard shortcuts and repaints changed cells.
 Tower 4.8.3 restores saved metrics in the background, releases the data lock before persistence,
 and limits inline Job Series raster work to the visible metric bands.
+Tower 4.9.0 adds one byte decoder, reusable native metric preparations, indexed
+Live windows, shorter observer critical sections, and a bounded pointer check before paint.
 Theme changes repaint the document with the selected canvas and surfaces.
 Live metric windows use display deadlines while source sampling retains its own limits.
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
@@ -418,3 +420,114 @@ changed from 876.8 to 227.8 ms. Each version performed 40 Live redraws. Raster c
 No measured frame attempted source I/O. Timing varies with host scheduling, retained observations,
 visible controls, and terminal size. These results do not establish a universal frame-time limit.
 A separate 120-frame End/Home case retained visible graph controls in every frame, including the lower GPU trace cards.
+
+## Tower 4.9.0 latency audit
+
+The audit reproduced a mouse report that opened Logs. Ncurses consumed a legacy
+mouse header and part of a UTF-8 coordinate. The remaining coordinate byte was `l`.
+Tower now owns the complete input byte stream and uses terminal keyboard capabilities
+without delegating mouse framing to ncurses. See [the input audit](input-audit.md)
+for delayed reports, Unicode, paste, resize, and legacy-format limits.
+
+The same report also failed in the tested pre-4.8.0 revision. The comparison did
+not establish that 4.8.0 introduced this fault. Separate timing tests identified
+work that caused repeated pauses in the current display:
+
+| Cause | Change |
+| --- | --- |
+| Live redraws repeated native and trace preparation | Retain bounded preparations, with exact content checks that detect corrections to old samples. |
+| Moving or selected time windows scanned the whole history | Use timestamp indexes and retain the edge observations needed to draw continuous lines and gaps. |
+| Layout, dividers, and text selection repeatedly walked chart characters | Combine adjacent graph segments with the same style. Reuse measured widths, bounded style results, and complete fitted text segments. |
+| Queue observers converted large job tables under the UI data lock | Capture fields briefly; convert and isolate observer inputs after releasing that lock. |
+| A completed rebuild painted an old pointer position | Consume a bounded batch of passive reports before painting; preserve deliberate event order and active captures. |
+
+The observer fixture with 10,000 jobs reduced median Store lock time from 148.46 ms
+to 7.26 ms. Total observer processing changed from 545.35 ms to 132.09 ms.
+These are five-run medians with the default forecast observer on the test runner.
+The observer still receives each sampled publication. Calibration and replay rules stay active.
+
+### Measure sustained terminal input
+
+Use the pseudo-terminal benchmark to exercise the actual curses loop with fresh
+CPU/GPU data, Live graphs, and continuous pointer reports:
+
+```bash
+python3 -S scripts/benchmark_sustained_pointer.py \
+  --source-root . --output /tmp/tower-pointer.json \
+  --live --delta 5 --points 4000 --jobs 3 \
+  --rates 50,250,1000 --seconds 4
+```
+
+The report records source hashes, UI wall and CPU duration, queued-report age,
+displayed-pointer age, and intervals between paints. It checks the final page and
+visible graph controls. The fixture publishes new measurements every 500 ms and
+does not query a real scheduler. Use the same window, source counts, and geometry
+for both revisions. A five-second window is supported by the tested older revision.
+
+Read these measurements together. Motion coalescing can keep the newest dispatched
+endpoint fresh while older reports wait in a queue. Displayed-pointer age alone
+does not measure pauses between paints. Idle intervals also reflect the input rate.
+This local pseudo-terminal test excludes a physical display, Termius rendering,
+SSH transport, and the latency of a live Slurm or GPU command.
+
+The final quiet comparison used three jobs, 4,000 observations per source, a
+five-second Live window, and a 320-column by 52-row terminal. New samples arrived
+every 500 ms. The two input rates below used identical options for each revision.
+
+| Revision | Input reports per second | Document CPU p95 | Displayed pointer age p99 | Paint interval p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Pre-4.8 (`a8afd6d`) | 250 | 37.15 ms | 31.84 ms | 31.54 ms |
+| 4.8.3 (`c2dc524`) | 250 | 31.18 ms | 25.30 ms | 23.40 ms |
+| 4.9 final build | 250 | 14.97 ms | 4.52 ms | 12.86 ms |
+| Pre-4.8 (`a8afd6d`) | 1,000 | 42.91 ms | 32.52 ms | 31.41 ms |
+| 4.8.3 (`c2dc524`) | 1,000 | 113.83 ms | 21.23 ms | 19.91 ms |
+| 4.9 final build | 1,000 | 11.49 ms | 2.88 ms | 10.30 ms |
+
+The final runs retained Jobs and its four graph controls. They decoded and
+dispatched the quit key once. Maximum document CPU time was 22.91 ms and
+11.68 ms, respectively. Maximum paint interval was 29.10 ms and 14.15 ms.
+The runs included the worker-switch integration with Multi selected. These
+measurements establish the local comparison, not a universal frame-time limit.
+
+One intermediate benchmark timed out during exit. Repeated identical runs and
+the final comparison did not reproduce it. The benchmark now records sanitized
+state and thread stacks on timeout. Earlier intermediate builds also showed
+occasional 123–147 ms CPU outliers. These did not occur in the final two runs;
+garbage-collection timing alone did not explain them.
+
+### Remaining large-history costs
+
+A separate source-only fixture used four native GPUs, four traces, 4,000
+observations per source, and a wider set of visible charts. Its final Live
+frame p95 values ranged from 49.57 to 62.16 ms. Fresh publications can still
+cost more than ordinary pointer feedback: observed full-history frame maxima
+were 153.97 and 334.79 ms in two runs. This fixture calls rendering directly;
+it omits terminal transport and the interactive loop's input admission and
+cadence. It recorded no source I/O or unexpected navigation.
+
+These runs had no queued background work. Their timing differences do not
+establish a Single-versus-Multi speed advantage. Exact snapshot ownership
+preserves historical corrections, but large fresh preparations remain a cost.
+The measurements do not identify garbage collection as the cause of the
+largest outlier. Use `--ui-trace` with the affected data to distinguish fresh
+document work from terminal or input delay.
+
+### Live worker-switch checks
+
+Real terminal press and release reports activated the toolbar at 1,000 motion
+reports per second. Both Multi → Single → Multi and Single → Multi → Single
+completed, retained Jobs and its four plots, and exited normally. Maximum
+document CPU time was 20.48 and 23.07 ms. Displayed pointer age p99 was 4.58
+and 3.74 ms.
+
+Isolated paint intervals reached 94.41 and 38.84 ms. The larger interval
+contained a 52.71 ms input batch away from the switch click. Its measured
+decode and dispatch calls were each below one millisecond. The saved phases
+did not isolate the remaining cost, and no recorded GC pause explained it.
+This is an unresolved worst-case timing limit, not evidence of a scheduler
+mode-change stall. Separate typed-command tests completed both transitions;
+their command-entry periods temporarily delayed mouse processing.
+
+Use the [worker benchmark procedure](background-workers.md#diagnose-a-pending-change)
+to repeat either control path. These tests improve coverage; they do not prove
+that every terminal, history size, or input burst has a fixed maximum delay.

@@ -84,10 +84,11 @@ class _MetricValues(Sequence):
 
     Length is source geometry, available before reading individual counters.
     Materialization always returns plain lists for exact raster-cache identity;
-    providers belong to one composition and never hide historical corrections.
+    providers belong to one owned publication and never hide corrections.
     """
     def __init__(self, length, factory):
         self.length, self.factory, self.values = length, factory, None
+        self.time_index = None
 
     def __len__(self):
         return self.length
@@ -102,6 +103,12 @@ class _MetricValues(Sequence):
 
     def __getitem__(self, index):
         return self.materialize()[index]
+
+    def index(self):
+        if self.time_index is None:
+            from .native_series_cache import ObservationIndex
+            self.time_index = ObservationIndex(self.materialize())
+        return self.time_index
 
 
 def _metric_observations(values, timestamps, bounds, *, latest=None):
@@ -194,6 +201,125 @@ def _gpu_unavailable(snap, app, jid, record, *, detected=False):
         rows.append([(" GPU trace: " + trace_reason, "dim")])
     rows.append([(" Run tower --gpu-check " + str(jid) + " for details.", "cyan")])
     return rows
+
+
+def _busy_mean(values):
+    total, count, result = 0.0, 0, []
+    for value in values:
+        if value is None:
+            result.append(None)
+        else:
+            total += value
+            count += 1
+            result.append(total / count)
+    return result
+
+
+def _owned_metric_record(record, *, gpu=False):
+    """Keep lazy preparations independent of detached caller-owned records.
+
+    Plain scalar counters are immutable; only GPU reading containers need an
+    additional copy. Extension mappings retain their existing reader behavior
+    and are excluded from persistent preparations by the signature cache.
+    """
+    if type(record) is not dict:
+        return record
+    result = dict(record)
+    devices = result.get("gpu") if gpu else None
+    if type(devices) is dict:
+        result["gpu"] = {key: tuple(value) if type(value) is list else value
+                         for key, value in devices.items()}
+    return result
+
+
+def _prepare_native_metrics(samples, req, ascii_, intervals, *, owned=False):
+    """Prepare one content publication; moving windows reuse its lazy vectors."""
+    live, gpus, first, last = [], [], None, None
+    for sample in samples:
+        if (not isinstance(sample, dict) or sample.get("k") not in ("live", "gpu")
+                or charts._finite(sample.get("t")) is None):
+            continue
+        sample = sample if owned else _owned_metric_record(sample, gpu=True)
+        timestamp = sample["t"]
+        first = timestamp if first is None or timestamp < first else first
+        last = timestamp if last is None or timestamp > last else last
+        (live if sample["k"] == "live" else gpus).append(sample)
+    plots = []
+    if live:
+        live.sort(key=lambda sample: sample["t"])
+        def cpu_values():
+            values = []
+            for sample in live:
+                value = _gpu_value(sample.get("cpu"), percentage=False)
+                if value is None:
+                    value = _gpu_value(sample.get("eff"), percentage=False)
+                values.append(value)
+            return [None if value is None else 100 * value for value in values]
+        times = min(sample["t"] for sample in live), max(sample["t"] for sample in live)
+        stamps = _MetricValues(len(live), lambda: [sample["t"] for sample in live])
+        title = "cpu per core (rate, efficiency where no rate)" if ascii_ else "CPU per core · rate / efficiency"
+        plots.append((title, _MetricValues(len(live), cpu_values), 100., "%", times, stamps,
+                      intervals["live"], "cpu-rate"))
+        memory = _MetricValues(len(live), lambda: [None if (rss := _gpu_value(sample.get("rss"), percentage=False)) is None
+                                                  else 100 * rss / req if req else rss / 1024 ** 3 for sample in live])
+        plots.append(("memory of the request" if req else "resident memory (GB)", memory,
+                      100. if req else None, "%" if req else "G", times, stamps, intervals["live"],
+                      "memory-request" if req else "resident-memory"))
+    gpu_points = sorted(gpus, key=lambda sample: sample["t"])
+    keys = []
+    for sample in gpu_points:
+        devices = sample.get("gpu", {})
+        for key in devices if isinstance(devices, dict) else ():
+            if isinstance(key, str) and key and key not in keys:
+                keys.append(key)
+                if len(keys) == 4:
+                    break
+        if len(keys) == 4:
+            break
+    def reading(point, device):
+        devices = point.get("gpu", {})
+        value = devices.get(device) if isinstance(devices, dict) else None
+        return _gpu_value(value[0]) if isinstance(value, (list, tuple)) and value else None
+    stamps = _MetricValues(len(gpu_points), lambda: [point["t"] for point in gpu_points])
+    for key in keys:
+        values = _MetricValues(len(gpu_points), lambda key=key: [reading(point, key) for point in gpu_points])
+        means = _MetricValues(len(values), lambda values=values: _busy_mean(values))
+        times = gpu_points[0]["t"], gpu_points[-1]["t"]
+        plots.append((f"GPU {key} rate / utilization", values, 100., "%", times, stamps, intervals["gpu"], f"gpu:{key}:rate"))
+        plots.append((f"GPU {key} observed busy mean / efficiency proxy", means, 100., "%", times, stamps,
+                      intervals["gpu"], f"gpu:{key}:busy-mean"))
+    return dict(live_count=len(live), gpu_count=len(gpus),
+                span=last - first if first is not None and len(live) + len(gpus) > 1 else None,
+                plots=plots, keys=keys, available=any(reading(point, key) is not None for point in gpu_points for key in keys),
+                heatmaps=OrderedDict())
+
+
+def _prepare_trace_metrics(trace, *, owned=False):
+    groups, spans = {}, {}
+    for point in trace:
+        if (not isinstance(point, dict) or type(point.get("index")) is not int or point["index"] < 0
+                or charts._finite(point.get("t")) is None):
+            continue
+        point = point if owned else _owned_metric_record(point)
+        device, timestamp = point["index"], point["t"]
+        groups.setdefault(device, []).append(point)
+        bounds = spans.get(device)
+        spans[device] = (min(bounds[0], timestamp), max(bounds[1], timestamp)) if bounds else (timestamp, timestamp)
+    devices, plots = sorted(groups)[:4], []
+    for device in devices:
+        group = groups[device]
+        points = _MetricValues(len(group), lambda group=group: sorted(group, key=lambda point: point["t"]))
+        values = _MetricValues(len(points), lambda points=points: [_gpu_value(point.get("util")) for point in points])
+        stamps = _MetricValues(len(points), lambda points=points: [point["t"] for point in points])
+        means = _MetricValues(len(values), lambda values=values: _busy_mean(values))
+        plots.append((f"GPU trace {device} rate / utilization ({len(points)} samples)", values, 100., "%", spans[device],
+                      stamps, 60., f"gpu-trace:{device}:rate"))
+        plots.append((f"GPU trace {device} observed busy mean / efficiency proxy", means, 100., "%", spans[device],
+                      stamps, 60., f"gpu-trace:{device}:busy-mean"))
+    # Availability stays lazy when a native GPU already supplies valid data.
+    return dict(plots=plots, devices=devices,
+                availability=lambda: any(_gpu_value(point.get("util")) is not None
+                                         for device in devices for point in groups[device]))
 
 
 def _scroll_rule(glyphs, width, title):
@@ -327,6 +453,8 @@ class Views:
         self._preview_pending = set()
         from .metric_raster import MetricRasterCache
         self._metric_rasters = MetricRasterCache()
+        from .native_series_cache import NativeSeriesCache
+        self._native_sources = NativeSeriesCache()
         self.history_advice_cache = advisor.HistoryAdviceCache()
         self.plugins = plugins                             # PluginAPI or None: extra tabs and flags
         self.extra_tabs: Dict[str, object] = {}
@@ -351,7 +479,7 @@ class Views:
         return charts.stacked_bar(self.g, items, width, title=title)
 
     def metric_curve(self, app, values, width, height, plot_key, *, row=0, column=0,
-                     filled=False, running=None, **options):
+                     filled=False, running=None, observation_index=None, **options):
         """Render one source-scoped curve and stage its measured cell bounds."""
         if isinstance(values, _MetricValues):
             values = values.materialize()
@@ -371,20 +499,27 @@ class Views:
             options["times"] = live_window
         captured = chart_interaction.captured_bounds(app, plot_key, scale="linear")
         zoom = chart_interaction.bounds(app, plot_key, scale="linear")
-        if live_window and (zoom or captured) and options.get("sample_times") is not None:
+        interval = charts._finite(options.get("sample_interval"))
+        indexed = observation_index is not None and interval is not None and interval > 0
+        if live_window and (zoom or captured) and options.get("sample_times") is not None and not indexed:
             # A captured coordinate system remains fixed while Live advances.
             # Future replay records cannot enter its fitted bounds or source age.
             observations = [(value, timestamp) for value, timestamp in zip(values, options["sample_times"])
                             if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
             values = [value for value, _ in observations]
             options["sample_times"] = [timestamp for _, timestamp in observations]
+            observation_index = None
         if zoom:
             options.update(times=zoom["x"], lo=zoom["y"][0], hi=zoom["y"][1])
             options["time_units"] = True
             if chart_interaction.autofit(app, plot_key, scale="linear") and options.get("sample_times") is not None:
                 if not captured:
+                    fit_values, fit_times = values, options["sample_times"]
+                    if indexed:
+                        fit_values, fit_times, _, _ = observation_index.window(
+                            values, zoom["x"], latest=live_window[1] if live_window else None)
                     options["lo"], options["hi"] = charts.fit_time_bounds(
-                        values, options["sample_times"], zoom["x"], zoom["y"], options.get("sample_interval"))
+                        fit_values, fit_times, zoom["x"], zoom["y"], options.get("sample_interval"))
                 options["fitted"] = True
         # Publications keep flowing during a drag. Freeze its coordinate
         # system so a new timestamp or resource peak cannot move the pointer's
@@ -396,10 +531,13 @@ class Views:
         bounds = options.get("times")
         sample_times = options.get("sample_times")
         if bounds and sample_times is not None and (live_window or zoom or captured):
-            interval = charts._finite(options.get("sample_interval"))
             if interval is not None and interval > 0:
-                values, sample_times, visible_values, newest = _metric_observations(
-                    values, sample_times, bounds, latest=live_window[1] if live_window else None)
+                if indexed:
+                    values, sample_times, visible_values, newest = observation_index.window(
+                        values, bounds, latest=live_window[1] if live_window else None)
+                else:
+                    values, sample_times, visible_values, newest = _metric_observations(
+                        values, sample_times, bounds, latest=live_window[1] if live_window else None)
                 options["sample_times"] = sample_times
                 newest_known = True
             else:
@@ -413,7 +551,7 @@ class Views:
             if not zoom and not captured and options.get("hi") is None:
                 options["lo"], options["hi"] = charts._bounds(visible_values, options.get("lo", 0.0), None)
         rows, metadata = self._metric_rasters.render(
-            self.g, values, width, height, filled=filled,
+            self.g, values, width, height, filled=filled, compact_rows=True,
             theme=getattr(getattr(app, "_chart_owner", app), "theme", ""), **options)
         if options.get("title") and visible_values is not None and rows:
             rows[0] = charts._header(self.g, visible_values, width, options["title"],
@@ -2381,122 +2519,42 @@ class Views:
         fin = next((f for f in snap["finished"] if f.id == jid), None)
         name = job.name if job else (fin.name if fin else "")
         state = job.state.lower() if job else (fin.state.lower() if fin else "no longer listed")
-        live, gpus, first, last = [], [], None, None
-        for sample in _series_of(app, jid):
-            if (not isinstance(sample, dict) or sample.get("k") not in ("live", "gpu")
-                    or charts._finite(sample.get("t")) is None):
-                continue
-            timestamp = sample["t"]
-            first = timestamp if first is None or timestamp < first else first
-            last = timestamp if last is None or timestamp > last else last
-            (live if sample["k"] == "live" else gpus).append(sample)
+        record = job or fin
+        attempt = "|".join(str(getattr(record, name, None) or "") for name in ("submit", "start")) if record else None
+        req = job.mem_bytes if job else (fin.req_mem if fin else 0)
+        intervals = self.cfg["intervals"]
+        samples = _series_of(app, jid)
+        native = self._native_sources.remember(
+            ("native", jid, attempt, req, g.ascii, intervals["live"], intervals["gpu"]), samples,
+            lambda owned: _prepare_native_metrics(owned, req, g.ascii, intervals, owned=True))
+        trace_samples = snap.get("trace", {}).get(jid, [])
+        trace = self._native_sources.remember(("trace", jid, attempt), trace_samples,
+                                             lambda owned: _prepare_trace_metrics(owned, owned=True))
         series_notice = _series_notice(app, jid)
-        span = last - first if first is not None and len(live) + len(gpus) > 1 else None
+        live_count, gpu_count, span = native["live_count"], native["gpu_count"], native["span"]
         head = [rule(g, width, f"job series {pos + 1}/{len(ids)}"),
-                [(f" {jid} ", "cyan"), (name, "bold"), (f"   {state}", ""), (f"   {len(live)} cpu samples, {len(gpus)} gpu samples" + (f" over {compact(span)}" if span is not None and charts._finite(span) is not None else ""), "dim")]]
+                [(f" {jid} ", "cyan"), (name, "bold"), (f"   {state}", ""),
+                 (f"   {live_count} cpu samples, {gpu_count} gpu samples" +
+                  (f" over {compact(span)}" if span is not None and charts._finite(span) is not None else ""), "dim")]]
         if job:
             head[1].append((f"   {job.partition} {g.dot} {job.nodelist or 'pending'} {g.dot} {job.cpus} cpus" + (f" {g.dot} {job.gpu_text}" if job.gpus else "") + f" {g.dot} {job.elapsed} of {job.limit}", "dim"))
         if series_notice:
             head.append([(" " + series_notice[0], series_notice[1])])
-        if not live and not gpus and not snap.get("trace", {}).get(jid):
+        if not live_count and not gpu_count and not trace_samples:
             if series_notice:
                 return head
-            return head + _gpu_unavailable(snap, app, jid, job or fin) + [[("   no samples recorded for this job yet", "dim")]]
-        charts_ = []
-        if live:
-            def cpu_values():
-                values = [_gpu_value(s.get("cpu") if s.get("cpu") is not None else s.get("eff"), percentage=False)
-                          for s in live]
-                return [None if value is None else 100 * value for value in values]
-
-            cpu_times = (min(s["t"] for s in live), max(s["t"] for s in live))
-            cpu_stamps = _MetricValues(len(live), lambda: [s["t"] for s in live])
-            cpu_title = "cpu per core (rate, efficiency where no rate)" if g.ascii else "CPU per core · rate / efficiency"
-            charts_.append((cpu_title, _MetricValues(len(live), cpu_values), 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "cpu-rate"))
-            req = job.mem_bytes if job else (fin.req_mem if fin else 0)
-            if req:
-                memory = _MetricValues(len(live), lambda: [None if (rss := _gpu_value(s.get("rss"), percentage=False)) is None
-                                       else 100 * rss / req for s in live])
-                charts_.append(("memory of the request", memory, 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "memory-request"))
-            else:
-                memory = _MetricValues(len(live), lambda: [None if (rss := _gpu_value(s.get("rss"), percentage=False)) is None
-                                       else rss / 1024 ** 3 for s in live])
-                charts_.append(("resident memory (GB)", memory, None, "G", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "resident-memory"))
-        keys = []
-        finite_gpu = _gpu_value
-
-        def busy_mean(values):
-            # This is an observed sample mean, not a counter of GPU busy time.
-            # Unknown readings preserve their gap and never enter the divisor.
-            total, count, result = 0.0, 0, []
-            for value in values:
-                if value is None:
-                    result.append(None)
-                else:
-                    total += value
-                    count += 1
-                    result.append(total / count)
-            return result
-
-        gpu_points = sorted(gpus, key=lambda point: point["t"])
-        for s in gpu_points:
-            devices = s.get("gpu", {})
-            for k in devices if isinstance(devices, dict) else ():
-                if not isinstance(k, str) or not k:
-                    continue
-                if k not in keys:
-                    keys.append(k)
-                    if len(keys) == 4:
-                        break
-            if len(keys) == 4:
-                break
-        def gpu_reading(point, device):
-            devices = point.get("gpu", {})
-            reading = devices.get(device) if isinstance(devices, dict) else None
-            return finite_gpu(reading[0]) if isinstance(reading, (list, tuple)) and reading else None
-
-        stamps = _MetricValues(len(gpu_points), lambda: [point["t"] for point in gpu_points])
-        for k in keys[:4]:
-            values = _MetricValues(len(gpu_points),
-                                   lambda device=k: [gpu_reading(point, device) for point in gpu_points])
-            times = (gpu_points[0]["t"], gpu_points[-1]["t"])
-            charts_.append((f"GPU {k} rate / utilization", values, 100.0, "%", times, stamps,
-                            self.cfg["intervals"]["gpu"], f"gpu:{k}:rate"))
-            means = _MetricValues(len(values), lambda values=values: busy_mean(values))
-            charts_.append((f"GPU {k} observed busy mean / efficiency proxy", means, 100.0, "%", times,
-                            stamps, self.cfg["intervals"]["gpu"], f"gpu:{k}:busy-mean"))
-        trace = snap.get("trace", {}).get(jid, [])
-        trace_groups, trace_spans = {}, {}
-        for point in trace:
-            if (not isinstance(point, dict) or type(point.get("index")) is not int or point["index"] < 0
-                    or charts._finite(point.get("t")) is None):
-                continue
-            device, timestamp = point["index"], point["t"]
-            trace_groups.setdefault(device, []).append(point)
-            bounds = trace_spans.get(device)
-            trace_spans[device] = (min(bounds[0], timestamp), max(bounds[1], timestamp)) if bounds else (timestamp, timestamp)
-        idx = sorted(trace_groups)
-        for i in idx[:4]:
-            group = trace_groups[i]
-            pts = _MetricValues(len(group), lambda group=group: sorted(group, key=lambda point: point["t"]))
-            values = _MetricValues(len(pts), lambda pts=pts: [finite_gpu(point.get("util")) for point in pts])
-            stamps = _MetricValues(len(pts), lambda pts=pts: [point["t"] for point in pts])
-            times = trace_spans[i]
-            charts_.append((f"GPU trace {i} rate / utilization ({len(pts)} samples)", values, 100.0, "%", times,
-                            stamps, 60.0, f"gpu-trace:{i}:rate"))
-            means = _MetricValues(len(values), lambda values=values: busy_mean(values))
-            charts_.append((f"GPU trace {i} observed busy mean / efficiency proxy", means, 100.0, "%",
-                            times, stamps, 60.0, f"gpu-trace:{i}:busy-mean"))
-        if keys or idx:
+            return head + _gpu_unavailable(snap, app, jid, record) + [[("   no samples recorded for this job yet", "dim")]]
+        charts_ = native["plots"] + trace["plots"]
+        if native["keys"] or trace["devices"]:
             head.append([(" GPU rate is sampled device busy %. Efficiency proxy is the mean of valid retained samples; gaps are excluded.", "dim")])
             head.append([(" GPU scope is observed devices only. Throughput, FLOP efficiency, and full-run allocation efficiency are not measured.", "dim")])
-            available = (any(gpu_reading(point, device) is not None for point in gpu_points for device in keys)
-                         or any(finite_gpu(point.get("util")) is not None for device in idx[:4]
-                                for point in trace_groups[device]))
-            if not available:
-                head += _gpu_unavailable(snap, app, jid, job or fin, detected=True)
-        elif getattr(job or fin, "gpus", 0) and not (series_notice and series_notice[2] in ("loading", "busy")):
-            head += _gpu_unavailable(snap, app, jid, job or fin)
+            if not native["available"]:
+                if "available" not in trace:
+                    trace["available"] = trace["availability"]()
+                if not trace["available"]:
+                    head += _gpu_unavailable(snap, app, jid, record, detected=True)
+        elif getattr(record, "gpus", 0) and not (series_notice and series_notice[2] in ("loading", "busy")):
+            head += _gpu_unavailable(snap, app, jid, record)
         from . import analytics_document, chart_interaction, metric_live
         native_document = analytics_document.eligible(app, avail)
         source_head = len(head)
@@ -2504,10 +2562,22 @@ class Views:
         if not g.ascii and width >= 120 and (avail is None or avail >= 28):
             telemetry = [(title, values) for title, values, hi, unit, _, _, _, _ in charts_ if unit == "%" and len(values) >= 2][:4]
             if telemetry:
-                head += charts.heatmap(g, [values.materialize() if isinstance(values, _MetricValues) else values
-                                         for _, values in telemetry], width,
-                                      labels=[title.split(" · ")[0] for title, _ in telemetry], hi=100, unit="%",
-                                      title="telemetry heatmap · each row's observations, oldest to newest")
+                heatmap_key = (width, g.ascii, g.spark, tuple(telemetry))
+                heatmaps = native["heatmaps"]
+                heatmap = heatmaps.get(heatmap_key)
+                if heatmap is None:
+                    heatmap = charts.heatmap(g, [values.materialize() if isinstance(values, _MetricValues) else values
+                                                for _, values in telemetry], width,
+                                            labels=[title.split(" · ")[0] for title, _ in telemetry], hi=100, unit="%",
+                                            title="telemetry heatmap · each row's observations, oldest to newest")
+                    from .metric_raster import coalesce_row
+                    heatmap = [coalesce_row(row) for row in heatmap]
+                    heatmaps[heatmap_key] = heatmap
+                    while len(heatmaps) > 4:
+                        heatmaps.popitem(last=False)
+                else:
+                    heatmaps.move_to_end(heatmap_key)
+                head += [list(row) for row in heatmap]
         columns = 2 if not g.ascii and width >= 140 and n >= 2 and (native_document or avail is None or avail >= 20) else 1
         plot_rows = max(1, (n + columns - 1) // columns)
         filled = not native_document and not g.ascii and (avail is None or avail - len(head) >= plot_rows * 10)
@@ -2561,7 +2631,9 @@ class Views:
                 # Each resource uses its own sampled span; a GPU trace cannot move a CPU time axis.
                 if isinstance(values, _MetricValues):
                     values = values.materialize()
+                observation_index = None
                 if isinstance(sample_times, _MetricValues):
+                    observation_index = sample_times.index()
                     sample_times = sample_times.materialize()
                 title = title.replace(" · ", " - ") if g.ascii else title
                 from . import chart_interaction
@@ -2569,12 +2641,19 @@ class Views:
                 column = position * (cell_width + 2)
                 panel = self.metric_curve(app, values, cell_width, h, identity, row=len(out), column=column,
                     running=bool(job and job.state == "RUNNING"), hi=hi, unit=unit, title=title,
-                    times=times, sample_times=sample_times, sample_interval=sample_interval)
+                    times=times, sample_times=sample_times, sample_interval=sample_interval, observation_index=observation_index)
                 if filled:
                     area_key = chart_interaction.key(app, metric_id, unit, jid, scope="resource-area", attempt=attempt)
-                    panel += self.metric_curve(app, values, cell_width, 2, area_key, row=len(out) + len(panel),
-                        column=column, filled=True, hi=hi, unit=unit, times=times,
-                        sample_times=sample_times, sample_interval=sample_interval)
+                    area_start = len(out) + len(panel)
+                    area_rows = 4 + int(chart_interaction.bounds(app, area_key, scale="linear") is not None)
+                    if inline_window and (area_start + area_rows <= inline_window[0] or area_start >= inline_window[1]):
+                        # A visible fine curve does not require its companion
+                        # area below the viewport to scan the full history.
+                        panel += [[] for _ in range(area_rows)]
+                    else:
+                        panel += self.metric_curve(app, values, cell_width, 2, area_key, row=area_start,
+                            column=column, filled=True, hi=hi, unit=unit, times=times,
+                            sample_times=sample_times, sample_interval=sample_interval, observation_index=observation_index)
                 panels.append(panel)
             out += self.beside(panels, [cell_width] * len(panels)) if columns > 1 else panels[0]
         if native_document:

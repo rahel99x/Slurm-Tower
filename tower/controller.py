@@ -1446,6 +1446,7 @@ class App:
         if self.plugins:
             hints.update({k: v[1] for k, v in self.plugins.commands.items()})
         hints.update({"metrics": "metrics FILE (attach a JSONL experiment stream)",
+                      "workers": "workers [single|multi|toggle|status] (background collection; the UI remains separate)",
                       "metric": "metric FILE --value NAME=NUMBER [--step N] [--completed N --total N]",
                       "artifacts": "artifacts CONTRACT ROOT (attach a declared output contract)",
                       "validate": "validate CONTRACT ROOT (validate declared outputs)",

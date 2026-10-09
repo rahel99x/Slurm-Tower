@@ -8,6 +8,7 @@ remapped from source rows; IDs never depend on visible line text.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 import copy
 import math
 import re
@@ -412,12 +413,21 @@ def partition(body, hits, tab: str = "jobs", *, chart_records=(), scroll_records
     return groups
 
 
+@lru_cache(maxsize=4096)
+def _surface_style(style):
+    resolved = style.replace("rev", "sel") if "rev" in style.split("+") else style
+    return resolved, "sel" in resolved.split("+")
+
+
 def _style_row(row, width: int) -> L.Row:
     # Existing reverse-video rows become the same deliberate selected-row style
     # in each workspace. Cell colours remain meaningful on all other rows.
-    out = [(text, style.replace("rev", "sel") if "rev" in style.split("+") else style)
-           for text, style in row]
-    selected = any("sel" in style.split("+") for _, style in out)
+    out, selected = [], False
+    for text, style in row:
+        resolved, active = (_surface_style(style) if len(style) <= 512
+                            else _surface_style.__wrapped__(style))
+        out.append((text, resolved))
+        selected |= active
     return L.fill_row(out, width, "text+bg:surface" + ("+sel" if selected else ""))
 
 

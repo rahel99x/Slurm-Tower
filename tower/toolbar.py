@@ -139,6 +139,12 @@ def menu_items(app, menu):
         from .research import RESEARCH_VIEWS
         from .startup import enabled as startup_enabled
         from .scrolling import enabled as smoothscroll_enabled
+        from .worker_ui import status as worker_status
+        workers = worker_status(app)
+        desired = workers["target"] if workers else "multi"
+        worker_toggle = "Switch background workers to " + ("multi" if desired == "single" else "single")
+        if workers and workers["pending"]:
+            worker_toggle += " (switch pending)"
         entries = [Item("tab-" + key, label + " page", "tab " + key) for key, label in TABS]
         entries += [Item("research-" + key, "Research: " + label, "workspace " + key)
                     for key, label in RESEARCH_VIEWS]
@@ -161,6 +167,10 @@ def menu_items(app, menu):
             Item("refresh", "Refresh all sources now", "refresh"),
             Item("rate", "Focus update-rate slider", local="rate"),
             Item("rate-reset", "Reset queue polling to " + _polling_label(app, 1), "rate reset"),
+            Item("workers-toggle", worker_toggle, "workers toggle", local="workers", context="workers"),
+            Item("workers-single", "Use one background worker", "workers single", local="workers", context="workers"),
+            Item("workers-multi", "Use concurrent background workers", "workers multi", local="workers", context="workers"),
+            Item("workers-status", "Background worker status", "workers status", local="workers", context="workers"),
             Item("smooth-scroll", "Disable smooth scrolling" if smoothscroll_enabled(app) else "Enable smooth scrolling", "smoothscroll toggle"),
             Item("startup-toggle", "Disable startup animation" if startup_enabled(app) else "Enable startup animation", "startup toggle"),
             Item("startup-preview", "Preview startup animation", "startup preview"),
@@ -186,8 +196,15 @@ def menu_items(app, menu):
 
 def _blocked(app, item):
     pending_execution = getattr(app, "execution_state", {}).get("pending_action")
-    if (getattr(app, "mode", "main") == "confirm" or pending_execution) and item.local not in ("quit", "about", "rate"):
+    if (getattr(app, "mode", "main") == "confirm" or pending_execution) and item.local not in ("quit", "about", "rate", "workers"):
         return "Close the pending job review first."
+    if item.context == "workers":
+        from .worker_ui import status
+        workers = status(app)
+        if workers is None:
+            return "Background worker controls are unavailable in this session."
+        if workers["closed"] and item.command != "workers status":
+            return "Background workers are stopped."
     tab = getattr(app, "tab", "")
     if item.context == "log" and (tab != "log" or getattr(getattr(app, "logs", None), "browser", True)):
         return "Open a log file first."
@@ -257,6 +274,11 @@ def _activate(app, item):
     elif action == "copy-mode":
         from .editor_yank import toggle
         toggle(app)
+    elif action == "workers":
+        # Admission controls are local presentation settings. Preserve any
+        # pending review, selection, and page while switching background work.
+        from .worker_ui import run_command
+        run_command(app, item.command.split())
     elif action in ("select", "select-all", "follow"):
         app.mode = "main"
         app.handle_action({"select": "visual", "select-all": "visual_all", "follow": "follow"}[action])
@@ -270,7 +292,7 @@ def _activate(app, item):
 
 def render_bar(views, app, width, y=0):
     """One topmost row; x bounds are exact even in a one-cell terminal."""
-    from . import refresh_rate
+    from . import refresh_rate, worker_ui
     state = initialize(app)
     width = max(0, int(width))
     if state["width"] != width or state["bar_y"] != y:
@@ -314,11 +336,15 @@ def render_bar(views, app, width, y=0):
     # Reserve the widest effective interval before choosing a menu form.
     # Changing the requested rate must never move menu labels or the track.
     minimum_slider = field_width + 1 + (9 if width >= 44 else 0)
-    quit_label, labels = next((form for form in forms if len(form[0]) + sum(map(len, form[1])) <= width - minimum_slider), forms[-1])
+    worker_space = 5 if worker_ui.status(app) is not None and width >= minimum_slider + 7 else 0
+    quit_label, labels = next((form for form in forms if len(form[0]) + sum(map(len, form[1])) <= width - minimum_slider - worker_space), forms[-1])
     append(quit_label, "danger+bold+bg:surface-raised", "quit")
     for index, label in enumerate(labels):
         selected = state["menu"] == index if len(labels) == 4 else state["menu"] is not None
         append(label, "accent+bold+bg:surface-sunken" if selected else BAR_STYLE, "menu", index)
+    worker_button = worker_ui.button(app, width - x - minimum_slider, ascii_=views.g.ascii)
+    if worker_button is not None:
+        append(*worker_button, "workers")
     from .editor_yank import mode as copy_mode
     destination = copy_mode(app)
     # Keep an update-rate value visible at every width. A compact switch
@@ -524,6 +550,9 @@ def handle_mouse(app, y, x, button="left", shift=False):
         elif kind == "copy-mode":
             from .editor_yank import toggle
             toggle(app)
+        elif kind == "workers":
+            from .worker_ui import run_command
+            run_command(app, ["workers", "toggle"])
         else:
             _close(app)
             state["focus"] = "rate"
@@ -579,6 +608,9 @@ def control_descriptors(app):
     labels = {"quit": "Quit", "rate": "Queue polling: " + polling_label,
               "minus": "Increase polling interval", "plus": "Decrease polling interval",
               "copy-mode": "Switch clipboard copy / editor yank"}
+    if any(hit[3] == "workers" for hit in state["hits"]):
+        from .worker_ui import summary
+        labels["workers"] = summary(app)
     for y, left, right, kind, key in state["hits"]:
         if kind == "track":
             track.append((y, left, right))

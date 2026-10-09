@@ -65,6 +65,7 @@
   "ascii": false,
   "animations": true,
   "mouse": true,
+  "worker_mode": "multi",
   "theme": "dark",
   "workspace": {
     "density": "comfortable",

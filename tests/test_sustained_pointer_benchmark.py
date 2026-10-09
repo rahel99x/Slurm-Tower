@@ -1,0 +1,182 @@
+"""The optional profiling experiment cannot consume deliberate input."""
+from collections import deque
+import importlib.util
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+@pytest.fixture(scope="module")
+def benchmark():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_sustained_pointer.py"
+    spec = importlib.util.spec_from_file_location("tower_sustained_pointer_benchmark", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+MOUSE = SimpleNamespace(BUTTON1_CLICKED=1, BUTTON1_PRESSED=2, BUTTON1_RELEASED=4,
+                       BUTTON1_DOUBLE_CLICKED=8, BUTTON3_CLICKED=16, BUTTON3_PRESSED=32,
+                       BUTTON4_PRESSED=64, BUTTON5_PRESSED=128, REPORT_MOUSE_POSITION=256)
+
+
+def motion(index, bits=256):
+    return "mouse", (0, index, 10, 0, bits)
+
+
+def fixture(events):
+    pending, queued, applied, timeout = deque(events), deque(), [], []
+    app = SimpleNamespace(mode="main")
+    window = SimpleNamespace(timeout=timeout.append)
+    screen = SimpleNamespace(
+        _read_input=lambda *_: pending.popleft() if pending else None,
+        _motion_report=lambda bits, _: bool(bits & MOUSE.REPORT_MOUSE_POSITION),
+        _apply_input=lambda _, event, *_args: applied.append(event),
+        _INPUT_READERS={id(window): SimpleNamespace(queue=queued)},
+    )
+    return SimpleNamespace(app=app, window=window, screen=screen, pending=pending,
+                           queued=queued, applied=applied, timeout=timeout)
+
+
+@pytest.mark.parametrize("event", [("q", None), ("resize", (52, 320)), ("paste", "research"),
+                                    motion(5, 2), motion(5, 4), motion(5, 1), motion(5, 64)])
+def test_profiling_drain_preserves_first_key_resize_paste_or_button_order(benchmark, event):
+    first, latest, future = motion(1), motion(2), motion(9)
+    f = fixture([first, latest, event, future])
+    assert benchmark.diagnostic_drain_motion(f.screen, f.app, f.window, MOUSE, [], seconds=1) == 2
+    assert f.applied == [latest]
+    assert f.queued[0] is event
+    assert list(f.pending) == [future]
+
+
+@pytest.mark.parametrize("owner", ["chart_interaction_state", "metric_live_state", "text_selection_state",
+                                   "job_selection_state", "scrollbar_state", "pane_drag_state"])
+def test_profiling_drain_never_reads_while_an_existing_gesture_owns_input(benchmark, owner):
+    event = motion(1)
+    f = fixture([event])
+    setattr(f.app, owner, {"capture": object()})
+    assert benchmark.diagnostic_drain_motion(f.screen, f.app, f.window, MOUSE, []) == 0
+    assert list(f.pending) == [event] and not f.timeout and not f.applied
+
+
+def test_profiling_drain_preserves_pending_event_and_respects_report_budget(benchmark):
+    f = fixture([motion(index) for index in range(10)])
+    assert benchmark.diagnostic_drain_motion(f.screen, f.app, f.window, MOUSE, [], pending=True) == 0
+    assert len(f.pending) == 10 and not f.timeout
+    assert benchmark.diagnostic_drain_motion(f.screen, f.app, f.window, MOUSE, [], limit=3, seconds=1) == 3
+    assert f.applied == [motion(2)] and len(f.pending) == 7
+
+
+@pytest.mark.parametrize("option,value", [
+    ("--rates", "0"), ("--rates", "-1"), ("--rates", "1001"),
+    ("--rates", "50,"), ("--rates", "50,50"),
+    ("--seconds", "0"), ("--seconds", "-1"), ("--seconds", "nan"),
+    ("--seconds", "inf"), ("--seconds", "11"),
+    ("--points", "0"), ("--points", "10001"),
+    ("--jobs", "2"), ("--jobs", "7"),
+    ("--delta", "0"), ("--delta", "31"), ("--delta", "nan"),
+])
+def test_public_arguments_fail_before_opening_a_pty(benchmark, monkeypatch, tmp_path, option, value):
+    calls = []
+    monkeypatch.setattr(benchmark, "run", lambda *_: calls.append(True))
+    source = Path(__file__).resolve().parents[1]
+    with pytest.raises(SystemExit) as error:
+        benchmark.main(["--source-root", str(source), "--output", str(tmp_path / "result.json"),
+                        option, value])
+    assert error.value.code == 2 and not calls
+
+
+def test_public_arguments_require_existing_output_directory(benchmark, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(benchmark, "run", lambda *_: calls.append(True))
+    source = Path(__file__).resolve().parents[1]
+    with pytest.raises(SystemExit) as error:
+        benchmark.main(["--source-root", str(source), "--output", str(tmp_path / "missing" / "result.json")])
+    assert error.value.code == 2 and not calls
+
+
+def test_valid_bounded_arguments_preserve_requested_comparison(benchmark, monkeypatch, tmp_path):
+    calls = []
+    def run(args, rate):
+        calls.append((rate, args.seconds, args.points, args.jobs, args.delta))
+        return {"rate_hz": rate}
+    monkeypatch.setattr(benchmark, "run", run)
+    source = Path(__file__).resolve().parents[1]
+    output = tmp_path / "result.json"
+    assert benchmark.main(["--source-root", str(source), "--output", str(output), "--rates", "250,1000",
+                           "--seconds", "3", "--points", "4000", "--jobs", "3", "--delta", "5"]) == 0
+    assert calls == [(250, 3., 4000, 3, 5.), (1000, 3., 4000, 3, 5.)]
+    assert output.is_file()
+
+
+def test_shared_live_delta_skips_retained_ineligible_and_other_job_controls(benchmark):
+    entries = {("live", "7", "cpu"): {"delta": 30},
+               ("live", "7", "retired"): {"delta": 30},
+               ("live", "8", "cpu"): {"delta": 30}}
+    configured = []
+    def set_delta(_, key, value):
+        configured.append(key)
+        entries[key]["delta"] = value
+        return True
+    metric = SimpleNamespace(initialize=lambda _: {"entries": entries},
+                             set_enabled=lambda _, key, value: key[-1] != "retired",
+                             set_delta=set_delta)
+    assert benchmark.configure_live(SimpleNamespace(selected_id="7"), metric, 5) == [5]
+    assert configured == [("live", "7", "cpu")]
+
+
+def test_live_fixture_requires_at_least_one_eligible_control(benchmark):
+    metric = SimpleNamespace(initialize=lambda _: {"entries": {("live", "7", "cpu"): {"delta": 30}}},
+                             set_enabled=lambda *_: False)
+    with pytest.raises(ValueError, match="no eligible"):
+        benchmark.configure_live(SimpleNamespace(selected_id="7"), metric, 5)
+
+
+def test_diagnostic_state_does_not_record_terminal_prefix_or_pasted_contents(benchmark):
+    import json
+    reader = SimpleNamespace(escape="private-terminal-bytes", pasting=True, queue=[("paste", "private-paste")],
+                             raw_values=["private-coordinate"], text=["private-paste"], pending=True)
+    state = benchmark.input_state(SimpleNamespace(mode="main", tab="jobs", quit=False), reader)
+    assert state["reader"] == {"escape_length": 22, "pasting": True, "queued_events": 1,
+                               "raw_values": 1, "pending_utf8_bytes": 0,
+                               "discard_mouse": False, "discard_csi": False, "pending": True}
+    assert "private" not in json.dumps(state)
+
+
+@pytest.mark.parametrize("initial,expected", [("multi", {250: "single", 500: "multi"}),
+                                             ("single", {250: "multi", 500: "single"})])
+def test_actual_command_switch_plan_visits_opposite_mode_and_returns(benchmark, initial, expected):
+    assert benchmark.switch_plan(initial, 750) == expected
+
+
+def test_switch_fixture_requires_enough_time_and_reports_before_opening_pty(benchmark, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(benchmark, "run", lambda *_: calls.append(True))
+    source = Path(__file__).resolve().parents[1]
+    with pytest.raises(SystemExit) as error:
+        benchmark.main(["--source-root", str(source), "--output", str(tmp_path / "result.json"),
+                        "--switch-workers", "--seconds", ".1"])
+    assert error.value.code == 2 and not calls
+
+
+def test_toolbar_switch_uses_published_cell_coordinates_and_complete_press_release(benchmark):
+    from tower import screen
+    raw = benchmark.switch_input("single", "toolbar", (0, 50, 60)).decode("ascii")
+    packets = [packet for packet in raw.split("\x1b") if packet]
+    press = screen._SGR_MOUSE.fullmatch("\x1b" + packets[0])
+    release = screen._SGR_MOUSE.fullmatch("\x1b" + packets[1])
+    assert press is not None and release is not None
+    assert press.groups() == ("0", "56", "1", "M")
+    assert release.groups() == ("0", "56", "1", "m")
+    assert benchmark.switch_input("single", "command") == b":workers single\r"
+
+
+def test_toolbar_control_requires_switch_and_unknown_control_is_rejected(benchmark, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(benchmark, "run", lambda *_: calls.append(True))
+    source = Path(__file__).resolve().parents[1]
+    for options in (["--switch-control", "toolbar"], ["--switch-workers", "--switch-control", "unknown"]):
+        with pytest.raises(SystemExit) as error:
+            benchmark.main(["--source-root", str(source), "--output", str(tmp_path / "result.json"), *options])
+        assert error.value.code == 2 and not calls

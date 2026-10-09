@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.8.3 |
+| Release | Tower 4.9.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -24,11 +24,21 @@ It also provides an ASCII display mode and plain-text reports.
 [Mouse and button navigation](docs/guides/pointer-navigation.md) ·
 [Adjustable workspaces and job advice](docs/guides/adaptive-workspaces.md) ·
 [Display and input performance](docs/guides/ui-performance.md) ·
+[Background workers](docs/guides/background-workers.md) ·
 [Pane scrolling and text selection](docs/guides/pane-navigation.md) ·
 [Controls](docs/CONTROLS.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.9.0
+
+- One byte decoder handles mouse reports, keyboard controls, Unicode, paste, and resize. Extended mouse coordinates cannot become keyboard shortcuts through partial ncurses decoding.
+- Native CPU/GPU series and traces reuse bounded prepared data. Indexed Live windows retain continuous curves, sample gaps, and corrections to older measurements.
+- Rendering reuses fitted text, measured widths, and theme styles. A bounded pointer check before paint prevents an old crosshair position from appearing after a rebuild.
+- Queue observers release the UI data lock before conversion and callback work. Each observer retains an isolated job snapshot.
+- The toolbar switches live between Single and Multi background workers. Single keeps one background worker and a separate UI thread. Accepted work and results survive mode changes. See [worker controls](docs/guides/background-workers.md).
+- Use the [sustained-input benchmark](docs/guides/ui-performance.md#measure-sustained-terminal-input) to measure queued input, paint intervals, and display work together.
 
 ## Changes in Tower 4.8.3
 

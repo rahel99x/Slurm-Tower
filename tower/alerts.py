@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from typing import Callable, Dict, List, Optional
 
 from .expr import Expr, ExprError, cluster_ns, job_ns
+from .worker_scheduler import WorkerScheduler
 
 
 class Rule:
@@ -50,13 +51,17 @@ class Rule:
 class AlertEngine:
     """``check(snap)`` evaluates every rule; ``bell`` is a counter the screen watches."""
 
-    def __init__(self, rules: List[dict], store, user: str = "", notify: Optional[Callable[[dict], None]] = None, bell: Optional[Callable[[], None]] = None):
+    def __init__(self, rules: List[dict], store, user: str = "", notify: Optional[Callable[[dict], None]] = None, bell: Optional[Callable[[], None]] = None,
+                 *, worker_scheduler=None):
         self.rules = [Rule(r) for r in rules if isinstance(r, dict) and r.get("when")]
         self.store, self.user, self.notify, self.bell_fn = store, user, notify, bell
         self.bell = 0
         self.errors: Dict[str, str] = {r.name: r.error for r in self.rules if r.error}
         self.recent: List[dict] = []                   # the last alerts, newest last
         self.lock = threading.Lock()
+        self._owns_worker_scheduler = worker_scheduler is None
+        self.worker_scheduler = worker_scheduler or WorkerScheduler(lanes=("notification",))
+        self.pool = self.worker_scheduler.lane("notification")
         self.snoozes = {}
         self.quiet = None
         self.quiet_zone = "America/Los_Angeles"
@@ -139,7 +144,15 @@ class AlertEngine:
                 except (OSError, subprocess.TimeoutExpired):
                     pass
 
-            threading.Thread(target=go, daemon=True).start()
+            try:
+                self.pool.submit(go)
+            except RuntimeError as exc:
+                self.errors[rule.name] = str(exc)[:512]
+
+    def close(self):
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        if self._owns_worker_scheduler:
+            self.worker_scheduler.shutdown(wait=False, cancel_futures=True)
 
     def snooze(self, rule, seconds, job="*"):
         """Mute notification delivery; condition evaluation and events continue."""

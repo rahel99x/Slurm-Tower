@@ -58,6 +58,13 @@ class Session:
         if self.app.logs.catalog:
             self.app.logs.catalog.close()
         self.sampler.shutdown()
+        for consumer in (getattr(self.sampler, "on_event", None), getattr(self.store, "alerts", None)):
+            close = getattr(consumer, "close", None)
+            if callable(close):
+                close()
+        governor = getattr(self.app, "worker_scheduler", None)
+        if governor is not None:
+            governor.shutdown(wait=False, cancel_futures=True)
         rec = getattr(self.backend, "close", None)
         if rec:
             rec()
@@ -153,6 +160,12 @@ def scoped_state_dir(backend, cfg: Config, user: str) -> str:
 
 def build(args, cfg: Config) -> Session:
     state_namespace(cfg)
+    worker_mode = getattr(args, "workers", None) or cfg.get("worker_mode", "multi")
+    if worker_mode not in ("single", "multi"):
+        raise ValueError("worker_mode must be single or multi")
+    cfg.set("worker_mode", worker_mode)
+    if getattr(args, "workers", None):
+        cfg.ui_locked_settings = set(getattr(cfg, "ui_locked_settings", ())) | {"worker_mode"}
     from .refresh_rate import poll_position, validate_multiplier
     requested_rate = args.rate if args.rate is not None else cfg.get("polling_multiplier", 1)
     if args.interval and args.rate is None:
@@ -170,10 +183,12 @@ def build(args, cfg: Config) -> Session:
         cfg.ui_locked_settings = set(getattr(cfg, "ui_locked_settings", ())) | {"intervals.jobs"}
     intervals = dict(cfg["intervals"])
     bell_fn = (lambda: sys.stdout.write("\a")) if args.watch else None
-    notifier = Notifier(cfg["notify"]["command"], cfg["notify"]["events"], bell=bell_fn, bell_kinds=("started",) if (args.bell or cfg["bell"]) else ())
+    from .worker_scheduler import WorkerScheduler
+    governor = WorkerScheduler(mode=worker_mode)
+    notifier = Notifier(cfg["notify"]["command"], cfg["notify"]["events"], bell=bell_fn, bell_kinds=("started",) if (args.bell or cfg["bell"]) else (), worker_scheduler=governor)
     sampler = Sampler(slurm, store, intervals, cfg["gpu_types"], history_days=args.days or cfg["history_days"], account=args.account or cfg["account"],
                       gpu_sampling=not args.no_gpu and cfg["gpu_sampling"], on_event=notifier, weather=bool(cfg["weather"]), probes=cfg["weather_probes"],
-                      budget=bool(cfg["budget"]), files=files)
+                      budget=bool(cfg["budget"]), files=files, worker_scheduler=governor)
     api = None
     if not args.no_plugins:
         api = plugins.load(plugins.discover(cfg.path, cfg["plugins"]))
@@ -187,17 +202,19 @@ def build(args, cfg: Config) -> Session:
     rules = list(cfg["alerts"] or [])
     for i, expr in enumerate(args.alert or []):
         rules.append(dict(name=f"alert {i + 1}", when=expr, actions=["bell", "event"], every=600))
-    store.alerts = AlertEngine(rules, store, user=user, notify=notifier, bell=bell_fn)
+    store.alerts = AlertEngine(rules, store, user=user, notify=notifier, bell=bell_fn, worker_scheduler=governor)
     ascii_ = ascii_mode(args, cfg)
     views = Views(Glyphs(ascii_), cfg, files=files, plugins=api)
     app = App(store, sampler, actions, cfg, user, ascii_=ascii_, interactive=not (args.once or args.json or args.csv or args.watch or args.run or args.eval or args.wait_for or args.report))
+    from .worker_ui import bind
+    bind(app, governor)
     app.plugins, app.files, app.views_ref = api, files, views
     app.demo = bool(args.fake)
     app.logs.files = files
     app.host_label = (args.host or cfg["host"]) if not (args.fake or args.replay) else ""
     app.replay = replay
     from .research import ResearchHub
-    app.research = ResearchHub(cfg, files, demo=args.fake, slurm=slurm,
+    app.research = ResearchHub(cfg, files, demo=args.fake, slurm=slurm, worker_scheduler=governor,
                               settings={k: getattr(args, k) for k in ("metrics_file", "contract", "workdir", "passport", "planning_file")})
     if args.rate is not None or args.interval:
         from .refresh_rate import set_multiplier
@@ -338,6 +355,8 @@ def parse(argv):
                     help="with --gpu-check: create a private new directory with report.json, report.txt, and command evidence")
     ap.add_argument("--ui-trace", default="", metavar="FILE",
                     help="save bounded UI phase timings and page transitions to a new JSON file when the interactive session exits")
+    ap.add_argument("--workers", choices=("single", "multi"), default=None,
+                    help="background worker mode; the interactive UI stays on its own thread")
     ap.add_argument("--profile", default="", help="a [profiles.NAME] section of the config to merge over it (a cluster)")
     ap.add_argument("--host", default="", help="remote mode: run every Slurm command on this login node over ssh")
     ap.add_argument("--ssh-user", default="", help="the login on --host (default: as here)")
@@ -403,7 +422,7 @@ def parse(argv):
         i = run_index
         pre, post, cmd = argv[:i], argv[i + 1:], []
         switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--unicode", "--no-color", "--no-gpu", "--bell", "--paused", "--json"}
-        valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval", "--rate", "--ui-trace"}
+        valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval", "--rate", "--ui-trace", "--workers"}
         batch_command = bool(post and post[0] and any(c.startswith(post[0]) for c in ("resubmit", "prepare", "submit", "array")))
         from .research_commands import COMMANDS, command_value_option
         from .planning_commands import COMMANDS as planning_commands

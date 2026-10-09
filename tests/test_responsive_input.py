@@ -290,10 +290,14 @@ def test_actual_loop_cached_hover_then_queued_click_gets_one_fresh_document(dash
     observed_feedback = []
 
     def read(*args):
-        if window.frames == 2:
-            observed_feedback.append(dict(counts))
         assert events
-        return events.popleft()
+        event = events.popleft()
+        # The first passive endpoint can now be caught up before the first
+        # paint. Observe the next hover itself, before its queued click, rather
+        # than assuming that cached feedback requires a second terminal paint.
+        if event == mouse_report(6, row + 1):
+            observed_feedback.append(dict(counts))
+        return event
 
     monkeypatch.setattr(screen, "_read_input", read)
     screen.run_curses(app, views, None, store, None, app.cfg)
