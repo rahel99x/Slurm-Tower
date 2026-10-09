@@ -564,3 +564,23 @@ def test_nonregular_series_does_not_block_the_shared_worker(dashboard, tmp_path)
     J.run_command(dashboard.app, ["jobpanel", "quick"])
     result = ready(dashboard)
     assert "must be a regular file" in text(result)
+
+
+def test_history_quick_advisor_is_explicit_and_reads_the_finished_job(dashboard, monkeypatch):
+    app = dashboard.app
+    app.tab = "history"
+    dashboard.store.finished = [Finished("700", "past-run", "FAILED", cpus=2, elapsed="00:02:00", exit="1:0")]
+    app.selected_id = "700"
+    J.initialize(app)["mode"] = "quick"
+    rows, _ = dashboard.render()
+    assert "Analyze this job" in L.to_text(rows, 70)
+    assert app.research is None
+    original, requested = Q.capture, []
+    def record(store, jid, event):
+        requested.append(jid)
+        return original(store, jid, event)
+    monkeypatch.setattr(Q, "capture", record)
+    assert J.run_command(app, ["jobpanel", "quick"])
+    result = ready(dashboard)
+    assert requested == ["700"] and result["job"] == "700"
+    assert app.tab == "history" and app.selected_id == "700"

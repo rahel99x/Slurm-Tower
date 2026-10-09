@@ -210,6 +210,9 @@ def test_group_projection_and_progress_animations_remain_outside_row_cache(case)
     job_groups.fold(app, group.id, True)
     collapsed = views.job_rows(snap, app)
     assert len(collapsed) == 1 and collapsed[0]["_group"].collapsed
-    assert collapsed[0]["_progress_animation"] == "clock"
+    assert collapsed[0]["_progress_animation"] is None
+    assert collapsed[0]["progress"] == ""
     job_groups.fold(app, group.id, False)
-    assert len(views.job_rows(snap, app)) == 2
+    reopened = views.job_rows(snap, app)
+    assert len(reopened) == 2
+    assert all(row["_progress_animation"] == "clock" and row["progress"] for row in reopened)

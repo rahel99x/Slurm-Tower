@@ -98,6 +98,7 @@ Use the existing submission procedure and review when you want to run a script.
 ## Inspect a job inside Jobs
 
 Select an active job or a job in Recents.
+History provides the same Details controls for its selected accounting record.
 The Details panel provides seven buttons:
 
 | Button | Purpose |
@@ -105,8 +106,8 @@ The Details panel provides seven buttons:
 | Inspector | Inspect job identity, requests, resources, steps, paths, and source status |
 | Logs | Read the exact job's available log sources |
 | Investigate | Inspect bounded failure evidence and its source coverage |
-| Research | Inspect all twelve project and planning workspaces inside Jobs |
-| Analytics | Inspect Job series, History, Timeline, Advisor, and Compare inside Jobs |
+| Research | Inspect all twelve project and planning workspaces inside the current job page |
+| Analytics | Inspect Job series, History, Timeline, Advisor, and Compare inside the current job page |
 | Quick Advisor | Request a summary of allocation and measured resource behaviour for the exact job |
 | Off | Hide inspection content |
 
@@ -123,8 +124,8 @@ Off retains the button row so that you can restore an inspection mode.
 5. Use Up, Down, or page keys to scroll the content.
 6. Press Esc to return keyboard input to the job rows.
 
-**Expected result:** The selected inspection stays inside Jobs.
-The active or recent job remains the target.
+**Expected result:** The selected inspection stays inside Jobs or History.
+The selected active, recent, or historical job remains the target.
 Mouse clicks use the same visible-control graph as F8 navigation.
 Its arrows change focus without activating the destination.
 Press Esc or F8 to leave graph focus before using native panel keys.
@@ -141,7 +142,28 @@ Use `:jobpanel research VIEW` or `:jobpanel analytics VIEW` to select an inline 
 Use `:jobpanel quick` to request Quick Advisor.
 Restoring that saved mode leaves it idle until you select Analyze this job.
 The inspection mode persists when normal state is enabled.
+Jobs and History retain separate mode, Research subview, and Analytics subview preferences.
 Button focus and the panel's selected log file last for the current session.
+
+### Inspect a historical job
+
+1. Open History and select an available job record.
+2. Select Inspector, Logs, Investigate, Research, Analytics, or Quick Advisor in Details.
+3. Check the job ID in the panel heading.
+4. Use the wheel or focused navigation keys to scroll its content.
+5. Select Off to hide the content, or another mode to change the evidence view.
+
+**Expected result:** History keeps the selected job beside the same inspection tools as Jobs.
+The mode and subview rows remain available while long content scrolls.
+Drag its divider to adjust the split, or maximize the focused pane.
+Narrow terminals stack Main and Details vertically.
+Missing historical files or measurements remain unavailable; an active job does not supply replacement data.
+Completed jobs do not receive running-metric Live or polling controls.
+Quick Advisor still requires explicit activation and reports its evidence limits.
+
+Right-click inside the History job list to open log export for the marked or selected job IDs.
+Right-click in Details to clear local selections; right-click on a graph retains its graph-reset action.
+Use the [History export procedure](log-view.md#export-logs-for-history-jobs) for complete log bundles.
 
 ### Read multiple log sources
 
@@ -176,7 +198,7 @@ Click a cited log path to open its exact source on the full Logs page.
 A hypothesis is an explanation supported by cited evidence, not proof of the application's cause.
 Readers update in the background as job records and files change.
 
-The wide Jobs layout places Details beside the tables.
+The wide Jobs and History layouts place Details beside their tables.
 Narrow terminals stack the panels.
 Use `Ctrl-W` or F6 for panel focus and `z` to maximize the focused panel.
 Off suppresses selected-job content and starts no new log or evidence reads.
@@ -187,7 +209,7 @@ See [Adjustable workspaces and job advice](adaptive-workspaces.md) for divider, 
 
 ### Inspect Research and Analytics without changing pages
 
-1. Select an active or recent job in Jobs.
+1. Select an active or recent job in Jobs, or a record in History.
 2. Click Research or Analytics in Details.
 3. Click the required subview button.
 4. Move the pointer into the content and use the wheel to scroll.
@@ -322,7 +344,9 @@ Use them on Analytics → Job series or Jobs → Details → Analytics → Job s
 The first sets a window from 30 seconds to one second.
 The second requests reads from five seconds to 500 milliseconds for that exact job and source.
 Both use logarithmic scales. Numeric metric polling commands use positions one to 100.
-The controls show effective time intervals.
+**Set** shows that slider's requested interval; **Poll** shows the shared effective interval.
+Compact rows put the effective value before the polling track and `S` plus the requested value after it.
+Moving the slider updates its requested value even when a faster global or companion request keeps the effective interval unchanged.
 
 Right-click the first slider to restore 30 seconds.
 Right-click the second to restore its five-second polling request.

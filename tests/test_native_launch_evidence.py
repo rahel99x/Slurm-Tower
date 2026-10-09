@@ -8,6 +8,9 @@ from tower.job_groups import Registry
 from tower.model import Job
 from tower.slurm import FakeBackend, GROUP_FMT, JOB_FMT, Slurm, parse_group, parse_jobs
 
+LEGACY_JOB_FMT = "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o"
+LEGACY_GROUP_FMT = "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S"
+
 
 def user_row(jid="100", *, workdir=None, command="/project/train.sh"):
     values = [jid, "experiment", "main", "PENDING", "0:00", "01:00:00", "1", "4", "N/A", "(Priority)",
@@ -38,7 +41,8 @@ class QueueBackend:
 
 def test_job_trailing_field_keeps_existing_positional_dataclass_contract():
     names = [field.name for field in fields(Job)]
-    assert names[-2:] == ["user", "workdir"]
+    assert names[23:25] == ["user", "workdir"]
+    assert names[25:] == ["comment", "cluster"]
     assert Job("1", "name", "main", "PENDING").workdir == ""
 
 
@@ -54,7 +58,7 @@ def test_native_user_queue_has_reliable_owner_absolute_workdir_and_no_extra_poll
     assert record.user == "alex" and record.workdir == "/project with spaces"
     assert record.command == "/project/train.sh"
     assert backend.calls == [["squeue", "-u", "alex", "-h", "-o", JOB_FMT]]
-    assert JOB_FMT.endswith("|%o|%Z")
+    assert JOB_FMT.endswith("|%o|%Z|%k|TOWER_GROUP_V1")
 
 
 def test_ordinary_native_jobs_infer_launch_without_inspection_or_filesystem_access(monkeypatch):
@@ -92,7 +96,7 @@ def test_account_poll_supplies_launch_evidence_for_each_owner_without_extra_quer
                            account_row("102", user="bea", workdir="/project with spaces"))
     records = Slurm(backend, "alex").group("lab")
     assert backend.calls == [["squeue", "-h", "-A", "lab", "-o", GROUP_FMT]]
-    assert GROUP_FMT.endswith("|%a|%o|%Z")
+    assert GROUP_FMT.endswith("|%a|%o|%Z|%k|TOWER_GROUP_V1")
     group, = Registry().ensure({"group": records}).groups.values()
     assert group.members == ("100", "101") and "102" not in group.members
     assert all(record.workdir == "/project with spaces" for record in records)
@@ -128,7 +132,7 @@ def recording(tmp_path, entries):
 
 def test_legacy_user_recording_replays_at_exact_time_without_false_launch_evidence(tmp_path):
     from tower.record import ReplayBackend
-    legacy = JOB_FMT.rsplit("|", 1)[0]
+    legacy = LEGACY_JOB_FMT
     command = ["squeue", "-u", "alex", "-h", "-o", legacy]
     early = user_row("100") + user_row("101")
     path = recording(tmp_path, [{"t": 100, "cmd": command, "out": early, "dt": .01},
@@ -146,7 +150,7 @@ def test_legacy_user_recording_replays_at_exact_time_without_false_launch_eviden
 
 def test_legacy_account_recording_preserves_user_account_scope(tmp_path):
     from tower.record import ReplayBackend
-    legacy = GROUP_FMT.rsplit("|", 3)[0]
+    legacy = LEGACY_GROUP_FMT
     command = ["squeue", "-h", "-A", "lab", "-o", legacy]
     path = recording(tmp_path, [{"t": 100, "cmd": command, "out": account_row("100") + account_row("101")}])
     replay = ReplayBackend(str(path), paused=True)
@@ -159,7 +163,7 @@ def test_legacy_account_recording_preserves_user_account_scope(tmp_path):
 def test_new_recorded_queue_response_takes_priority_over_legacy_alias(tmp_path):
     from tower.record import ReplayBackend
     current = ["squeue", "-u", "alex", "-h", "-o", JOB_FMT]
-    legacy = [*current[:-1], JOB_FMT.rsplit("|", 1)[0]]
+    legacy = [*current[:-1], LEGACY_JOB_FMT]
     path = recording(tmp_path, [{"t": 100, "cmd": legacy, "out": user_row("100")},
                                {"t": 100, "cmd": current, "out": user_row("200", workdir="/project")}])
     records = Slurm(ReplayBackend(str(path), paused=True), "alex").jobs()
@@ -170,7 +174,7 @@ def test_new_recorded_queue_error_is_not_hidden_by_successful_legacy_alias(tmp_p
     from tower.record import ReplayBackend
     from tower.slurm import CommandError
     current = ["squeue", "-u", "alex", "-h", "-o", JOB_FMT]
-    path = recording(tmp_path, [{"t": 100, "cmd": [*current[:-1], JOB_FMT.rsplit("|", 1)[0]], "out": user_row("100")},
+    path = recording(tmp_path, [{"t": 100, "cmd": [*current[:-1], LEGACY_JOB_FMT], "out": user_row("100")},
                                {"t": 100, "cmd": current, "err": "recorded current-format error"}])
     with pytest.raises(CommandError, match="recorded current-format error"):
         Slurm(ReplayBackend(str(path), paused=True), "alex").jobs()
@@ -182,7 +186,7 @@ def test_new_recorded_queue_error_is_not_hidden_by_successful_legacy_alias(tmp_p
 def test_replay_format_alias_does_not_match_different_scope_or_arbitrary_command(tmp_path, requested):
     from tower.record import ReplayBackend
     from tower.slurm import CommandError
-    legacy = ["squeue", "-u", "alex", "-h", "-o", JOB_FMT.rsplit("|", 1)[0]]
+    legacy = ["squeue", "-u", "alex", "-h", "-o", LEGACY_JOB_FMT]
     path = recording(tmp_path, [{"t": 100, "cmd": legacy, "out": user_row("100")}])
     with pytest.raises(CommandError, match="not in the recording"):
         ReplayBackend(str(path), paused=True).run(requested)

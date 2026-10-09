@@ -18,7 +18,7 @@ TABLE_KEYS = {
     "jobs": ("id", "name", "progress", "part", "st", "where", "cpus", "gpu", "time", "left",
              "cpu%", "eff", "mem%", "gpu%", "flags", "tags", "info"),
     "history": ("id", "name", "state", "part", "elapsed", "cpus", "gpus", "ce", "me",
-                "rss", "start", "end", "exit", "nodes", "tags"),
+                "rss", "start", "end", "exit", "nodes", "tags", "info"),
     "group": ("user", "id", "name", "part", "st", "where", "cpus", "gpu", "time", "prio", "info"),
     "nodes": ("name", "state", "cpus", "load", "loadpct", "mem", "gres", "gused", "gutil", "jobs"),
     "sources": ("name", "state", "every", "last", "latency", "calls", "errors", "backoff", "error"),
@@ -270,6 +270,11 @@ def history_value(record, key: str, snap=None):
         return record.name
     if key == "state":
         return "ACCOUNTING" if isinstance(record, Job) else record.state
+    if key == "info":
+        # Sorting precedes presentation grouping, as it does in the live table.
+        # Use the allocation's real status; a group header remains its first
+        # visible record and never masquerades as an aggregate allocation.
+        return (record.state, getattr(record, "reason", ""))
     if key == "part":
         return record.partition
     if key == "elapsed":

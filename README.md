@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.9.0 |
+| Release | Tower 4.10.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -23,6 +23,7 @@ It also provides an ASCII display mode and plain-text reports.
 [Live workbench](docs/guides/live-workbench.md) ·
 [Mouse and button navigation](docs/guides/pointer-navigation.md) ·
 [Adjustable workspaces and job advice](docs/guides/adaptive-workspaces.md) ·
+[Automatic launch groups](docs/guides/batch-launches.md) ·
 [Display and input performance](docs/guides/ui-performance.md) ·
 [Background workers](docs/guides/background-workers.md) ·
 [Pane scrolling and text selection](docs/guides/pane-navigation.md) ·
@@ -30,6 +31,13 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.10.0
+
+- Metric polling controls show both the requested **Set** interval and shared effective **Poll** interval. A faster shared request no longer makes a changed slider appear unchanged.
+- Launch grouping uses available queue and accounting evidence for old and new jobs. Closed groups show state counts while retaining exact member identities. See [Automatic launch groups](docs/guides/batch-launches.md).
+- History Details provides the same Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off modes as Jobs. Reports remain attached to the selected historical job.
+- Grouping and Details use published snapshots and the existing background readers. Mouse movement does not fetch job evidence or activate another page.
 
 ## Changes in Tower 4.9.0
 
@@ -351,8 +359,8 @@ The [planning guide](docs/WAVE_TWO.md) explains predictions, uncertainty, scalin
 
 ### Inspect a completed or failed job
 
-1. Open Jobs.
-2. Select the job in the active table or Recents.
+1. Open Jobs or History.
+2. Select the job in the active table, Recents, or History.
 3. Click Inspector, Logs, Investigate, Research, Analytics, or Quick Advisor in Details.
 4. Use arrow keys and Enter to select and activate another visible button.
 5. Click its content to scroll, or use `:jobpanel focus` for native panel keyboard controls.
@@ -375,7 +383,10 @@ Use these controls on Analytics → Job series or Jobs → Details → Analytics
 Set the first slider's window from 30 seconds to one second.
 Live follows the current time and displays recorded observations within that window.
 Drag the second slider from five seconds to 500 milliseconds to request reads for that exact job and source, subject to source limits.
-Its label shows the effective interval in `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
+**Set** shows that slider's requested interval; **Poll** shows the shared effective interval.
+Compact rows show the effective value before the polling track and `S` plus the request after it.
+A faster global or companion-metric request can keep **Poll** unchanged while **Set** changes.
+Labels use `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
 Right-click the window slider to restore 30 seconds, or the sampling slider to restore its five-second request.
 Sampling requests also apply while Live is off.
 Read the source age and sampling interval when the window is empty.
@@ -404,9 +415,11 @@ Use `:history-dock left|right|top|bottom|auto` when you need keyboard access.
 The history choices update from published job records during the session.
 
 Tower recognizes scheduler arrays, explicit launch markers, and ordinary launch bursts with matching provenance.
+The same detection applies to available historical records and new queue publications.
 Click a group's fold symbol to hide or show its jobs across the job pages.
 Use `:jobgroups off` when you need individual rows.
 Collapsed groups retain a real representative job ID; hidden members do not become action targets automatically.
+See [Automatic launch groups](docs/guides/batch-launches.md) to identify a batch, read its state counts, and load older records.
 
 The six-cell Progress column appears before JOBID and uses the job's published application progress when available.
 It contains a narrow symbol, a space, and four fractional block cells.
@@ -430,7 +443,8 @@ Click a Jobs or Recents row to return arrow navigation from Details to that list
 Press Esc from Details control navigation to return to Main, or use F6 to switch panes.
 
 In History, select the completed or failed job.
-Press `I` for its inspector or `l` for its full Logs page.
+Use its Details buttons for the same inspection modes as Jobs.
+Press `I` for the separate inspector or `l` for its full Logs page.
 In Logs, press `O` for the grouped file list.
 Select a file with arrow keys and press Enter.
 Press Esc to return to that list.
@@ -629,6 +643,7 @@ See [Documentation style](docs/DOCUMENTATION_STYLE.md) for terminology and proce
 | Diagnose delayed highlights or long-view scrolling | [Display and input performance](docs/guides/ui-performance.md) |
 | Find any of the 50 quality-of-life changes | [Improvement index](docs/QUALITY_OF_LIFE.md) |
 | Sort, filter, mark, and inspect table records | [Table guide](docs/guides/tables.md) |
+| Group new and historical batches and mark a launch explicitly | [Automatic launch groups](docs/guides/batch-launches.md) |
 | Read older log content or search complete files | [Log search guide](docs/guides/log-search.md) |
 | Bookmark, compare, and organize log content | [Log display guide](docs/guides/log-view.md) |
 | Change navigation, settings, and command input | [Navigation guide](docs/guides/navigation.md) |

@@ -1325,8 +1325,11 @@ class Views:
 
     def group_controls(self, app, rows, hits, records, base, tab, width):
         """Attach fold buttons to real representative rows, preserving job IDs."""
-        from .job_groups import metadata_for_record
+        from .job_groups import metadata_for_record, summary
+        from .job_group_ui import paint_info
         from .pane_drag import _replace
+        info = next(((value[2], value[3]) for y, kind, value in hits
+                     if y == base - 1 and kind == "sort_header" and value[:2] == (tab, "info")), None)
         for offset, record in enumerate(records):
             meta = metadata_for_record(app, tab, record.id)
             y = base + offset
@@ -1334,31 +1337,52 @@ class Views:
                 continue
             glyph = (">" if meta.collapsed else "v") if self.g.ascii else ("▸" if meta.collapsed else "▾")
             rows[y] = _replace(rows[y], 0, glyph, "cyan+bold", width)
+            if info is not None:
+                rows[y] = paint_info(rows[y], meta, info, width, ascii_=self.g.ascii)
             hits.append((y, "control", {"id": "jobgroup:" + tab + ":" + meta.group.id + (":row:" + str(y) if tab == "deps" else ""),
-                "label": meta.group.label + f" / {meta.visible_count} visible / {meta.total_count} observed",
+                "label": meta.group.label + f" / {meta.visible_count} visible / {meta.total_count} observed; representative job " + record.id + "; " + summary(meta.stats or meta.records) + "; " + meta.group.reason,
                 "left": 0, "right": 1, "action": ("command", "jobgroup toggle " + meta.group.id), "group": "job-groups"}))
 
     # ---- history tab ------------------------------------------------------------------------------
     FIN_COLS = [Column("id", "JOBID", 5, 16), Column("name", "NAME", 8, 30, flex=True), Column("state", "STATE", 5, 14), Column("part", "PART", 4, 9),
                 Column("elapsed", "ELAPSED", 7, 12, ">"), Column("cpus", "CPU", 3, 4, ">"), Column("gpus", "GPU", 3, 3, ">"), Column("ce", "CPU EFF", 7, 7, ">"),
                 Column("me", "MEM EFF", 7, 7, ">"), Column("rss", "PEAK MEM", 8, 10, ">"), Column("start", "STARTED", 5, 12), Column("end", "ENDED", 5, 12),
-                Column("exit", "EXIT", 4, 6), Column("nodes", "NODES", 5, 16, flex=True), Column("tags", "TAGS", 4, 14)]
+                Column("exit", "EXIT", 4, 6), Column("nodes", "NODES", 5, 16, flex=True), Column("tags", "TAGS", 4, 14), Column("info", "INFO", 10, 64, flex=True)]
+
+    def finished_columns(self, app, context):
+        from .table_ui import columns
+        from .job_group_ui import has_collapsed
+        cols = columns(app, context, self.FIN_COLS) if app else self.FIN_COLS
+        if not app or not has_collapsed(app, context):
+            return [column for column in cols if column.key != "info"]
+        if not app.table_state.get("order", {}).get(context):
+            info = [column for column in cols if column.key == "info"]
+            cols = [column for column in cols if column.key != "info"]
+            position = next((index + 1 for index, column in enumerate(cols) if column.key == "state"), len(cols))
+            cols[position:position] = info
+        return cols
 
     def finished_rows(self, fin: Sequence[Finished], width: int, title: str, cursor: Optional[int] = None, app=None,
                       *, header_cells=None, sort_tab=None) -> List[Row]:
         if not fin:
             return []
-        data = [self.finished_dict(f) for f in fin]
-        from .table_ui import columns
         sort_tab = sort_tab or ("recent" if title == "recent" else "history")
-        cols = columns(app, sort_tab, self.FIN_COLS) if app else self.FIN_COLS
+        data = [self.finished_dict(f, app=app, context=sort_tab) for f in fin]
+        cols = self.finished_columns(app, sort_tab)
         drop = (("nodes", "exit", "start", "gpus", "part", "rss", "tags") if any(row.get("tags") for row in data)
                 else ("tags", "nodes", "exit", "start", "gpus", "part", "rss"))
         rows, _ = table(cols, data, width, self.g.ascii, indent="   ", droppable=drop, cursor=cursor,
                         header_cells=header_cells)
         return [rule(self.g, width, title)] + rows
 
-    def finished_dict(self, f: Finished) -> dict:
+    def finished_dict(self, f: Finished, *, app=None, context="history") -> dict:
+        row = self._finished_dict(f)
+        if app is not None:
+            from .job_group_ui import finished_row
+            return finished_row(app, context, row)
+        return row
+
+    def _finished_dict(self, f: Finished) -> dict:
         if isinstance(f, Job):
             return dict(fin=f, id=f.id, name=f.name, state="accounting...", part=f.partition,
                         elapsed=f.elapsed, cpus=f.cpus, gpus=f.gpus or "", ce="n/a", me="n/a",
@@ -1396,9 +1420,9 @@ class Views:
         from .table_ui import columns
         from .table_tools import date_label, record_page
         from .table_sort import chain, describe, header_hits
-        fin_columns = columns(app, "history", self.FIN_COLS)
         self.cfg_tags = snap.get("tags", {})
         fin = app.sync_history_selection(snap)
+        fin_columns = self.finished_columns(app, "history")
         key, rev = app.sort.get("history", "end"), app.reverse.get("history", False)
         n = len(fin)
         cur = app.clamp_cursor("history", n)
@@ -1427,12 +1451,26 @@ class Views:
         vis = max(1, height - len(prefix) - 2)
         top = app.scroll_to("history", cur, vis, n)
         shown = fin[top:top + vis]
-        data = [self.finished_dict(f) for f in shown]
+        data = [self.finished_dict(f, app=app, context="history") for f in shown]
         cells = []
         marks = {i for i, record in enumerate(shown) if record.id in app.marks}
-        trows, _ = table(fin_columns, data, max(1, width - 1), self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top if app.selected_id else None,
+        drop = (("nodes", "exit", "start", "gpus", "part", "rss", "tags") if any(row.get("tags") for row in data)
+                else ("tags", "nodes", "exit", "start", "gpus", "part", "rss"))
+        trows, kept = table(fin_columns, data, max(1, width - 1), self.g.ascii, droppable=drop, cursor=cur - top if app.selected_id else None,
                          marks=marks, mark_char=self.g.mark,
                          header_cells=cells)
+        if (any(row.get("tags") for row in data) and any(column.key == "tags" for column in fin_columns)
+                and not any(column.key == "tags" for column in kept)):
+            # The split pane can omit optional columns. Preserve visible tag
+            # badges in the name cell, unless the user explicitly hid TAGS.
+            from .research import clean
+            tagged = [dict(row, name="[" + clean(row["tags"], self.g.ascii) + "] " + row["name"])
+                      if row.get("tags") else row for row in data]
+            cells.clear()
+            trows, _ = table([column for column in kept if column.key != "_mark"], tagged,
+                             max(1, width - 1), self.g.ascii,
+                             cursor=cur - top if app.selected_id else None, marks=marks,
+                             mark_char=self.g.mark, header_cells=cells)
         title = f"history {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "history"
         out = prefix + [_scroll_rule(self.g, width, title)] + trows
         if not fin:
@@ -1440,7 +1478,7 @@ class Views:
         hits = header_hits("history", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
         self.group_controls(app, out, hits, shown, len(prefix) + 2, "history", width)
         _table_scrollbar(app, "history", width, len(prefix) + 2, vis, n, top, header=len(prefix))
-        if fin and app.selected_id:
+        if fin and app.selected_id and not getattr(app, "job_panel_defer_content", False):
             out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
         record_page(app, "history", len(shown))
         return out, hits
@@ -1874,7 +1912,8 @@ class Views:
         from .job_groups import project_records
         records_by_id = {record.id: record for record in list(snap.get("finished", ())) + list(snap.get("departed_jobs", {}).values()) + list(snap["jobs"])}
         records = [records_by_id.get(jid) for tree in trees for _, _, jid in tree]
-        grouped = project_records(app, snap, [record for record in records if record is not None], tab="deps")
+        others = [j for j in snap["jobs"] if j.id not in related_ids]
+        grouped = project_records(app, snap, [record for record in records if record is not None] + others, tab="deps")
         displayed = {record.id for record in grouped}
         out: List[Row] = [rule(g, width, f"dependency chains: {len(graph.edges)} edges among {len(related_ids)} jobs (c cancels a job and everything downstream, h releases a held chain)")]
         if self.visual_room(width, height) and trees:
@@ -1910,6 +1949,13 @@ class Views:
                     branch = ("" if depth == 0 else "   " * (depth - 1) + ("  " + (g.box[2] if not g.ascii else "+") + (g.box[4] if not g.ascii else "-") + " "))
                 kind_t = (kind + " " + (g.arrow + " ") if kind else "")
                 row: Row = [("   " + branch, "dim"), (kind_t, "magenta"), (f"{jid} ", "cyan"), (pad(cut(name, 20, g.ascii), 20), "bold"), ("  " + desc, style)]
+                from .job_groups import metadata_for_record
+                meta = metadata_for_record(app, "deps", jid)
+                if meta is not None and meta.header and meta.collapsed:
+                    from .job_group_ui import summary_row
+                    label = f"   {jid} {meta.group.label} / {meta.visible_count} records "
+                    row = [(cut(label, width, g.ascii), "accent+bold")] + summary_row(meta.stats or meta.records,
+                        max(0, width - L.vlen(label)), ascii_=g.ascii)
                 if jid in app.marks:
                     row.insert(0, (" " + g.mark, "magenta"))
                 if k == cur and height is not None and selected(app, "deps", True):
@@ -1929,11 +1975,25 @@ class Views:
             j = jobs.get(sel)
             if j and j.pending:
                 out.append([("   waits for " + ", ".join(graph.blocked_by(sel)), "yellow")])
-        others = [j for j in snap["jobs"] if j.id not in related_ids]
         if others:
             out.append(rule(g, width, f"{len(others)} independent jobs"))
-            out.append([("   " + cut("  ".join(f"{j.id}({j.name})" for j in others), width - 4, g.ascii), "dim")])
+            for record in others:
+                if record.id not in displayed:
+                    continue
+                from .job_groups import metadata_for_record
+                meta = metadata_for_record(app, "deps", record.id)
+                label = f"   {record.id} {record.name}"
+                row = [(cut(label, width, g.ascii), "dim")]
+                if meta is not None and meta.header and meta.collapsed:
+                    from .job_group_ui import summary_row
+                    label = f"   {record.id} {meta.group.label} / {meta.visible_count} records "
+                    row = [(cut(label, width, g.ascii), "accent+bold")] + summary_row(meta.stats or meta.records,
+                        max(0, width - L.vlen(label)), ascii_=g.ascii)
+                out.append(row)
+                self.group_controls(app, out, hits, [record], len(out) - 1, "deps", width)
         for y, _, jid in list(hits):
+            if not isinstance(jid, str):
+                continue
             record = records_by_id.get(jid)
             if record is not None:
                 self.group_controls(app, out, hits, [record], y, "deps", width)
@@ -2338,6 +2398,7 @@ class Views:
         body_width = max(1, width - 1) if document else width
         body_avail = None if document else avail
         previous_window = getattr(app, "analytics_render_window", None)
+        app.analytics_group_hits = []
         if document:
             offsets = getattr(app, "analytics_scroll_offsets", None)
             if not isinstance(offsets, dict):
@@ -2361,6 +2422,7 @@ class Views:
                 body = self.analytics_timeline(snap, app, body_width, body_avail, days)
         finally:
             app.analytics_render_window = previous_window
+        group_hits = getattr(app, "analytics_group_hits", [])
         if document:
             from .scrolling import viewport
             page, count = max(0, (avail or 0) - 1), max(0, len(body) - 1)
@@ -2371,6 +2433,8 @@ class Views:
                 lambda y: y - painted if 1 + painted <= y < 1 + painted + page else None,
                 clip=(1, 0, 1 + page, width)))
             body = body[:1] + body[1 + painted:1 + painted + page]
+            group_hits = [(y - painted, kind, value) for y, kind, value in group_hits
+                          if 1 + painted <= y < 1 + painted + page]
             if body and width >= 6:
                 body[0] = L.clip_row([("    ", "")] + body[0], width)
             if page and width >= 2:
@@ -2381,10 +2445,12 @@ class Views:
             clip=(len(out), 0, len(out) + len(body), width))
         SB.place_since(app, scroll_mark, dy=len(out),
             clip=(len(out), 0, len(out) + len(body), width))
+        hits += [(len(out) + y, kind, value) for y, kind, value in group_hits if 0 <= y < len(body)]
         return out + body, hits
 
     def analytics_advisor(self, snap: dict, app, width: int, avail: Optional[int], days: float) -> List[Row]:
         """What each job name should ask for, from its completed runs in the window; the running jobs so far."""
+        app.analytics_group_hits = []
         g = self.g
         now = clock.now()
         t_lo = now - days * 86400
@@ -2412,6 +2478,8 @@ class Views:
             out.append([("   nothing finished in the window", "dim")])
         running = [j for j in snap["jobs"] if not j.pending]
         if running:
+            from .job_groups import project_records, metadata_for_record
+            running = project_records(app, snap, running, tab="analytics:advisor")
             out.append(rule(g, width, "running jobs so far"))
             by_name = self.history_advice_cache.groups(snap["finished"])
             window = getattr(app, "analytics_render_window", None)
@@ -2425,10 +2493,20 @@ class Views:
                 if not lower <= len(out) < upper:
                     out.append([])
                     continue
+                meta = metadata_for_record(app, "analytics:advisor", j.id)
+                if meta is not None and meta.header and meta.collapsed:
+                    from .job_group_ui import summary_row
+                    label = f"   {j.id} {meta.group.label} / {meta.visible_count} records "
+                    out.append([(cut(label, width, g.ascii), "accent+bold")] + summary_row(meta.stats or meta.records,
+                        max(0, width - L.vlen(label)), ascii_=g.ascii))
+                    self.group_controls(app, out, app.analytics_group_hits, [j], len(out) - 1, "analytics:advisor", width)
+                    continue
                 lv = snap["live"].get(j.id)
                 adv = advisor.advise_running(j, lv, _native_series(_series_of(app, j.id)), by_name.get(j.name, ()))
                 text = adv.summary(g.dot) or "nothing to change yet"
                 out.append([(f"   {j.id} ", "cyan"), (pad(cut(j.name, 20, g.ascii), 20), "bold"), (" " + cut(text, width - 36, g.ascii), "")])
+                if meta is not None and meta.header:
+                    self.group_controls(app, out, app.analytics_group_hits, [j], len(out) - 1, "analytics:advisor", width)
         if avail is not None:
             out = out[:avail]
         return out

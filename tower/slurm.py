@@ -12,12 +12,14 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .model import Finished, GpuSample, Job, Live, Node, NodeCell, Partition, Step, fint, fnum, gres_gpus, gpus_in_tres, hms, nbytes, secs, stamp
 
-JOB_FMT = "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o|%Z"
+GROUP_WIRE_MARKER = "TOWER_GROUP_V1"
+JOB_FMT = "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o|%Z|%k|" + GROUP_WIRE_MARKER
 START_FMT = "%i|%S"
-GROUP_FMT = "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S|%a|%o|%Z"
+GROUP_FMT = "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S|%a|%o|%Z|%k|" + GROUP_WIRE_MARKER
 GPU_ALLOC_FMT = "JobID:0|,tres-alloc:0"
 PEND_FMT = "%P|%C|%b|%D"
-SACCT_FIELDS = "JobID,JobName,State,Elapsed,AllocCPUS,TotalCPU,ReqMem,MaxRSS,Start,End,Partition,NNodes,ExitCode,AllocTRES,NodeList,Submit,WorkDir,Timelimit"
+SACCT_LEGACY_FIELDS = "JobID,JobName,State,Elapsed,AllocCPUS,TotalCPU,ReqMem,MaxRSS,Start,End,Partition,NNodes,ExitCode,AllocTRES,NodeList,Submit,WorkDir,Timelimit"
+SACCT_FIELDS = SACCT_LEGACY_FIELDS + ",User,Account,Comment"
 SSTAT_FIELDS = "JobID,AveCPU,MaxRSS,MaxRSSTask,MaxRSSNode,AveRSS,NTasks,MinCPU,MinCPUTask,MinCPUNode"
 SACCT_STEP_FIELDS = "JobID,JobName,State,Elapsed,TotalCPU,MaxRSS,MaxRSSNode,MaxRSSTask,NTasks,ExitCode,NodeList"
 SACCT_SUBMIT_FIELDS = "JobID,SubmitLine,WorkDir,JobName,Partition,Account,QOS,ReqCPUS,ReqMem,Timelimit,NNodes,ReqTRES"
@@ -165,10 +167,10 @@ class FakeBackend(Backend):
                     lines.append("|".join([s["id"], self.user, s["name"], s["part"], state, hms(elapsed) if state == "RUNNING" else "0:00", s["limit"], str(s["nodes"]), str(s["cpus"]),
                                            gres, reason, str(s["prio"]), s.get("node", "") if state == "RUNNING" else "", self._ts(s["submit"]),
                                            self._ts(s["start"]) if state == "RUNNING" else "N/A", "lab_01",
-                                           f"/home/{self.user}/jobs/{s['name'].split('_')[0]}.sbatch", os.getcwd()]))
+                                           f"/home/{self.user}/jobs/{s['name'].split('_')[0]}.sbatch", os.getcwd(), s.get("comment", ""), GROUP_WIRE_MARKER]))
                 for (i, u, n, p, st, el, lim, nn, c, g, r, pr, nd) in self.others:
                     lines.append("|".join([i, u, n, p, st, hms(el + t) if st == "RUNNING" else "0:00", lim, str(nn), str(c), g, r, str(pr), nd, self._ts(-el - 600),
-                                           self._ts(-el) if st == "RUNNING" else "N/A", "lab_01", f"/home/{u}/jobs/{n.split('_')[0]}.sbatch", os.getcwd()]))
+                                           self._ts(-el) if st == "RUNNING" else "N/A", "lab_01", f"/home/{u}/jobs/{n.split('_')[0]}.sbatch", os.getcwd(), "", GROUP_WIRE_MARKER]))
                 return "\n".join(lines) + "\n", 0.03
             if fmt == PEND_FMT:                             # cluster-wide pending
                 lines = [f"{s['part']}|{s['cpus']}|{('gres/gpu:' + s['gt'] + ':' + str(s['gn'])) if s['gn'] else 'N/A'}|{s['nodes']}" for s, state, _ in self._rows() if state == "PENDING"]
@@ -190,7 +192,7 @@ class FakeBackend(Backend):
                                        s.get("node", "") if not pending else "", s["mem"], self._ts(s["start"]) if s.get("start") is not None and not pending else "N/A",
                                        self._ts(s["submit"]), reason, str(s["prio"]), s.get("dep", "(null)") or "(null)", "lab_01", "normal",
                                        self._ts(s["start"] + secs(s["limit"])) if s.get("start") is not None and not pending else "N/A",
-                                       f"/home/{self.user}/jobs/{s['name'].split('_')[0]}.sbatch", os.getcwd()]))
+                                       f"/home/{self.user}/jobs/{s['name'].split('_')[0]}.sbatch", os.getcwd(), s.get("comment", ""), GROUP_WIRE_MARKER]))
             return "\n".join(lines) + ("\n" if lines else ""), 0.02
         if name == "sstat":
             jid = cmd[cmd.index("-j") + 1]
@@ -283,11 +285,11 @@ class FakeBackend(Backend):
             for f in self._finished_rows():
                 sub = f.get("submit") or self._before(f["start"], 600)
                 lim = f.get("limit", {"TIMEOUT": f["elapsed"]}.get(f["state"], "02:00:00"))
-                lines.append("|".join([f["id"], f["name"], f["state"], f["elapsed"], str(f["cpus"]), f["cpu"], f["mem"], "", f["start"], f["end"], f["part"], str(f["nodes"]), f["exit"], f["tres"], f["nl"], sub, wd, lim]))
-                lines.append("|".join([f["id"] + ".batch", "batch", f["state"].split()[0], f["elapsed"], str(f["cpus"]), f["cpu"], "", f["rss"], f["start"], f["end"], f["part"], str(f["nodes"]), f["exit"], f["tres"], f["nl"], sub, wd, lim]))
+                lines.append("|".join([f["id"], f["name"], f["state"], f["elapsed"], str(f["cpus"]), f["cpu"], f["mem"], "", f["start"], f["end"], f["part"], str(f["nodes"]), f["exit"], f["tres"], f["nl"], sub, wd, lim, self.user, "lab_01", f.get("comment", "")]))
+                lines.append("|".join([f["id"] + ".batch", "batch", f["state"].split()[0], f["elapsed"], str(f["cpus"]), f["cpu"], "", f["rss"], f["start"], f["end"], f["part"], str(f["nodes"]), f["exit"], f["tres"], f["nl"], sub, wd, lim, self.user, "lab_01", f.get("comment", "")]))
             for s, state, elapsed in self._rows():
                 if state == "RUNNING":
-                    lines.append("|".join([s["id"], s["name"], "RUNNING", hms(elapsed), str(s["cpus"]), "00:00:00", s["mem"], "", self._ts(s["start"]), "Unknown", s["part"], str(s["nodes"]), "0:0", "", s.get("node", ""), self._ts(s["submit"]), wd, s["limit"]]))
+                    lines.append("|".join([s["id"], s["name"], "RUNNING", hms(elapsed), str(s["cpus"]), "00:00:00", s["mem"], "", self._ts(s["start"]), "Unknown", s["part"], str(s["nodes"]), "0:0", "", s.get("node", ""), self._ts(s["submit"]), wd, s["limit"], self.user, "lab_01", s.get("comment", "")]))
             return "\n".join(lines) + "\n", 0.2
         if name == "sinfo":
             if "-N" in cmd:
@@ -384,11 +386,13 @@ def parse_jobs(text: str) -> List[Job]:
         nodes = fint(f[6]) or 1
         # Old recordings have twenty fields. Extra separators in a command or
         # path make the optional WorkDir ambiguous; omit grouping evidence.
-        workdir = f[20] if len(f) == 21 and os.path.isabs(f[20]) and "\0" not in f[20] else ""
+        modern = len(f) == 23 and f[-1] == GROUP_WIRE_MARKER
+        workdir = f[20] if (len(f) == 21 or modern) and os.path.isabs(f[20]) and "\0" not in f[20] else ""
+        comment = f[21] if modern and workdir else ""
         out.append(Job(id=f[0], name=f[1], partition=f[2], state=f[3], elapsed=f[4], limit=f[5], nodes=nodes, cpus=fint(f[7]), gpu_type=gtype,
                        gpus=gcount * nodes, nodelist="" if f[9].startswith("(") else f[9], mem_req=f[10], start=f[11], submit=f[12], reason=f[13],
                        priority=fint(f[14]), dependency=("" if len(f) < 16 or f[15] in ("(null)", "") else f[15]), account=f[16] if len(f) > 16 else "",
-                       qos=f[17] if len(f) > 17 else "", end=f[18] if len(f) > 18 else "", command=f[19] if len(f) > 19 else "", workdir=workdir))
+                       qos=f[17] if len(f) > 17 else "", end=f[18] if len(f) > 18 else "", command=f[19] if len(f) > 19 else "", workdir=workdir, comment=comment))
     return out
 
 
@@ -401,11 +405,13 @@ def parse_group(text: str) -> List[Job]:
             continue
         gtype, gcount = gres_gpus(f[9])
         nodes = fint(f[7]) or 1
-        workdir = f[17] if len(f) == 18 and os.path.isabs(f[17]) and "\0" not in f[17] else ""
+        modern = len(f) == 20 and f[-1] == GROUP_WIRE_MARKER
+        workdir = f[17] if (len(f) == 18 or modern) and os.path.isabs(f[17]) and "\0" not in f[17] else ""
+        comment = f[18] if modern and workdir else ""
         out.append(Job(id=f[0], user=f[1], name=f[2], partition=f[3], state=f[4], elapsed=f[5], limit=f[6], nodes=nodes, cpus=fint(f[8]), gpu_type=gtype,
                        gpus=gcount * nodes, reason=f[10], priority=fint(f[11]), nodelist=f[12] if len(f) > 12 and not f[12].startswith("(") else "",
                        submit=f[13] if len(f) > 13 else "", start=f[14] if len(f) > 14 and f[14] != "N/A" else "",
-                       account=f[15] if len(f) > 15 else "", command=f[16] if len(f) > 16 else "", workdir=workdir))
+                       account=f[15] if len(f) > 15 else "", command=f[16] if len(f) > 16 else "", workdir=workdir, comment=comment))
     return out
 
 
@@ -642,6 +648,13 @@ def parse_sacct(text: str) -> List[Finished]:
             j.submit = f[15] if len(f) > 15 else ""
             j.workdir = f[16] if len(f) > 16 else ""
             j.limit = f[17] if len(f) > 17 else ""
+            # Unescaped pipes in names, paths or comments make provenance
+            # ambiguous. Do not infer a launch from shifted optional fields.
+            provenance = (len(f) == 21 and os.path.isabs(j.workdir) and "\0" not in j.workdir
+                          and (secs(j.limit) is not None or j.limit in ("UNLIMITED", "Partition_Limit", "NOT_SET"))
+                          and all(re.fullmatch(r"[A-Za-z0-9_.@-]*", value) for value in f[18:20]))
+            if provenance:
+                j.user, j.account, j.comment = f[18:21]
             req = nbytes(f[6])
             if f[6].endswith("c"):
                 req *= j.cpus or 1
@@ -717,6 +730,7 @@ class Slurm:
         self._hosts: Dict[str, List[str]] = {}
         self._sacct_log_paths_supported: Optional[bool] = None
         self._gpu_allocations_supported: Optional[bool] = None
+        self._sacct_group_fields_supported: Optional[bool] = None
 
     def jobs(self) -> List[Job]:
         out, _ = self.b.run(["squeue", "-u", self.user, "-h", "-o", JOB_FMT], self.timeout)
@@ -868,7 +882,21 @@ class Slurm:
         return result
 
     def finished(self, days: float) -> List[Finished]:
-        out, _ = self.b.run(["sacct", "-u", self.user, "-n", "-P", "-S", f"now-{int(days * 24)}hours", "-o", SACCT_FIELDS], max(self.timeout, 20.0))
+        fields = SACCT_LEGACY_FIELDS if self._sacct_group_fields_supported is False else SACCT_FIELDS
+        command = ["sacct", "-u", self.user, "-n", "-P", "-S", f"now-{int(days * 24)}hours", "-o", fields]
+        try:
+            out, _ = self.b.run(command, max(self.timeout, 20.0))
+        except CommandError as error:
+            message = str(error).lower()
+            unsupported = any(term in message for term in ("invalid field", "unknown field", "unrecognized field"))
+            if fields == SACCT_LEGACY_FIELDS or not unsupported:
+                raise
+            self._sacct_group_fields_supported = False
+            command[-1] = SACCT_LEGACY_FIELDS
+            out, _ = self.b.run(command, max(self.timeout, 20.0))
+        else:
+            if fields == SACCT_FIELDS:
+                self._sacct_group_fields_supported = True
         return parse_sacct(out)
 
     def partitions(self, gpu_types: Sequence[str]) -> Tuple[List[Partition], Dict[str, Dict[str, int]], Dict[str, NodeCell]]:

@@ -20,6 +20,8 @@ Enter commands with `:`. Press Enter to run a command. Press Esc to close an
 overlay. Tower saves column settings, filters, sort priorities, named views,
 History date ranges, and the normal Recents limit in local UI state.
 A freeze and a temporary Recents expansion apply to the current session.
+Use [Automatic launch groups](batch-launches.md) to fold related new or historical jobs, read batch state counts, and mark an explicit launch.
+Closed groups retain one real representative ID. Hidden members do not become action targets automatically.
 
 <a id="feature-01"></a>
 
@@ -356,13 +358,13 @@ These methods are for extensions and tests. They use the existing event loop.
 | `table_ui.initialize(app)` | Create table preferences. |
 | `table_ui.restore(app, data)` / `save(app)` | Validate and restore preferences; return JSON-compatible state. |
 | `table_ui.command_names()` / `run_command(app, args)` | List and run column, facet, view, grouping, and sort commands. |
-| `table_ui.handle_key(app, key)` / `overlay(views, snap, app, width, height)` | Handle the column editor and array folds; place an overlay. |
+| `table_ui.handle_key(app, key)` / `overlay(views, snap, app, width, height)` | Handle the column editor and launch-group folds; place an overlay. |
 | `table_ui.definitions(table)` / `ordered_definitions(app, table)` | Return available columns in default or configured order. |
 | `table_ui.columns(app, table, original)` | Apply order, visibility, widths, and sort indicators. |
 | `table_ui.matches(app, table, record, snap)` | Apply facets and numeric rules to a typed record. |
 | `table_ui.chips(app, table, width, ascii_=False)` | Draw chips and retain exact click bounds. |
 | `table_ui.fingerprint(app, table)` / `facets_fingerprint(app, table)` | Return selection-cache identities for settings or facets. |
-| `table_ui.group_rows(app, rows)` | Apply array folds without replacing task IDs. |
+| `table_ui.group_rows(app, rows, snap=None, tab="jobs", *, index=None)` | Apply shared launch-group folds without replacing job IDs. |
 | `table_sort.validate_chain(table, value)` / `chain(app, table)` | Validate or read ordered sort rules. |
 | `table_sort.set_sort(app, table, column, direction)` / `cycle_sort(app, table, column)` | Change a rule while retaining the others' priorities. |
 | `table_sort.clear_sort(app, table)` / `reset_sort(app, table)` | Select source order or the legacy default. |

@@ -135,12 +135,13 @@ def _capture_context(app, identity):
     analysis, panel, toolbar = (_state(app, name) for name in
                                 ("analysis_state", "job_panel_state", "toolbar_state"))
     mode, tab = getattr(app, "mode", "main"), getattr(app, "tab", "")
-    selected = (getattr(app, "selected_id", None) if tab == "jobs" else
+    selected = (getattr(app, "selected_id", None) if tab in ("jobs", "history") else
                 getattr(app, "analytics_job", None) if tab == "analytics" else None)
     return (mode, tab, getattr(app, "width", None), getattr(app, "height", None), selected,
             getattr(app, "analytics_view", None) if tab == "analytics" else None,
-            panel.get("mode") if tab == "jobs" else None,
-            panel.get("analytics_view") if tab == "jobs" else None,
+            panel.get("mode") if tab in ("jobs", "history") else None,
+            panel.get("analytics_view") if tab in ("jobs", "history") else None,
+            panel.get("research_view") if tab in ("jobs", "history") else None,
             analysis.get("modal") if mode == "analysis" else None,
             analysis.get("chart_job") if mode == "analysis" else None,
             analysis.get("metric") if mode == "analysis" else None,

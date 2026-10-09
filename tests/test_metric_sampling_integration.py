@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from tower import (chart_interaction as charts, clock, layout,
+from tower import (analysis_ui, chart_interaction as charts, clock, layout,
                    metric_live, metric_sampling, refresh_rate, screen,
                    text_selection)
 from tower.config import Config
@@ -273,6 +273,98 @@ def test_global_and_metric_fastest_endpoints_cannot_compound_below_stack_floor(d
     assert d.sampler.sampling_interval("live", "8") == .5
     assert metric_sampling.cadence(app, control.key) == .5
     assert d.sampler.intervals["live"] == 30.0
+
+
+@pytest.mark.parametrize("metric,collector", [
+    ("CPU per core (%)", "live"), ("Memory (GB)", "live"),
+    ("GPU utilization (%)", "gpu"),
+])
+@pytest.mark.parametrize("attempt", [3, "trial-3"])
+def test_linked_project_native_chart_uses_scheduler_attempt_for_real_polling(dashboard, metric, collector, attempt):
+    d, app = dashboard, dashboard.app
+    app.project_state.update(root="/project", binding={
+        "job_id": "7", "project_root": "/project", "run_id": "training", "attempt": attempt,
+    })
+    identity = analysis_ui.chart_key(app, metric, "Tower session resource samples", jid="7", job=d.store.jobs[0])
+    assert identity[4:] == ("scheduler:submit|start", None, None, None)
+    charts.begin_frame(app, 190, 90)
+    metric_live.controls(d.views.g, app, identity, 100, running=True, row=8, column=10)
+    charts.publish(app, 190, 90)
+    control = controls(app)[0]
+    assert metric_live.handle_mouse(app, *point(control.rate_slider, right=True), button="left")
+    assert d.sampler.sampling_interval(collector, "7", identity[4]) == .5
+    assert "Poll 500ms" in layout.row_text(metric_live.feedback(app, d.views.g)[0][2])
+
+    # Changing the report binding cannot detach a native scheduler collector.
+    app.project_state["binding"].update(attempt="trial-next", run_id="other-report")
+    assert analysis_ui.chart_key(app, metric, "Tower session resource samples", jid="7") == identity
+    external = analysis_ui.chart_key(app, "loss", "/project/metrics.jsonl", jid="7")
+    assert external[4:7] == ("trial-next", "/project", "other-report")
+
+
+@pytest.mark.parametrize("metric,collector", [
+    ("CPU per core (%)", "live"), ("Memory (GB)", "live"),
+    ("GPU utilization (%)", "gpu"),
+])
+def test_linked_native_chart_modal_paints_poll_change_and_reset_in_place(dashboard, metric, collector):
+    d, app = dashboard, dashboard.app
+    d.store.apply_gpu("7", [GpuSample(0, 50, 100, 200, "GPU")])
+    app.project_state.update(root="/project", binding={
+        "job_id": "7", "project_root": "/project", "run_id": "training", "attempt": 1,
+    })
+    d.draw()
+    app.run_command('chart "' + metric + '"')
+    assert app.mode == "analysis"
+    _, hits = d.draw()
+    control = next(item for item in controls(app) if item.key[2] == metric and item.layer == 1)
+    app.click(*point(control.rate_slider, right=True), hits, button="press")
+    app.click(*point(control.rate_slider, right=True), hits, button="release")
+    assert d.sampler.sampling_interval(collector, "7", control.key[4]) == .5
+    assert "Poll 500ms" in layout.row_text(metric_live.feedback(app, d.views.g)[0][2])
+    app.click(*point(control.rate_slider), hits, button="right")
+    assert d.sampler.sampling_interval(collector, "7", control.key[4]) == 5.0
+    assert "Poll 5s" in layout.row_text(metric_live.feedback(app, d.views.g)[0][2])
+    assert app.tab == "analytics" and app.mode == "analysis" and app.selected_id == "7"
+
+
+@pytest.mark.parametrize("tab", ["analytics", "jobs"])
+@pytest.mark.parametrize("limiter", ["global", "companion"])
+def test_sampling_drag_reports_requested_and_shared_cadence_without_document_work(dashboard, monkeypatch, tab, limiter):
+    d, app = dashboard, dashboard.app
+    _, hits = d.draw(tab)
+    native = [control for control in controls(app) if metric_sampling.source(control.key) == "live"]
+    selected, companion = native[:2]
+    if limiter == "global":
+        refresh_rate.set_multiplier(app, 50)
+    else:
+        assert metric_live.set_rate(app, companion.key, 100)
+    # Keep one published document: motion feedback must not need a graph
+    # render, source read or source publication to report the new setting.
+    monkeypatch.setattr(d.store, "snapshot", lambda *a, **k: pytest.fail("slider took a snapshot"))
+    monkeypatch.setattr(d.views, "metric_curve", lambda *a, **k: pytest.fail("slider rendered metrics"))
+    slider = selected.rate_slider_full
+    geometry = (selected.slider_full, selected.rate_slider_full)
+    app.click(slider.top, slider.left, hits, button="press")
+    feedback_rows = []
+    for x in (slider.left, (slider.left + slider.right - 1) // 2, slider.right - 1):
+        app.click(slider.top, x, hits, button="drag")
+        actual = metric_sampling.cadence(app, selected.key)
+        wanted = refresh_rate.poll_interval(entry(app, selected)["rate"], maximum=100)
+        assert actual == .5
+        overlays = metric_live.feedback(app, d.views.g)
+        rendered = next(row for y, left, row in overlays
+                        if (y, left) == (selected.visible.top, selected.visible.left))
+        text = layout.row_text(rendered)
+        assert "500ms" in text and metric_sampling.format_interval(wanted) in text
+        assert "Set " in text or "S" + metric_sampling.format_interval(wanted) in text
+        assert layout.vlen(text) == selected.visible.right - selected.visible.left
+        assert metric_live.active(app)
+        assert (selected.slider_full, selected.rate_slider_full) == geometry
+        assert app.tab == tab and app.selected_id == "7"
+        feedback_rows.append(text)
+    assert len(set(feedback_rows)) == 3
+    app.click(slider.top, slider.right - 1, hits, button="release")
+    assert not metric_live.active(app)
 
 
 @pytest.mark.parametrize("remote,floor", [(False, .5), (True, 1.5)])

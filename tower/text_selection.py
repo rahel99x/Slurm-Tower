@@ -424,6 +424,10 @@ def _focused(app, state):
         target = next((p for p in panes if p.key == "history-browser:" + tab), None)
         if target is not None:
             return target
+    if tab == "history":
+        target = next((p for p in panes if p.key == "history"), None)
+        if target is not None:
+            return target
     if tab == "jobs":
         key = "recent" if getattr(app, "cursor", {}).get("jobs", 0) >= len(getattr(app, "visible_ids", ())) else "jobs"
         target = next((p for p in panes if p.key == key), None)

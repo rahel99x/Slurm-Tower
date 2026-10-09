@@ -114,7 +114,7 @@ def request(app):
 
 
 def _visible(app, state):
-    return (getattr(app, "tab", "") == "jobs" and getattr(app, "mode", "main") == "main"
+    return (getattr(app, "tab", "") in ("jobs", "history") and getattr(app, "mode", "main") == "main"
             and getattr(app, "job_panel_state", {}).get("mode") == "quick"
             and getattr(app, "selected_id", None) == state.get("job"))
 

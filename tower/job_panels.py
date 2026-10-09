@@ -1,4 +1,4 @@
-"""Live, job-scoped Details tabs with independent log and inspection state.
+"""Live and historical job-scoped Details tabs with independent log and inspection state.
 
 Interactive frames inspect published snapshots only. Log discovery and tails use
 the existing bounded research worker; no second executor or scheduler mutation
@@ -19,8 +19,20 @@ TABS = (("inspector", "Inspector"), ("logs", "Logs"),
         ("investigate", "Investigate"), ("research", "Research"),
         ("analytics", "Analytics"), ("quick", "Quick Advisor"), ("off", "Off"))
 MODES = tuple(name for name, _ in TABS)
+DETAIL_TABS = ("jobs", "history")
 MAX_ROWS = 2048
 MAX_LOG_BYTES = 256 * 1024
+
+
+def _preferences(data):
+    result = {"mode": "inspector", "research_view": "experiment", "analytics_view": "job"}
+    if isinstance(data, dict):
+        if data.get("mode") in MODES:
+            result["mode"] = data["mode"]
+        for group in ("research", "analytics"):
+            if data.get(group + "_view") in dict(_choices(group)):
+                result[group + "_view"] = data[group + "_view"]
+    return result
 
 
 def initialize(app):
@@ -36,29 +48,53 @@ def initialize(app):
     state.setdefault("document_windows", {})
     state.setdefault("document_maps", {})
     state.setdefault("document_headers", {})
+    state.setdefault("workspace", "jobs")
+    workspaces = state.setdefault("workspaces", {})
+    tab = getattr(app, "tab", "jobs")
+    if tab in DETAIL_TABS and tab != state["workspace"]:
+        # Mode choices belong to a workspace. Readers remain session-owned;
+        # changing the page clears their exact-job attachment before use.
+        workspaces[state["workspace"]] = _preferences(state)
+        state.update(_preferences(workspaces.get(tab)))
+        state.update(workspace=tab, focus="", job=None, file_id=None, entries=[])
+        for key in ("scrolls", "view_states", "document_windows", "document_maps", "document_headers"):
+            state[key].clear()
     return state
 
 
 def restore(app, data):
     state = initialize(app)
-    if isinstance(data, dict) and data.get("mode") in MODES:
-        state["mode"] = data["mode"]
     if isinstance(data, dict):
-        from .views import ANALYTICS_VIEWS
-        from .research import RESEARCH_VIEWS
-        for group, choices in (("research", RESEARCH_VIEWS), ("analytics", ANALYTICS_VIEWS)):
-            if data.get(group + "_view") in dict(choices):
+        if data.get("mode") in MODES:
+            state["mode"] = data["mode"]
+        for group in ("research", "analytics"):
+            if data.get(group + "_view") in dict(_choices(group)):
                 state[group + "_view"] = data[group + "_view"]
+    if isinstance(data, dict) and isinstance(data.get("history"), dict):
+        state["workspaces"]["history"] = _preferences(data["history"])
+        if state["workspace"] == "history":
+            state["workspaces"]["jobs"] = _preferences(data)
+            state.update(state["workspaces"]["history"])
 
 
 def save(app):
     state = initialize(app)
-    result = {"mode": state["mode"]}
-    # Keep legacy preference files compact unless a workspace choice was made.
-    for group, default in (("research", "experiment"), ("analytics", "job")):
-        if state[group + "_view"] != default:
-            result[group + "_view"] = state[group + "_view"]
+    state["workspaces"][state["workspace"]] = _preferences(state)
+    def compact(preferences):
+        result = {"mode": preferences["mode"]}
+        for group, default in (("research", "experiment"), ("analytics", "job")):
+            if preferences[group + "_view"] != default:
+                result[group + "_view"] = preferences[group + "_view"]
+        return result
+    result = compact(state["workspaces"].get("jobs", _preferences(None)))
+    if "history" in state["workspaces"]:
+        result["history"] = compact(state["workspaces"]["history"])
     return result
+
+
+def scroll_key(app):
+    """Use the owning workspace for all inline document scroll coordinates."""
+    return ("history" if getattr(app, "tab", "") == "history" else "jobs") + ":details"
 
 
 def _view_key(state):
@@ -104,13 +140,13 @@ def _activate(app, mode, *, focus=True, view=None):
         return False
     from .workspace_layout import initialize as layout_state
     layout = layout_state(app)
-    state["scrolls"][_view_key(state)] = layout.scroll.get("jobs:details", 0)
+    state["scrolls"][_view_key(state)] = layout.scroll.get(scroll_key(app), 0)
     if view is not None:
         if view not in dict(_choices(mode)):
             return False
         state[mode + "_view"] = view
     state["mode"], state["focus"] = mode, ("views" if view is not None else "tabs") if focus else ""
-    layout.scroll["jobs:details"] = state["scrolls"].get(_view_key(state), 0)
+    layout.scroll[scroll_key(app)] = state["scrolls"].get(_view_key(state), 0)
     if focus:
         layout.focus = "details"
     callback = getattr(app, "save", None)
@@ -131,7 +167,7 @@ def run_command(app, args):
         initialize(app)["focus"] = "tabs"
         from .workspace_layout import initialize as layout_state
         layout_state(app).focus = "details"
-        _say(app, "Details tabs: arrows choose; Enter focuses content; Esc returns to jobs")
+        _say(app, "Details tabs: arrows choose; Enter focuses content; Esc returns to the job list")
     elif len(args) == 2 and args[1] in MODES:
         _activate(app, args[1])
     elif len(args) == 3 and args[1] in ("research", "analytics") and args[2] in dict(_choices(args[1])):
@@ -145,7 +181,7 @@ def run_command(app, args):
 
 def handle_key(app, key):
     state = initialize(app)
-    if getattr(app, "tab", "") != "jobs" or getattr(app, "mode", "main") != "main":
+    if getattr(app, "tab", "") not in DETAIL_TABS or getattr(app, "mode", "main") != "main":
         state["focus"] = ""
         return False
     if not state["focus"]:
@@ -190,7 +226,7 @@ def handle_key(app, key):
                 index = next((i for i, entry in enumerate(entries) if entry["id"] == state["file_id"]), 0)
                 state["file_id"] = entries[(index + (-1 if key == "left" else 1)) % len(entries)]["id"]
                 from .workspace_layout import initialize as layout_state
-                layout_state(app).scroll["jobs:details"] = 0
+                layout_state(app).scroll[scroll_key(app)] = 0
                 if state["session"]:
                     state["session"].top = None
             return True
@@ -217,7 +253,7 @@ def handle_key(app, key):
 
 
 def handle_mouse(app, y, x, button="left", shift=False):
-    if getattr(app, "tab", "") != "jobs" or getattr(app, "mode", "main") != "main":
+    if getattr(app, "tab", "") not in DETAIL_TABS or getattr(app, "mode", "main") != "main":
         return False
     if any(type(value) is not int for value in (y, x)):
         return False
@@ -225,8 +261,9 @@ def handle_mouse(app, y, x, button="left", shift=False):
             and 0 <= y < getattr(app, "height", 100000)):
         return False
     state = initialize(app)
+    current = getattr(app, "job_panel_context", context(app)) == context(app)
     for row, kind, value in getattr(app, "last_hits", []):
-        if row != y or kind not in ("job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"):
+        if not current or row != y or kind not in ("job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"):
             continue
         # A resize or job change can precede the next document publication.
         # Old Details controls must not act on the Main pane underneath them.
@@ -253,7 +290,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
                     from .workspace_layout import initialize as layout_state
                     layout = layout_state(app)
                     layout.focus = "details"
-                    layout.scroll["jobs:details"] = 0
+                    layout.scroll[scroll_key(app)] = 0
                     if state["session"]:
                         state["session"].top = None
             return True
@@ -270,14 +307,30 @@ def handle_mouse(app, y, x, button="left", shift=False):
         return True
     if button == "left":
         state["focus"] = ""
-        if any(row == y and kind in ("job", "recent") for row, kind, _ in getattr(app, "last_hits", ())):
+        if any(row == y and kind in ("job", "recent", "fin") for row, kind, _ in getattr(app, "last_hits", ())):
             focus_main(app)
     return False
 
 
+def context(app):
+    state = getattr(app, "job_panel_state", {})
+    return (getattr(app, "tab", ""), getattr(app, "mode", "main"),
+            getattr(app, "width", None), getattr(app, "height", None),
+            getattr(app, "selected_id", None), state.get("mode"),
+            state.get("research_view"), state.get("analytics_view"))
+
+
 def contains(app, y, x):
+    published = getattr(app, "job_panel_context", None)
+    if published is not None:
+        current = context(app)
+        # Geometry still blocks table hits during selection changes and routes
+        # modal wheel input through the controller. Only controls require an
+        # exact mode/job/view match; page and terminal-size changes hide bounds.
+        if (published[0], published[2:4]) != (current[0], current[2:4]):
+            return False
     rect = getattr(app, "job_panel_rect", None)
-    return bool(getattr(app, "tab", "") == "jobs" and rect and
+    return bool(getattr(app, "tab", "") in DETAIL_TABS and rect and
                 rect.x <= x < rect.x + rect.width and rect.y <= y < rect.y + rect.height)
 
 
@@ -290,7 +343,7 @@ def tick(app):
     state = initialize(app)
     from . import quick_advisor
     quick_advisor.tick(app)
-    if getattr(app, "tab", "") != "jobs" or getattr(app, "mode", "main") != "main":
+    if getattr(app, "tab", "") not in DETAIL_TABS or getattr(app, "mode", "main") != "main":
         state["focus"] = ""
         return
 
@@ -430,7 +483,7 @@ def _logs(views, snap, app, job, width, height, state):
     state["entries"] = entries = result.get("entries", [])
     row = lambda text, style="": [(clean(text, views.g.ascii), style)]
     rows, hits = [row(f" Job {job.id} / {job.name}", "cyan+bold")], []
-    rows.append(row(" Enter: content / Left-Right: file / End: follow / Esc: jobs", "dim"))
+    rows.append(row(" Enter: content / Left-Right: file / End: follow / Esc: list", "dim"))
     warnings.extend(result.get("messages", []))
     for warning in warnings[:2]:
         rows.append(row(" " + warning, "yellow"))
@@ -599,8 +652,8 @@ def _research(views, snap, app, job, width, height, state, header_rows):
     if previous:
         from .workspace_layout import initialize as layout_state
         from .scrolling import published_position
-        logical_top = layout_state(app).scroll.get("jobs:details", 0)
-        top = published_position(app, "workspace:jobs:details", logical_top) + previous["sticky"]
+        logical_top = layout_state(app).scroll.get(scroll_key(app), 0)
+        top = published_position(app, "workspace:" + scroll_key(app), logical_top) + previous["sticky"]
         raw = [index for index, position in previous["mapping"].items()
                if top - 16 <= position <= top + (height or 24) + 16]
         if raw:
@@ -637,7 +690,7 @@ def _analytics(views, snap, app, job, width, height, state, header_rows=0):
         window = state["document_windows"].get(document_key)
         previous = state["document_maps"].get(document_key)
         from .workspace_layout import initialize as layout_state
-        logical_top = layout_state(app).scroll.get("jobs:details", 0)
+        logical_top = layout_state(app).scroll.get(scroll_key(app), 0)
         # A new pane width has no exact wrapped-row map yet. At a retained
         # lower offset, a top-only seed would publish a blank viewport until
         # the next frame. Compose the bounded source once to establish that
@@ -645,7 +698,7 @@ def _analytics(views, snap, app, job, width, height, state, header_rows=0):
         seed_full = not previous and logical_top > 0
         if previous:
             from .scrolling import published_position
-            top = published_position(app, "workspace:jobs:details", logical_top) + previous["sticky"]
+            top = published_position(app, "workspace:" + scroll_key(app), logical_top) + previous["sticky"]
             raw = [index for index, position in previous["mapping"].items()
                    if top - 3 <= position < top + max(1, height) + 3]
             if raw:
@@ -939,7 +992,7 @@ def render(views, snap, app, job, width, height=None):
         state["document_windows"].clear()
         state["document_maps"].clear()
         from .workspace_layout import initialize as layout_state
-        layout_state(app).scroll["jobs:details"] = 0
+        layout_state(app).scroll[scroll_key(app)] = 0
         if state["session"]:
             state["session"].top = None
     if getattr(app, "job_panel_defer_content", False):
@@ -950,7 +1003,7 @@ def render(views, snap, app, job, width, height=None):
     if state["mode"] == "off":
         return rows, hits
     if job is None:
-        return rows + [[(" Select an active or recent job to show its Details.", "dim")]], hits
+        return rows + [[(" Select a job in the list to show its Details.", "dim")]], hits
     if state["mode"] == "logs":
         content, content_hits = _logs(views, snap, app, job, width,
                                      None if height is None else max(1, height - len(rows)), state)

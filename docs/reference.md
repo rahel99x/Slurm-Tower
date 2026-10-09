@@ -156,8 +156,8 @@ Esc and F10 close menus explicitly.
 Use `:menu [File|Edit|View|Help]` or `:about` for command entry.
 See [Toolbar menus](guides/live-workbench.md#use-the-terminal-toolbar) for every choice and its operating context.
 
-Jobs Details provides Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off buttons.
-Each button reads the exact selected active or recent job.
+Jobs and History Details provide Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off buttons.
+Each button reads the exact selected active, recent, or historical job.
 Click a button, then use arrow keys and Enter to activate another visible control.
 Click content to restore its normal navigation.
 Use `:jobpanel focus` for native mode selection with arrows.
@@ -169,6 +169,7 @@ The full Logs page retains complete-file operations.
 Research includes all twelve workspaces; Analytics includes all five subviews.
 Their content fits the Details width and scrolls vertically.
 Each inline subview retains an independent scroll position.
+Jobs and History save separate mode, Research subview, and Analytics subview preferences.
 Inline Job series uses the exact selected job, including a job with no samples.
 Aggregate Analytics views retain their stated accounting window.
 The full Research, Analytics, and Logs pages retain their own view settings.
@@ -229,7 +230,7 @@ Only full vertical dividers carry a centred blue diamond.
 ASCII mode uses `|`, `-`, and `*`.
 Click a divider to focus it, then use axis arrows or page keys to adjust its size.
 Use `:pane-focus KEY` or `:pane-resize KEY smaller|larger` for command access.
-Jobs Main and Details use `workspace:jobs`.
+Jobs Main and Details use `workspace:jobs`; History uses `workspace:history`.
 The horizontal divider above Recents changes its data-row budget.
 See [Adjustable workspaces](guides/adaptive-workspaces.md) for minimum sizes and keyboard steps.
 
@@ -426,8 +427,10 @@ arranges the sorted rows into their observed task groups.
 If sorting would hide the selected task behind a different folded group representative, Tower expands that array to keep the same job selected.
 
 Automatic launch grouping is enabled by default; new groups start open.
-It recognizes arrays, heterogeneous components, scoped explicit launch tags or scheduler markers, and conservative ordinary submission bursts.
-A likely burst requires consecutive numeric IDs, at most ten anchored seconds, matching nonempty owner, account, WorkDir and exact Command, plus the same name or at least three numbered-name variants.
+It recognizes arrays, heterogeneous components, scoped explicit launch tags or scheduler comments/details, bounded dependency-connected launches, and ordinary submission bursts.
+Two-job bursts require adjacent IDs, at most ten seconds, and matching nonempty owner, account, WorkDir, exact Command, and name.
+Three or more jobs can use a matching name family within 30 seconds, bounded numeric ID gaps and density, and nonconflicting known script paths.
+Dependency-connected groups require matching ownership and WorkDir within 60 seconds and a numeric ID span of 256.
 Missing provenance and names alone do not establish a group.
 Click a fold symbol or use Left/Right on a selected group during ordinary job-row navigation.
 With directional button focus active, Right from a Jobs row enters Details instead.
@@ -435,7 +438,10 @@ With directional button focus active, Right from a Jobs row enters Details inste
 Fold preferences span the job views and their history browsers.
 A closed group keeps a real representative record and exact action ID.
 Hidden members are not automatically marked or added to cancellation.
-See [Launch deduction](guides/adaptive-workspaces.md#fold-related-launches) for evidence, lifecycle updates, and tag examples.
+Closed INFO cells show themed, disjoint counts for running, pending, dependency wait, dependency never satisfied, completed, failed, cancelled, and other matching records.
+Compressed array ranges count as observed records, not expanded task states.
+Grouping applies to available old accounting records and new queue publications, subject to the history window and source evidence.
+See [Automatic launch groups](guides/batch-launches.md) for exact deduction limits, status badges, scheduler-comment launch examples, and action targeting.
 
 Jobs has a six-cell progress field before JOBID and the sort identifier `progress`.
 Its marking and fold gutter remains separate to the left.
@@ -726,6 +732,9 @@ Ordinary sources, GPU probes, and local file readers retain a 0.5-second minimum
 Weather and budget retain 30-second minimums. Remote file readers retain a 1.5-second minimum.
 Use `:rate reset` or right-click the update control to restore five seconds.
 Per-metric sampling commands select positions one to 100 across the same five-second to 500-millisecond range.
+Each metric control shows its own requested interval as **Set** and the shared effective interval as **Poll**.
+Compact rows place the effective value before the polling track and `S` plus the requested value after it.
+Moving the slider changes the requested label even when a faster global or companion-metric request keeps the effective interval unchanged.
 CPU and memory share a job probe. GPU curves share a GPU probe.
 Each uses the fastest global or per-metric request for the exact job, without multiplying those requests.
 Jobs without a faster metric request retain their global cadence.
@@ -885,7 +894,9 @@ tower/
   views.py       the tabs and overlays as rows of (text, style) segments
   interaction.py bounded visible-control graph, exact hit regions, hover feedback, and directional focus
   control_rows.py wrapped semantic control rows and translation into visible modal coordinates
-  job_panels.py  selected-job inline workspaces and explicit Main/Details keyboard-focus handoffs
+  job_panels.py  shared Jobs/History inline workspaces, independent mode preferences, and Main/Details focus handoffs
+  job_groups.py  snapshot-based launch deduction, shared folds, exact-job projections, and disjoint state counts
+  job_group_ui.py themed, width-aware group badges and representative rows
   job_selection.py exact job-ID range capture for existing marked-job actions and confirmation
   scrolling.py   bounded PID viewport motion, immediate selection, and saved smooth-scroll preferences
   startup.py     short interruptible Unicode welcome and static ASCII fallback

@@ -291,7 +291,7 @@ def geometry(app, width: int, height: int, *, has_details: bool = True) -> dict[
         return {}
     if not has_details:
         return {"main": Rect(0, 0, width, height)}
-    native_jobs = (getattr(app, "tab", "") == "jobs" and
+    native_jobs = (getattr(app, "tab", "") in ("jobs", "history") and
                    isinstance(getattr(app, "job_panel_state", None), dict))
     if state.maximized or state.density == "focused" or height < 8 or (width < 48 and not native_jobs):
         return {state.focus: Rect(0, 0, width, height)}
@@ -328,7 +328,7 @@ def _main_geometry(app, rects):
     if rect is None:
         app.workspace_main_usable_height = 0
         return
-    native_jobs = (getattr(app, "tab", "") == "jobs" and
+    native_jobs = (getattr(app, "tab", "") in ("jobs", "history") and
                    isinstance(getattr(app, "job_panel_state", None), dict))
     padding = 1 if (state.density == "comfortable" and rect.width >= 8 and rect.height >= 5
                     and not (native_jobs and rect.height < 7)) else 0
@@ -629,7 +629,7 @@ def _virtual_details(app, state, rect, group, document, glyphs, padding):
 
 def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = False, groups=None):
     state = initialize(app)
-    native_jobs = (getattr(app, "tab", "") == "jobs" and
+    native_jobs = (getattr(app, "tab", "") in ("jobs", "history") and
                    isinstance(getattr(app, "job_panel_state", None), dict))
     width, height = max(0, width), max(0, height)
     groups = partition(body, hits, getattr(app, "tab", "jobs")) if groups is None else groups
@@ -858,7 +858,9 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
             output_hits.append(hit)
     # A scalar row-only hit cannot describe two selectable items in side-by-side
     # columns. Keep interactive table hits in Main; Details is scrollable text.
-    if getattr(app, "tab", "") == "jobs":
+    if getattr(app, "tab", "") in ("jobs", "history"):
+        from .job_panels import context as panel_context
+        app.job_panel_context = panel_context(app)
         rect = rects.get("details")
         app.job_panel_rect = (Rect(rect.x, rect.y + getattr(app, "body_origin", 0), rect.width, rect.height)
                               if rect else None)
@@ -875,7 +877,11 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         # A larger source canvas would rasterize charts outside the viewport.
         body, hits = default_renderer(width, height)
         return [_style_row(row, width) for row in body], hits
-    native_jobs = (getattr(app, "tab", "") == "jobs" and height is not None and
+    if (getattr(app, "tab", "") in ("jobs", "history")
+            and isinstance(getattr(app, "job_panel_state", None), dict)):
+        from .job_panels import initialize as panel_state
+        panel_state(app)
+    native_jobs = (getattr(app, "tab", "") in ("jobs", "history") and height is not None and
                    isinstance(getattr(app, "job_panel_state", None), dict))
     if height is None or (not enabled(app) and not native_jobs) or getattr(app, "tab", "") == "log":
         return default_renderer(width, height)
@@ -905,13 +911,15 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         from . import scrollbars
         scroll_mark = scrollbars.mark(app)
         try:
-            body, hits = default_renderer(main_width, max(height, MAX_SOURCE_ROWS))
+            main_height = (max(1, app.workspace_main_usable_height)
+                           if getattr(app, "tab", "") == "history" else max(height, MAX_SOURCE_ROWS))
+            body, hits = default_renderer(main_width, main_height)
         finally:
             app.job_panel_defer_content = previous_deferred
             app.job_panel_source_canvas = previous_canvas
         records = chart_interaction.take_since(app, chart_mark)
         scroll_records = scrollbars.take_since(app, scroll_mark)
-        queue = partition(body, hits, "jobs", chart_records=records, scroll_records=scroll_records)["main"]
+        queue = partition(body, hits, getattr(app, "tab", "jobs"), chart_records=records, scroll_records=scroll_records)["main"]
         groups = {"main": queue, "details": {"rows": [], "hits": []}}
         if detail_rect:
             from .job_panels import render as render_details

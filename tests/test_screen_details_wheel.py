@@ -149,3 +149,37 @@ def test_passive_motion_still_resolves_current_pointer_feedback(dashboard, monke
     screen._apply_input(app, ("mouse", (0, x, y, 0, curses.REPORT_MOUSE_POSITION)), hits, curses)
     assert calls == [("graph", (y, x)), ("chart", (y, x))]
     assert app.layout_state.scroll["jobs:details"] == 0
+
+
+def test_history_modal_wheel_preserves_controller_and_background_pane_geometry(dashboard, monkeypatch):
+    app, views, store, _ = dashboard
+    app.enter_tab("history")
+    _, hits = views.compose(store.snapshot(), app, 160, 36)
+    app.mode = "confirm"
+    calls = []
+    monkeypatch.setattr(app, "click", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(J, "handle_mouse", forbidden)
+    y, x = content_cell(app)
+    wheel(app, hits, y, x)
+    assert calls == [((y, x, hits), {"button": "wheel-down", "shift": False})]
+    assert app.layout_state.scroll["history:details"] == 0
+
+
+def test_history_details_wheel_burst_uses_history_scroll_without_reading_sources(dashboard, monkeypatch):
+    app, views, store, _ = dashboard
+    app.enter_tab("history")
+    views.compose(store.snapshot(), app, 160, 36)
+    app.run_command("jobpanel analytics advisor")
+    _, hits = views.compose(store.snapshot(), app, 160, 36)
+    y, x = content_cell(app)
+    previous = (app.selected_id, dict(app.cursor), app.layout_state.scroll["jobs:details"])
+    monkeypatch.setattr(app, "click", forbidden)
+    monkeypatch.setattr(store, "snapshot", forbidden)
+    monkeypatch.setattr(I, "_context", forbidden)
+    monkeypatch.setattr(C, "hover", forbidden)
+    for _ in range(100):
+        wheel(app, hits, y, x)
+    for _ in range(27):
+        wheel(app, hits, y, x, -1)
+    assert app.layout_state.scroll["history:details"] == 73
+    assert (app.selected_id, app.cursor, app.layout_state.scroll["jobs:details"]) == previous

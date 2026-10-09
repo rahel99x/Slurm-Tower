@@ -439,3 +439,34 @@ def test_comparison_elapsed_curves_publish_in_the_visible_modal_with_exact_jobs(
     assert C.bounds(app,plot.key)
     assert all(C.bounds(app,p.key) is None for p in plots[1:])
     assert rendered[0][0]<=plot.visible.top<rendered[-1][0]
+
+
+@pytest.mark.parametrize("change", ["job", "mode", "view"])
+def test_history_native_capture_rejects_a_changed_details_source(app, change):
+    app.tab = "history"
+    app.job_panel_state.update(mode="analytics", analytics_view="job")
+    C.begin_frame(app, app.width, app.height)
+    identity = ("resource-cpu", "101", "cpu", "session", "scheduler:attempt")
+    plot = publish(app, identity=identity)
+    assert C.handle_mouse(app, 2, 15, button="press")
+    if change == "job":
+        app.selected_id = "102"
+    elif change == "mode":
+        app.job_panel_state["mode"] = "logs"
+    else:
+        app.job_panel_state["analytics_view"] = "compare"
+    assert C.handle_mouse(app, 8, 45, button="release")
+    assert not C.active(app) and C.bounds(app, plot.key) is None
+
+
+def test_history_native_capture_survives_unrelated_report_refresh(app):
+    app.tab = "history"
+    app.job_panel_state.update(mode="analytics", analytics_view="job")
+    C.begin_frame(app, app.width, app.height)
+    identity = ("resource-cpu", "101", "cpu", "session", "scheduler:attempt")
+    plot = publish(app, identity=identity)
+    assert C.handle_mouse(app, 2, 15, button="press")
+    app.research.generation += 1
+    app.project_state["root"] = "/unrelated/refresh"
+    assert C.handle_mouse(app, 8, 45, button="release")
+    assert C.bounds(app, plot.key) is not None

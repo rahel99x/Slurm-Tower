@@ -220,7 +220,7 @@ See [Terminal palettes](guides/pointer-navigation.md#change-the-terminal-palette
 | `:pane-resize KEY smaller\|larger` | Adjust the named divider |
 | `:layout split N` | Set Main's split percentage from 20 to 80 |
 
-Jobs Main and Details use the divider key `workspace:jobs`.
+Jobs Main and Details use the divider key `workspace:jobs`; History uses `workspace:history`.
 Queue and Recents use `recent:jobs`; paired-source Logs uses `log:sources`.
 Dockable history uses `history:analytics`, `history:deps`, `history:log`, or `history:research`.
 A full vertical divider has a blue diamond at its centre.
@@ -347,8 +347,8 @@ See [Job progress](guides/adaptive-workspaces.md#read-the-six-cell-progress-colu
 
 ### Jobs Details buttons
 
-Jobs provides Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off buttons in Details.
-The buttons inspect the selected active or recent job without leaving Jobs.
+Jobs and History provide Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off buttons in Details.
+The buttons inspect the selected active, recent, or historical job without leaving its page.
 
 | Control | Function |
 | --- | --- |
@@ -375,8 +375,10 @@ Quick Advisor starts a background calculation only after explicit activation.
 Use Analyze this job in an idle restored panel, Refresh analysis for newer evidence, or Cancel for an unfinished request.
 Changing the selected job or leaving the mode discards its later result.
 Inline views fit the panel width and retain an independent vertical position for each subview.
+Jobs and History save separate mode, Research subview, and Analytics subview preferences.
+History-list right-click retains log export; Details right-click clears selections, except that a graph keeps its zoom-reset action.
 The full Research, Analytics, and Logs pages keep their own selection and position.
-See [Live workbench](guides/live-workbench.md#inspect-a-job-inside-jobs) for procedures and layout behavior.
+See [Live workbench](guides/live-workbench.md#inspect-a-job-inside-jobs) for procedures and layout behavior on Jobs and History.
 
 ## Table inspection
 
@@ -472,6 +474,9 @@ The initial preview size does not cap that navigation.
 Click a launch-group fold symbol to close or open its matching jobs.
 With a grouped job selected and ordinary page focus, Left closes its group and Right opens it.
 Closed groups retain one real representative ID.
+Their INFO badges use `run`, `pend`, `dep`, `never`, `done`, `fail`, `cancel`, and `other` for nonzero counts.
+The counts are disjoint and cover matching observed records; compressed array ranges remain records.
+See [Automatic launch groups](guides/batch-launches.md) for the badge meanings, historical coverage, and an explicit batch-launch procedure.
 Grouping does not add hidden members to a marked range or a job-action target list.
 See [Launch groups](guides/adaptive-workspaces.md#fold-related-launches) for deduction evidence and exact-action rules.
 
@@ -772,7 +777,10 @@ Compact rows use empty/filled Live symbols, or `o`/`+` in ASCII mode.
 The first slider controls the display window. Drag left for 30 seconds or right for one second.
 The second slider controls polling. Drag left for five seconds or right for 500 milliseconds.
 Both scales use logarithmic steps. Native polling requests do not have a flat region caused by a lower-limit clamp.
-Its value and endpoints show effective intervals in `s`, `ms`, or `µs`; ASCII mode uses `us`.
+**Set** shows that slider's requested interval; **Poll** shows the shared effective interval.
+Compact rows show the effective interval before the polling track and `S` plus the request after it.
+Labels use `s`, `ms`, or `µs`; ASCII mode uses `us`.
+The request updates even when a faster global or companion-metric request keeps the effective interval unchanged.
 Numeric polling commands use positions one to 100; they do not multiply the polling frequency.
 Remote file reads retain a 1.5-second minimum, which can limit their faster positions.
 Right-click the first slider to restore 30 seconds. Right-click the second to restore its five-second request.

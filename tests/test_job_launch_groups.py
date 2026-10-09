@@ -91,10 +91,10 @@ def test_separate_submissions_or_incomplete_evidence_are_not_groups(records):
 
 def test_window_is_anchored_not_a_transitive_chain_of_close_submissions():
     records = [job(100), job(101, submit="2026-10-08T12:00:09"),
-               job(102, submit="2026-10-08T12:00:18")]
+               job(102, submit="2026-10-08T12:00:18"), job(103, submit="2026-10-08T12:00:36")]
     index = G.Registry().ensure(snapshot(records))
-    assert index.for_job("100").members == ("100", "101")
-    assert index.for_job("102") is None
+    assert index.for_job("100").members == ("100", "101", "102")
+    assert index.for_job("103") is None
 
 
 def test_numbered_name_family_requires_three_with_full_common_provenance():

@@ -601,3 +601,192 @@ def test_wrapped_inline_link_keeps_every_character_and_all_rows_clickable():
     assert "".join(L.row_text(row) for row in rows).replace(" ", "") == source.replace(" ", "")
     assert len(hits) == len(rows) > 1
     assert all(kind == "job_panel_action" and value[0] == target for _, kind, value in hits)
+
+
+@pytest.mark.parametrize("width,height", [(160, 45), (80, 55), (40, 70)])
+def test_history_native_details_are_fitted_bounded_and_exact(dashboard, width, height):
+    app = dashboard.app
+    app.enter_tab("history")
+    text, rows, hits = dashboard.render(width, height)
+    assert app.selected_id == "700"
+    assert "Job 700" in text
+    assert "active-only" not in text
+    assert all(L.vlen(L.row_text(row)) <= width for row in rows)
+    assert all(button(hits, name) for name in J.MODES)
+    rect = app.job_panel_rect
+    assert rect is not None
+    for _, kind, value in hits:
+        if kind.startswith("job_panel_"):
+            assert rect.x <= value[1] < value[2] <= rect.x + rect.width
+    assert app.history_jobs_rect is not None
+    assert not app.history_jobs_rect.contains(rect.y + 1, rect.x + 2)
+    assert all(control.rect.right <= app.workspace_main_rect.x + app.workspace_main_rect.width
+               for control in app.interaction_state["graph"].controls if control.group == "fin")
+
+
+def test_history_mode_and_preferences_are_independent_from_jobs(dashboard):
+    app = dashboard.app
+    J.run_command(app, ["jobpanel", "analytics", "compare"])
+    dashboard.render()
+    app.enter_tab("history")
+    dashboard.render()
+    assert J.initialize(app)["mode"] == "inspector"
+    J.run_command(app, ["jobpanel", "logs"])
+    dashboard.render()
+    assert J.save(app) == {"mode": "analytics", "analytics_view": "compare", "history": {"mode": "logs"}}
+    app.enter_tab("jobs")
+    dashboard.render()
+    assert J.initialize(app)["mode"] == "analytics"
+    assert J.initialize(app)["analytics_view"] == "compare"
+    restored = SimpleNamespace(tab="jobs")
+    J.restore(restored, J.save(app))
+    assert J.initialize(restored)["mode"] == "analytics"
+    restored.tab = "history"
+    assert J.initialize(restored)["mode"] == "logs"
+    assert J.initialize(restored)["job"] is None
+
+
+def test_history_logs_keep_exact_files_after_multiselect_and_right_clear(dashboard):
+    app = dashboard.app
+    dashboard.store.finished.append(Finished("701", "completed", "COMPLETED"))
+    app.enter_tab("history")
+    dashboard.render()
+    app.cursor["history"] = app.last_history_ids.index("700")
+    app.marks = {"700", "701"}
+    app.log_job = "900"
+    J.run_command(app, ["jobpanel", "logs"])
+    text, _, hits = dashboard.render(200, 60)
+    assert "AB_OUTPUT_700" in text and "AB_OUTPUT_900" not in text
+    assert app.log_job == "900" and app.selected_id == "700"
+    y, (_, left, _) = next((y, value) for y, kind, value in hits
+                          if kind == "job_panel_file" and value[0] == "scheduler.stderr")
+    app.click(y, left, hits, button="left")
+    text, _, hits = dashboard.render(200, 60)
+    assert "CD_ERROR_700" in text and "AB_OUTPUT_700" not in text
+    rect = app.job_panel_rect
+    app.click(rect.y + rect.height - 1, rect.x + 2, hits, button="right")
+    text, _, _ = dashboard.render(200, 60)
+    assert not app.marks and app.selected_id is None and app.mode == "main"
+    assert "Select a job in the list" in text
+    assert "CD_ERROR_700" not in text and "AB_OUTPUT_900" not in text
+
+
+@pytest.mark.parametrize("group,view", [("research", name) for name, _ in J._choices("research")]
+                         + [("analytics", name) for name, _ in J._choices("analytics")])
+def test_history_all_inline_views_use_exact_finished_job(published_workspaces, group, view):
+    dashboard, app = published_workspaces, published_workspaces.app
+    app.enter_tab("history")
+    dashboard.render()
+    dashboard.requests.clear()
+    app.analytics_job, app.research_job_id, app.log_job = "900", "900", "900"
+    assert J.run_command(app, ["jobpanel", group, view])
+    text, rows, hits = dashboard.render(180, 52)
+    assert app.selected_id == "700" and "Job 700" in text
+    assert app.tab == "history" and app.mode == "main"
+    assert (app.analytics_job, app.research_job_id, app.log_job) == ("900", "900", "900")
+    assert all(L.vlen(L.row_text(row)) <= 180 for row in rows)
+    assert any(kind == "job_panel_view" and value[0] == group + ":" + view for _, kind, value in hits)
+    assert all(context["jid"] == context["explicit_jid"] == context["job"].id == "700"
+               for context in dashboard.requests)
+    if group == "analytics" and view == "job":
+        assert "no samples recorded for this job yet" in text
+        assert J.initialize(app)["view_states"]["analytics:job"]["proxy"].analytics_job == "700"
+
+
+def test_history_off_and_passive_controls_do_not_request_io(dashboard, monkeypatch):
+    app = dashboard.app
+    app.enter_tab("history")
+    dashboard.render()
+    J.run_command(app, ["jobpanel", "off"])
+    _, _, hits = dashboard.render()
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Passive History controls requested source work")
+    for name in ("stat", "tail"):
+        monkeypatch.setattr(dashboard.views.files, name, forbidden)
+    monkeypatch.setattr(J, "_worker", forbidden)
+    monkeypatch.setattr(app.store, "snapshot", forbidden)
+    for name in J.MODES:
+        y, (_, left, _) = button(hits, name)
+        for event in ("motion", "drag", "release"):
+            app.click(y, left, hits, button=event)
+    assert app.tab == "history" and app.mode == "main"
+    assert J.initialize(app)["mode"] == "off" and app.research is None
+
+
+def test_history_finished_sampling_and_trace_targets_follow_selected_id(dashboard):
+    app = dashboard.app
+    app.enter_tab("history")
+    dashboard.render()
+    finished, traces = [], []
+    app.sampler = SimpleNamespace(select_fin=finished.append, select=lambda jid: None,
+                                  select_trace=traces.append)
+    J.run_command(app, ["jobpanel", "analytics", "job"])
+    app.tick()
+    assert finished == ["700"] and traces == ["700"]
+    J.run_command(app, ["jobpanel", "off"])
+    app.tick()
+    assert finished == ["700", None] and traces == ["700", None]
+
+
+def test_old_details_controls_are_rejected_between_page_switch_and_frame(dashboard):
+    app = dashboard.app
+    _, _, hits = dashboard.render()
+    y, (_, left, _) = button(hits, "logs")
+    app.enter_tab("history")
+    assert not J.contains(app, y, left)
+    assert not J.handle_mouse(app, y, left)
+    assert J.initialize(app)["mode"] == "inspector"
+
+
+def test_selected_id_change_preserves_pane_boundary_but_rejects_old_file_action(dashboard):
+    app = dashboard.app
+    app.enter_tab("history")
+    dashboard.render()
+    J.run_command(app, ["jobpanel", "logs"])
+    _, _, hits = dashboard.render(200, 60)
+    y, (_, left, _) = next((y, value) for y, kind, value in hits
+                          if kind == "job_panel_file" and value[0] == "scheduler.stderr")
+    previous = J.initialize(app)["file_id"]
+    app.selected_id = "another-job"
+    assert J.contains(app, y, left)  # Selection changes must never expose table hits under Details.
+    assert J.handle_mouse(app, y, left)
+    assert J.initialize(app)["file_id"] == previous
+
+
+def test_narrow_history_retains_tag_badge_without_duplicate_mark_columns(dashboard):
+    app = dashboard.app
+    app.enter_tab("history")
+    dashboard.store.tags["700"] = {"tags": ["old"], "note": "Keep this run for comparison"}
+    dashboard.store.finished[0].state = "OUT_OF_MEMORY"
+    text, rows, hits = dashboard.render(190, 45)
+    y = next(y for y, kind, value in hits if kind == "fin" and value == "700")
+    table_row = L.row_text(rows[y])[:app.workspace_main_rect.width]
+    assert "old" in table_row and "Keep this run for comparison" in text
+    assert table_row.index("700") == 4
+
+
+def test_history_long_details_scrolls_use_history_viewport_and_sticky_buttons(published_workspaces):
+    dashboard, app = published_workspaces, published_workspaces.app
+    app.enter_tab("history")
+    dashboard.render()
+    dashboard.reports["artifacts"]["outputs"] = [
+        {"path": f"results/{index:04}.json", "status": "valid",
+         "checks": [{"name": "shape", "status": "pass", "message": f"PAST_{index:04}"}]}
+        for index in range(180)]
+    J.run_command(app, ["jobpanel", "research", "artifacts"])
+    app.layout_state.scroll["jobs:details"] = 17
+    text, _, _ = dashboard.render(180, 50)
+    assert "PAST_0000" in text and "PAST_0179" not in text
+    J.handle_key(app, "enter")
+    J.handle_key(app, "end")
+    text, _, hits = dashboard.render(180, 50)
+    assert "PAST_0179" in text
+    assert app.layout_state.scroll["jobs:details"] == 17
+    position = app.layout_state.scroll["history:details"]
+    assert position > 0 and all(button(hits, name) for name in J.MODES)
+    J.run_command(app, ["jobpanel", "inspector"])
+    dashboard.render(180, 50)
+    assert app.layout_state.scroll["history:details"] == 0
+    J.run_command(app, ["jobpanel", "research", "artifacts"])
+    dashboard.render(180, 50)
+    assert app.layout_state.scroll["history:details"] == position

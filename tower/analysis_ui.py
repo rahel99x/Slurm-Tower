@@ -437,7 +437,11 @@ def chart_key(app, name, source, *, interactive=True, jid=None, job=None):
     bound_attempt = (isinstance(binding, dict) and str(binding.get("job_id", "")) == str(jid or "") and
                      binding.get("attempt") is not None)
     attempt = None
-    if not bound_attempt:
+    # Native resource samples are collected for a scheduler attempt even when
+    # the selected job is linked to a project's independently numbered run.
+    # Using that run's attempt here makes CPU/GPU requests fail the sampler's
+    # exact-attempt guard while their slider thumbs still move.
+    if source == "Tower session resource samples" or not bound_attempt:
         job = job if job is not None and str(getattr(job, "id", "")) == str(jid or "") else _published_chart_job(app, jid)
         if job is not None:
             attempt = "scheduler:" + "|".join(str(getattr(job, field, None) or "") for field in ("submit", "start"))

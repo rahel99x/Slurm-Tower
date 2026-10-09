@@ -236,7 +236,9 @@ class Job:
     est_start: str = ""              # squeue --start
     hosts: List[str] = field(default_factory=list)
     user: str = ""                   # set for the account-wide listing
-    workdir: str = ""                # squeue WorkDir; trailing field preserves positional callers
+    workdir: str = ""                # squeue WorkDir; trailing fields preserve positional callers
+    comment: str = ""                # optional explicit launch marker from squeue
+    cluster: str = ""
 
     @property
     def pending(self) -> bool:
@@ -327,6 +329,11 @@ class Finished:
     submit: str = ""
     workdir: str = ""
     limit: str = ""
+    user: str = ""                   # persisted accounting provenance for cold-start grouping
+    account: str = ""
+    cluster: str = ""
+    comment: str = ""
+    command: str = ""                # retained/imported provenance; sacct need not expose it
 
     @property
     def cpu_eff(self) -> Optional[float]:

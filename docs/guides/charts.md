@@ -79,7 +79,7 @@ Each metric has its own request. A curve and its filled companion share the same
 3. Drag the first slider toward the left for 30 seconds, or toward the right for one second.
 4. Read the duration beside the toggle. Wider rows label the first slider **Delta**.
 5. Drag the second slider toward the left for five-second polling, or toward the right for 500-millisecond polling.
-6. Read the effective polling interval beside that slider and below the graph.
+6. Read **Set** for this slider's request and **Poll** for the shared effective interval.
 7. Click **Live ON** to return to the ordinary retained view.
 
 **Expected result:** Live displays the interval from the dashboard's current time minus the chosen duration to its current time.
@@ -92,8 +92,14 @@ Each metric retains its own duration and sampling request. A completed job has n
 Control rows adapt to the available terminal width.
 Compact rows use `○` and `●`, or `o` and `+` in ASCII mode.
 The empty symbol is off; the filled symbol is on.
-The polling value and endpoints show effective time intervals in `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
-An interval label describes a polling request. It does not establish the spacing of measurements produced by the job.
+Polling labels use `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
+**Set** changes with the slider and identifies its requested interval.
+**Poll** identifies the effective interval after global requests, other metrics on the same probe, and source limits are applied.
+In a compact row, the effective value precedes the polling track and `S` precedes the requested value after it.
+For example, `Poll 500ms Set 2s` means this metric requests two seconds, while a faster shared request keeps its probe at 500 milliseconds.
+Changing **Set** in that case is still accepted even though **Poll** stays unchanged.
+The footer also reports the effective interval.
+These intervals do not establish the spacing of measurements produced by the job or guarantee that every read completes on time.
 
 Select the slider with the mouse or directional button focus.
 Use Left and Right for one slider step, Page Up and Page Down for larger steps,
@@ -155,7 +161,7 @@ Its requested interval is `5 × 10^(-(N - 1) / 49)` seconds.
 Each scale reaches both endpoints and gives every native polling position a distinct interval.
 Tower uses the fastest request for an exact job and shared source; global and metric requests do not multiply.
 Repeated adjustments do not compound or change the configured base.
-The display shows the effective interval after source limits are applied.
+The control shows both its requested **Set** interval and the shared effective **Poll** interval after source limits are applied.
 
 | Source | Minimum interval for a faster metric request |
 | --- | --- |

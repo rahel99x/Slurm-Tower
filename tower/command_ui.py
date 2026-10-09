@@ -51,7 +51,7 @@ DESCRIPTIONS = {
     "panel-scroll": "Scroll the focused panel", "columns": "Choose visible job-table columns",
     "facet": "Filter jobs by state, partition, tag, name, or identity",
     "savedview": "Save or restore a filtered and sorted job table",
-    "jobgroups": "Expand or collapse related array jobs", "activity": "Inspect notifications and background work",
+    "jobgroups": "Show or hide automatically detected launch groups", "activity": "Inspect notifications and background work",
     "notifications": "Inspect retained activity notices", "task": "Inspect or cancel background work",
     "project": "Discover a standard project and its run inventory", "runs": "Select a project run and execution attempt",
     "run": "Bind, inspect, or clear a project run", "outputs": "Browse declared output artifacts",
@@ -692,7 +692,7 @@ def _help_entries(app):
             ("This page", k("resubmit"), "Clone the selected job; edit flags and review the tested submission"),
             ("This page", ":columns / :facet state=FAILED partition=gpu", "Choose columns and combine explicit field filters"),
             ("This page", ":savedview save NAME / load NAME", "Save or restore a useful filtered, sorted table"),
-            ("This page", ":jobgroups", "Expand or collapse related array tasks"),
+            ("This page", ":jobgroups", "Show or hide automatically detected launch groups"),
         ]
     elif page == "log":
         contextual += [

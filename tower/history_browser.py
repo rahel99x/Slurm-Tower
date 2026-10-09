@@ -117,7 +117,8 @@ def _records(snap, state):
         sources = (sources[0], sources[1], tuple(sources[2].values()))
     key = tuple(tuple((id(record), getattr(record, "id", ""), getattr(record, "name", ""),
                        getattr(record, "state", ""), getattr(record, "end", ""),
-                       getattr(record, "submit", ""), getattr(record, "start", ""))
+                       getattr(record, "submit", ""), getattr(record, "start", ""),
+                       getattr(record, "reason", ""), getattr(record, "dependency", ""))
                       for record in source) for source in sources)
     if key != state["record_key"]:
         by_id = {}
@@ -307,9 +308,20 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
             label = f"{icon} {_text(item.record.id, ascii_)}{selected_note} {_text(group.label, ascii_)} ({len(item.records)})"
             text = L.pad(L.cut(label, size, ascii_), size)
             style = "sel+bold" if item.record.id == selected or contains_selected else "accent+bold"
+            if item.collapsed:
+                from .job_group_ui import summary_row
+                prefix = f"{icon} {_text(item.record.id, ascii_)}{selected_note} {len(item.records)} rec "
+                prefix = L.cut(prefix, size, ascii_)
+                segments = [(prefix, style)] + summary_row(item.meta.stats or item.records, max(0, size - L.vlen(prefix)),
+                    ascii_=ascii_, selected=item.record.id == selected or contains_selected)
+            else:
+                segments = [(text, style)]
             command = "history-job " + shlex.quote(item.record.id)
             ident = "job:" + item.record.id
-            hits.append(_control(tab, "group:" + group.id, "Expand or collapse " + group.label,
+            from .job_groups import summary
+            states = summary(item.meta.stats or item.records)
+            label += "; " + states + "; representative job " + item.record.id
+            hits.append(_control(tab, "group:" + group.id, "Expand or collapse " + group.label + "; " + states,
                                  y, x, min(x + size, x + 2), "jobgroup toggle " + shlex.quote(group.id)))
         else:
             record = item.record
@@ -317,9 +329,10 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
             label = f"{icon}{_text(record.id, ascii_)} {_text(record.state, ascii_)} {_text(record.name, ascii_)}"
             text = L.pad(L.cut(label, size, ascii_), size)
             style = "sel+bold" if record.id == selected else _STYLES.get(record.state, "dim")
+            segments = [(text, style)]
             command = "history-job " + shlex.quote(record.id)
             ident = "job:" + record.id
-        rows[y].append((text, style))
+        rows[y].extend(segments)
         hits.append(_control(tab, ident, label, y, x, x + size, command))
     if not items and data_height:
         rows[1] = [(L.cut(" No job records yet", width, ascii_), "dim")]

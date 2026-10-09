@@ -334,3 +334,19 @@ def test_each_wrapped_inline_link_fragment_is_mouse_hoverable_and_native_clickab
         assert interaction.initialize(app)["hovered"] == control.id
         dashboard.mouse(control.rect.top, control.rect.left, MOUSE.BUTTON1_CLICKED)
     assert len(clicks) == len(controls)
+
+
+def test_history_drag_release_in_details_keeps_last_deliberate_range(dashboard):
+    app = dashboard.app
+    app.enter_tab("history")
+    dashboard.draw()
+    ids = list(app.last_history_ids)
+    dashboard.mouse(*dashboard.point(ids[0]), MOUSE.BUTTON1_PRESSED)
+    dashboard.mouse(*dashboard.point(ids[1]), MOUSE.REPORT_MOUSE_POSITION)
+    marks = set(app.marks)
+    y, _ = dashboard.point(ids[2])
+    # Do not redraw after selection: only the source identity has changed,
+    # and the Details rectangle must still protect the hidden Main row.
+    dashboard.mouse(y, app.job_panel_rect.x + 3, MOUSE.BUTTON1_RELEASED)
+    assert app.marks == marks and app.selected_id == ids[1]
+    assert not job_selection.active(app)

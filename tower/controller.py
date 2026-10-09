@@ -236,11 +236,11 @@ class App:
             self.sampler.gpu_sampling = self.gpu
             self.sampler.marks = set(self.marks)
             fin_target = self.detail_id if detail_mode else (
-                self.selected_id if self.tab == "jobs" and self.mode == "main"
+                self.selected_id if self.tab in ("jobs", "history") and self.mode == "main"
                 and getattr(self, "job_panel_state", {}).get("mode") != "off" else None)
             self.sampler.select_fin(fin_target if fin_target and not self.store.job(fin_target) else None)
             panel = getattr(self, "job_panel_state", {})
-            inline_trace = (self.tab == "jobs" and self.mode == "main" and panel.get("mode") == "analytics"
+            inline_trace = (self.tab in ("jobs", "history") and self.mode == "main" and panel.get("mode") == "analytics"
                             and panel.get("analytics_view", "job") == "job")
             self.sampler.select_trace(self.selected_id if inline_trace else
                                       self.analytics_job if (self.tab == "analytics" and self.analytics_view == "job") else None)

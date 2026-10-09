@@ -49,7 +49,7 @@ Its focus indicator identifies the control receiving the keys.
 
 Use `:pane-focus KEY` to focus a known divider.
 Use `:pane-resize KEY smaller` or `:pane-resize KEY larger` for a command adjustment.
-For Jobs Main and Details, the key is `workspace:jobs`.
+For Jobs Main and Details, the key is `workspace:jobs`; History uses `workspace:history`.
 Queue and Recents use `recent:jobs`.
 The paired-source Logs view uses `log:sources`.
 The history browser on each page uses `history:analytics`, `history:deps`, `history:log`, or `history:research`.
@@ -108,6 +108,8 @@ Jobs and Recents retain separate filters and cascading sorts.
 
 ## Read metric graphs inside Details
 
+Jobs and History share the Inspector, Logs, Investigate, Research, Analytics, Quick Advisor, and Off modes.
+Select a historical row to use these modes with that exact job.
 Open **Analytics → Job series** or an available **Research** metric view for the selected job.
 Point inside a plot for a thin Braille crosshair in the active theme's accent color.
 ASCII and reader modes use static dots and `+` intersections.
@@ -124,6 +126,9 @@ The graph keeps the exact selected job and source.
 
 A running metric can show its own Live toggle and a window slider from 30 seconds to one second.
 Its adjacent polling slider spans five seconds to 500 milliseconds.
+**Set** identifies that slider's request; **Poll** identifies the shared effective interval.
+Compact rows put the effective value before the polling track and `S` plus the requested value after it.
+The requested label changes even if a faster shared request keeps the effective interval unchanged.
 Live and the window slider change the displayed interval. The polling slider changes source-read requests.
 A valid rectangular zoom turns Live off.
 GPU utilisation and observed busy mean use recorded device observations and retain missing-data gaps.
@@ -160,16 +165,25 @@ Normal UI state retains grouping and closed-group preferences.
 | --- | --- |
 | Slurm array task IDs | Shared parent allocation; the task suffix identifies each real child |
 | Slurm heterogeneous component IDs | Shared parent allocation; the component suffix identifies each real child |
-| One explicit launch marker | Matching `launch:ID` or `group:ID` job tags, or a published `TowerLaunchId`, `LaunchId`, `LaunchGroup`, or `JobGroup` scheduler detail |
-| Closely submitted ordinary jobs | A likely launch: strictly consecutive numeric IDs, an anchored submission span of at most ten seconds, matching nonempty owner, account, WorkDir, and exact Command, plus the same name or at least three matching numbered-name variants |
+| One explicit launch marker | Matching `launch:ID` or `group:ID` scheduler comments or local job tags, or a published `TowerLaunchId`, `LaunchId`, `LaunchGroup`, or `JobGroup` scheduler detail |
+| Dependency-connected launch | Matching owner, account, and WorkDir with direct dependency links; at most 60 seconds and a numeric ID span of 256 |
+| At least three ordinary jobs | Matching owner, account, WorkDir, and name family within 30 seconds; bounded gaps and density in numeric job IDs; no conflicting known script paths |
+| Two ordinary jobs | Adjacent numeric IDs within ten seconds; matching nonempty owner, account, WorkDir, exact Command, and name |
 
 Explicit markers are scoped by cluster, owner, account, and work directory.
 Use a unique marker for each real launch.
 For example, `:tag 101 102 launch:study-17` can mark two available jobs from one launch.
-Conflicting launch markers do not establish one shared launch.
-Missing provenance, a reused generic name, a gap in job IDs, or more than ten seconds between submissions prevents ordinary burst deduction.
+Conflicting local marker tags do not establish one reliable local marker.
+Missing provenance and names alone do not establish an ordinary launch.
 Step IDs do not establish independent launch members.
 Likely groups describe matching evidence; they do not establish equal experimental inputs.
+See [Automatic launch groups](batch-launches.md) for exact deduction limits, scheduler-comment examples, metadata precedence, and historical coverage.
+
+Closed groups show themed INFO badges for `run`, `pend`, `dep`, `never`, `done`, `fail`, `cancel`, and `other`.
+Only nonzero categories appear, and each matching observed record belongs to one category.
+`pend` excludes dependency waits and `DependencyNeverSatisfied`; those appear as `dep` and `never`.
+Compressed array rows count as records rather than expanded task states.
+The summary updates with published state changes even when launch membership stays the same.
 
 No new `run.json` grouping field is required.
 Projects should continue to publish each task's exact job ID and separate run attempt.
@@ -187,7 +201,8 @@ Drag ranges follow the displayed real rows and do not add hidden children.
 Review every target ID before confirming a bulk action.
 Dependencies retains its existing chain-action rules and reviews.
 Filtering does not reintroduce excluded jobs when a group opens.
-Group counts distinguish matching visible members from all observed members.
+Expanded group information distinguishes matching members from all observed members.
+Closed INFO badges count the matching members in that list, subject to filters and the accounting window.
 
 ## Keep job history beside the data
 

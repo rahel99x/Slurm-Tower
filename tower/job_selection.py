@@ -72,7 +72,7 @@ def clear(app):
     pointer = getattr(app, "interaction_state", {})
     pointer.update(active=False, focused=None, frame_required=True)
     getattr(app, "job_panel_state", {})["focus"] = ""
-    if app.tab == "jobs":
+    if app.tab in ("jobs", "history"):
         from .job_panels import focus_main
         focus_main(app)
     from . import chart_interaction, metric_live, pane_drag
@@ -147,7 +147,8 @@ def publish(app, rows, hits, width, height):
         return
     left, right, bottom = 0, width, max(0, height - 1)
     top = max(0, min(headers) - 1 if headers else min(records))
-    main = getattr(app, "workspace_main_rect", None) if enabled(app) else None
+    native = isinstance(getattr(app, "job_panel_state", None), dict)
+    main = getattr(app, "workspace_main_rect", None) if enabled(app) or native else None
     if main is not None:
         left, right = main.x, min(width, main.x + main.width)
         top, bottom = max(top, main.y), min(bottom, main.y + main.height)
@@ -192,7 +193,7 @@ def _hit(app, y, x):
     if not (0 <= x < getattr(app, "width", 120)
             and 0 <= y < getattr(app, "height", 100000)):
         return None
-    if getattr(app, "tab", "") == "jobs":
+    if getattr(app, "tab", "") in ("jobs", "history"):
         from .job_panels import contains
         if contains(app, y, x):
             return None
@@ -293,7 +294,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
                         "point": (y, x), "size": (getattr(app, "width", None), getattr(app, "height", None))}
     # A press retains ordinary row selection. Marks change only on a range drag.
     resume(app)
-    if app.tab == "jobs":
+    if app.tab in ("jobs", "history"):
         from .job_panels import focus_main
         focus_main(app)
     app.cursor[app.tab] = ids.index(identifier)

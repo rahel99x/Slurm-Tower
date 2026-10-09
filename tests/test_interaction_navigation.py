@@ -301,3 +301,31 @@ def test_native_hover_neither_selects_jobs_nor_requests_graph_refresh(native):
         assert not ui.needs_frame(app)
         assert app.selected_id == before
     assert ui.initialize(app)["graph"] is frame
+
+
+@pytest.mark.parametrize("width", [80, 160])
+def test_history_graph_edge_admits_old_jobs_then_crosses_to_details(native, width):
+    app, _, _ = native
+    app.enter_tab("history")
+    frame = draw(native, width, 40)
+    shown = [item for item in frame.controls if item.group == "fin"]
+    assert len(shown) >= 2
+    last = shown[-1]
+    focus(app, last)
+    assert app.selected_id == last.label
+    draw(native, width, 40)
+    for _ in range(len(shown) + 3):
+        previous = app.selected_id
+        expected = app.last_history_ids[app.last_history_ids.index(previous) + 1]
+        app.handle("down")
+        assert ui.needs_frame(app) and app.selected_id == expected
+        frame = draw(native, width, 40)
+        current = frame.get(ui.initialize(app)["focused"])
+        assert current.label == expected and current.group == "fin"
+    app.handle("right")
+    target = frame.get(ui.initialize(app)["focused"])
+    assert frame.region(target) == "page:details"
+    assert target.id == "job_panel_tab:inspector"
+    app.handle("left")
+    assert ui.initialize(app)["focused"] == "fin:" + app.selected_id
+    assert app.top["history"] > 0

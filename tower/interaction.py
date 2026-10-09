@@ -428,12 +428,12 @@ def _hit_controls(app, rows, hits, width, height, *, layer=0, spans=None):
                               kind, button=kind != "node_cell", layer=layer)
         elif kind in ROW_KINDS:
             right = None
-            if getattr(app, "tab", "") == "jobs":
+            if getattr(app, "tab", "") in ("jobs", "history"):
                 panel = getattr(app, "job_panel_rect", None)
                 if panel is not None and panel.y <= y < panel.y + panel.height and panel.x:
                     right = panel.x - 1
             rect = _row_rect(rows, y, width, height, overlays=spans, main_right=right)
-            if rect and getattr(app, "tab", "") == "jobs" and kind in ("job", "recent"):
+            if rect and getattr(app, "tab", "") in ("jobs", "history") and kind in ("job", "recent", "fin"):
                 main = _pane_rect(getattr(app, "workspace_main_rect", None), width, height)
                 if main and main.top <= y < main.bottom:
                     # A table row remains selectable in its leading cells.
@@ -587,9 +587,9 @@ def _regions(app, width, height):
     dividers = _state(app, "pane_drag_state").get("dividers", {})
     # Research and Logs render their own native documents. A Main rectangle
     # retained from Jobs must not invent a hidden Details pane on those pages.
-    workspace = tab == "jobs" or "workspace:" + tab in dividers
+    workspace = tab in ("jobs", "history") or "workspace:" + tab in dividers
     main = _pane_rect(getattr(app, "workspace_main_rect", None), width, height) if workspace else None
-    panel = _pane_rect(getattr(app, "job_panel_rect", None), width, height) if tab == "jobs" else None
+    panel = _pane_rect(getattr(app, "job_panel_rect", None), width, height) if tab in ("jobs", "history") else None
     layout = getattr(app, "layout_state", None)
     has_details = "details" in getattr(layout, "available", ())
     if main and body.top <= main.top and main.bottom <= body.bottom and body.left <= main.left and main.right <= body.right:
@@ -816,18 +816,20 @@ def needs_frame(app):
 
 
 def _bind_row(app, control):
-    """Bind explicit Jobs row focus using existing published real identities."""
-    if (getattr(app, "mode", "main") != "main" or getattr(app, "tab", "") != "jobs"
-            or control.button or control.group not in ("job", "recent")):
+    """Bind explicit job-row focus using existing published real identities."""
+    if (getattr(app, "mode", "main") != "main" or getattr(app, "tab", "") not in ("jobs", "history")
+            or control.button or control.group not in ("job", "recent", "fin")):
         return False
-    ids = getattr(app, "visible_ids", ()) if control.group == "job" else getattr(app, "recent_ids", ())
+    tab = getattr(app, "tab", "jobs")
+    ids = ((getattr(app, "last_history_ids", ()) or ()) if tab == "history" else
+           getattr(app, "visible_ids", ()) if control.group == "job" else getattr(app, "recent_ids", ()))
     if control.label not in ids or not isinstance(getattr(app, "cursor", None), dict):
         return False
     index = ids.index(control.label) + (len(getattr(app, "visible_ids", ())) if control.group == "recent" else 0)
-    changed = getattr(app, "selected_id", None) != control.label or app.cursor.get("jobs") != index
+    changed = getattr(app, "selected_id", None) != control.label or app.cursor.get(tab) != index
     from .job_selection import resume
-    resume(app, "jobs")
-    app.cursor["jobs"], app.selected_id = index, control.label
+    resume(app, tab)
+    app.cursor[tab], app.selected_id = index, control.label
     layout = getattr(app, "layout_state", None)
     if layout:
         layout.focus = "main"
@@ -840,8 +842,8 @@ def _bind_row(app, control):
 
 def _advance_row(app, graph, current, direction):
     """At a table viewport edge, admit the next actual scheduler row."""
-    if (direction not in ("up", "down") or current.button or current.group not in ("job", "recent")
-            or getattr(app, "mode", "main") != "main" or getattr(app, "tab", "") != "jobs"
+    if (direction not in ("up", "down") or current.button or current.group not in ("job", "recent", "fin")
+            or getattr(app, "mode", "main") != "main" or getattr(app, "tab", "") not in ("jobs", "history")
             or not callable(getattr(app, "move", None))):
         return False
     cy = current.rect.center[0]
@@ -852,16 +854,18 @@ def _advance_row(app, graph, current, direction):
     _bind_row(app, current)
     old = getattr(app, "selected_id", None)
     from .recent_history import navigate
-    if not navigate(app, direction):
+    tab = getattr(app, "tab", "jobs")
+    if tab != "jobs" or not navigate(app, direction):
         app.move(direction)
-        ids = list(getattr(app, "visible_ids", ())) + list(getattr(app, "recent_ids", ()))
-        cursor = getattr(app, "cursor", {}).get("jobs", 0)
+        ids = ((getattr(app, "last_history_ids", ()) or ()) if tab == "history" else
+               list(getattr(app, "visible_ids", ())) + list(getattr(app, "recent_ids", ())))
+        cursor = getattr(app, "cursor", {}).get(tab, 0)
         if 0 <= cursor < len(ids):
             app.selected_id = ids[cursor]
     selected = getattr(app, "selected_id", None)
     if selected == old or not selected:
         return False
-    kind = "job" if selected in getattr(app, "visible_ids", ()) else "recent"
+    kind = "fin" if tab == "history" else "job" if selected in getattr(app, "visible_ids", ()) else "recent"
     state = initialize(app)
     state["focused"], state["active"], state["frame_required"] = kind + ":" + selected, True, True
     return True
@@ -955,7 +959,7 @@ def handle_key(app, key):
     if key == "esc":
         state["active"] = False
         state["pending_focus"] = None
-        if getattr(app, "mode", "main") == "main" and getattr(app, "tab", "") == "jobs":
+        if getattr(app, "mode", "main") == "main" and getattr(app, "tab", "") in ("jobs", "history"):
             # Clicking a Details button starts graph traversal and native tab
             # focus together. One Escape releases both owners, so Jobs arrows
             # do not unexpectedly continue cycling Details after graph exit.

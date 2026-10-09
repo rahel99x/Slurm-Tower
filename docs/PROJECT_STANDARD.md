@@ -86,6 +86,11 @@ For an array task, use the array's parent job ID plus task index as its Slurm
 identity. Keep every task's reports separate. Batch/extern steps and repeated
 snapshots are not independent experiments.
 
+Use a shared launch marker when several independent jobs belong to one submitted batch.
+See [Group jobs from one launch](guides/batch-launches.md) for scheduler markers, local tags, automatic deduction, and historical coverage.
+Each grouped job must still publish its own exact `job_id` and run attempt.
+A display group does not merge reports or make one job's logs valid for another job.
+
 Use relative, forward-slash paths in the shared project files. Their bases are:
 
 | Path | Resolved relative to |

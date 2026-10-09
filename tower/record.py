@@ -12,10 +12,23 @@ import threading
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .slurm import Backend, CommandError, GROUP_FMT, JOB_FMT
+from .slurm import Backend, CommandError, GROUP_FMT, JOB_FMT, SACCT_FIELDS, SACCT_LEGACY_FIELDS
 
-_LEGACY_QUEUE_FORMATS = {JOB_FMT: JOB_FMT.rsplit("|", 1)[0],
-                         GROUP_FMT: GROUP_FMT.rsplit("|", 3)[0]}
+# These are released wire formats, not prefixes of the current format. Each
+# optional-field upgrade must retain the exact older command keys in recordings.
+_LEGACY_FORMATS = {
+    "squeue": {
+        JOB_FMT: (
+            "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o|%Z",
+            "%i|%j|%P|%T|%M|%l|%D|%C|%b|%N|%m|%S|%V|%r|%Q|%E|%a|%q|%e|%o",
+        ),
+        GROUP_FMT: (
+            "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S|%a|%o|%Z",
+            "%i|%u|%j|%P|%T|%M|%l|%D|%C|%b|%r|%Q|%N|%V|%S",
+        ),
+    },
+    "sacct": {SACCT_FIELDS: (SACCT_LEGACY_FIELDS,)},
+}
 
 
 def _open(path: str, mode: str):
@@ -154,14 +167,17 @@ class ReplayBackend(Backend):
     def run(self, cmd: Sequence[str], timeout: float = 8.0) -> Tuple[str, float]:
         key, now = tuple(cmd), self.clock.now()
         rec = self._pick(key, now)
-        # Native queue provenance added optional trailing output fields. Old
-        # recordings retain exact command and time matching, with only these
-        # two known format upgrades allowed to read their legacy responses.
-        if rec is None and key not in self.by_key and key and os.path.basename(key[0]) == "squeue" and "-o" in key:
+        # Only known optional-field upgrades can read a legacy response. Keep
+        # every other argument (including user, account, and history interval)
+        # exact. A recorded current-format result or error always takes priority.
+        if rec is None and key not in self.by_key and key and "-o" in key:
             index = key.index("-o") + 1
-            legacy = _LEGACY_QUEUE_FORMATS.get(key[index]) if index < len(key) else None
-            if legacy is not None:
+            formats = _LEGACY_FORMATS.get(os.path.basename(key[0]), {})
+            legacy_formats = formats.get(key[index], ()) if index < len(key) else ()
+            for legacy in legacy_formats:
                 rec = self._pick(key[:index] + (legacy,) + key[index + 1:], now)
+                if rec is not None:
+                    break
         if rec is None:
             raise CommandError(f"{os.path.basename(cmd[0])}: not in the recording")
         if "err" in rec:

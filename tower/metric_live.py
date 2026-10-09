@@ -445,11 +445,16 @@ def _row(g, entry, width, *, app=None, identity=None, poll_interval=_UNSET_INTER
         format_interval(poll_interval, ascii_=g.ascii)
         if poll_interval is not None else "?"
     )
-    # These are the requested polling domain. The current value above remains
-    # the effective shared-source interval, including any source constraints.
-    slow_interval = format_interval(5.0, ascii_=g.ascii)
+    # A faster global or companion-metric request can keep the effective poll
+    # interval unchanged. Report this control's setting separately so its
+    # value never appears frozen while the thumb moves. Neither value claims
+    # the external producer publishes new observations at this cadence.
+    from .refresh_rate import poll_interval as requested_interval
+    requested = format_interval(
+        requested_interval(entry.get("rate", MIN_RATE), MAX_RATE), ascii_=g.ascii
+    )
     fast_interval = format_interval(0.5, ascii_=g.ascii)
-    if width < 64:
+    if width < 68:
         toggle = (
             ("+" if entry["enabled"] else "o")
             if g.ascii
@@ -457,15 +462,15 @@ def _row(g, entry, width, *, app=None, identity=None, poll_interval=_UNSET_INTER
         )
         delta_prefix, delta_suffix = "30s", "1s"
         rate_prefix = L.pad(current_interval, 6)
-        rate_suffix = L.pad(fast_interval, 6)
+        rate_suffix = "S" + L.pad(requested, 5)
         separator = " "
     else:
         toggle = "[Live ON ]" if entry["enabled"] else "[Live off]"
         delta_prefix = "Delta " + L.pad(format_delta(entry["delta"]), 6) + " 30s "
         delta_suffix = " 1s"
         rate_prefix = (
-            "Poll " + L.pad(current_interval, 6) + " "
-            + L.pad(slow_interval, 6) + " "
+            "Poll " + L.pad(current_interval, 6) + " Set "
+            + L.pad(requested, 6) + " "
         )
         rate_suffix = " " + L.pad(fast_interval, 6)
         separator = " | " if g.ascii else " │ "
@@ -500,7 +505,7 @@ def _row(g, entry, width, *, app=None, identity=None, poll_interval=_UNSET_INTER
         (rate_prefix, "text-secondary"),
     ])
     row.extend(slider(rate_count, rate_fraction(entry.get("rate", MIN_RATE))))
-    row.append((rate_suffix, "dim"))
+    row.append((rate_suffix, "text-secondary" if width < 68 else "dim"))
     return L.clip_row(row, width), (
         0, L.vlen(toggle), delta_left, delta_left + delta_count,
         rate_left, rate_left + rate_count,
@@ -575,7 +580,7 @@ def controls(g, app, identity, width, *, running=True, row=0, column=0, layer=0)
             "control",
             {
                 "id": "metric-sampling:" + entry["token"],
-                "label": "Adjust metric polling interval; right-click resets the rate",
+                "label": "Adjust metric polling from 5s to 500ms; Set/S is requested, Poll is effective; right-click resets",
                 "left": column + spans[4],
                 "right": column + spans[5],
                 "action": ("command", "metric-sampling " + entry["token"] + " focus"),

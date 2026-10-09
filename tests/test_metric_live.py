@@ -1008,7 +1008,7 @@ def test_shared_source_current_interval_uses_fastest_metric_request(app):
 
 
 @pytest.mark.parametrize("ascii_", [False, True])
-@pytest.mark.parametrize("width", [24, 25, 36, 63, 64, 120])
+@pytest.mark.parametrize("width", [24, 25, 36, 63, 64, 67, 68, 69, 120])
 def test_feedback_and_actual_interval_labels_preserve_geometry_during_rate_changes(app, ascii_, width):
     app.cfg = Config({"intervals": {"live": 30.0}})
     draw(app, width=width, column=0, ascii_=ascii_)
@@ -1024,6 +1024,26 @@ def test_feedback_and_actual_interval_labels_preserve_geometry_during_rate_chang
         assert "1x" not in L.row_text(rows[0]) and "100x" not in L.row_text(rows[0])
         feedback = M.feedback(app, L.Glyphs(ascii_))
         assert len(feedback) == 1 and L.vlen(L.row_text(feedback[0][2])) == width
+
+
+@pytest.mark.parametrize("ascii_", [False, True])
+@pytest.mark.parametrize("width", [24, 36, 64, 68, 120])
+def test_requested_polling_remains_readable_when_effective_cadence_is_shared(app, ascii_, width):
+    from tower.metric_sampling import format_interval
+    from tower.refresh_rate import poll_interval
+
+    app.sampler = SimpleNamespace(sampling_interval=lambda *_: .5)
+    draw(app, width=width, column=0, ascii_=ascii_)
+    control = current(app)
+    for rate in (1, 25, 75, 100):
+        M.set_rate(app, control.key, rate)
+        output = M.feedback(app, L.Glyphs(ascii_))[0][2]
+        text = L.row_text(output)
+        requested = format_interval(poll_interval(rate, maximum=100), ascii_=ascii_)
+        assert "500ms" in text and requested in text
+        assert ("Set " if width >= 68 else "S" + requested) in text
+        assert L.vlen(text) == width
+        assert not ascii_ or text.isascii()
 
 
 @pytest.mark.parametrize("modal", [False, True])
