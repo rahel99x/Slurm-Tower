@@ -153,8 +153,11 @@ def scoped_state_dir(backend, cfg: Config, user: str) -> str:
 
 def build(args, cfg: Config) -> Session:
     state_namespace(cfg)
-    from .refresh_rate import validate_multiplier
-    cfg.set("polling_multiplier", validate_multiplier(args.rate if args.rate is not None else cfg.get("polling_multiplier", 1)))
+    from .refresh_rate import poll_position, validate_multiplier
+    requested_rate = args.rate if args.rate is not None else cfg.get("polling_multiplier", 1)
+    if args.interval and args.rate is None:
+        requested_rate = poll_position(args.interval)
+    cfg.set("polling_multiplier", validate_multiplier(requested_rate))
     user = args.user or cfg["user"] or os.environ.get("USER", "")
     if args.fake and not user:
         user = "alex"
@@ -196,9 +199,9 @@ def build(args, cfg: Config) -> Session:
     from .research import ResearchHub
     app.research = ResearchHub(cfg, files, demo=args.fake, slurm=slurm,
                               settings={k: getattr(args, k) for k in ("metrics_file", "contract", "workdir", "passport", "planning_file")})
-    if args.rate is not None:
+    if args.rate is not None or args.interval:
         from .refresh_rate import set_multiplier
-        set_multiplier(app, args.rate)
+        set_multiplier(app, requested_rate)
     from .forecast import ForecastTracker
     app.research.forecasts = ForecastTracker()
     app.research.forecast_restore_warning = ""
@@ -338,9 +341,10 @@ def parse(argv):
     ap.add_argument("--ssh-user", default="", help="the login on --host (default: as here)")
     ap.add_argument("--user", default="")
     ap.add_argument("--account", default="", help="account whose overall load the header shows (default: the first of sshare -U)")
-    ap.add_argument("--interval", type=float, default=0.0, help="seconds between squeue samples (config: intervals.jobs)")
+    ap.add_argument("--interval", type=float, default=0.0,
+                    help="requested polling seconds, rounded to the 5s..500ms slider; --rate takes precedence")
     ap.add_argument("--rate", type=int, choices=range(1, 51), metavar="1..50", default=None,
-                    help="live update speed multiplier; overrides saved preference, with source limits and backoff retained")
+                    help="polling slider position: 1 is 5s, 50 is 500ms; overrides saved preference, with backoff retained")
     ap.add_argument("--days", type=float, default=0.0, help="history window in days (config: history_days)")
     ap.add_argument("--no-gpu", action="store_true", help="no nvidia-smi sampling")
     ap.add_argument("--bell", action="store_true", help="ring when one of your jobs starts")

@@ -31,6 +31,7 @@ def initialize(app):
     state = app.navigation_tools_state
     defaults = {"query": "", "cursor": 0, "top": 0, "page": 8, "hits": [], "index": [], "index_at": -1,
                 "locations": {}, "settings": {}, "bindings": {}, "preview_backup": None,
+                "polling_preview_backup": None,
                 "edit": "", "editing": False, "test": False, "test_message": "", "field": "",
                 "value": "", "scroll": 0, "return_mode": "main"}
     for key, value in defaults.items():
@@ -235,7 +236,9 @@ def restore(app, data):
         for key, value in list(settings.items())[:64]:
             if _valid_setting(key, value):
                 state["settings"][key] = value
-        _apply_settings(app, state["settings"])
+        # Polling has its own saved preference. Legacy source settings must
+        # not override the position already restored by refresh_rate.
+        _apply_settings(app, state["settings"], polling=False)
     bindings = data.get("bindings", {})
     if isinstance(bindings, dict):
         for action, keys in list(bindings.items())[:128]:
@@ -378,7 +381,8 @@ SETTING_CHOICES = {"theme": THEME_NAMES,
                    "workspace.density": ("comfortable", "compact", "focused")}
 SETTING_LABELS = {"theme": "Theme", "workspace.density": "Density", "color": "Terminal colors", "animations": "Interface animations",
                   "bell": "Terminal bell", "mouse": "Mouse input", "gpu_sampling": "GPU sampling",
-                  "clipboard.osc52": "Terminal clipboard (OSC 52)", "clipboard.tools": "Local clipboard tools"}
+                  "clipboard.osc52": "Terminal clipboard (OSC 52)", "clipboard.tools": "Local clipboard tools",
+                  "intervals.jobs": "Polling interval (seconds)"}
 SETTING_HELP = {"theme": "Preview colors and contrast. Reader uses ASCII and static feedback.",
                 "color": "Allow terminal colors; disable for a plain display.",
                 "workspace.density": "Preview panel spacing. Compact shows more rows; focused enlarges the active panel.",
@@ -386,22 +390,30 @@ SETTING_HELP = {"theme": "Preview colors and contrast. Reader uses ASCII and sta
                 "mouse": "Allow mouse clicks and wheel input. Keyboard controls remain available.",
                 "gpu_sampling": "Enable existing GPU observations; this can use a small allocation step.",
                 "clipboard.osc52": "Copy through the terminal escape sequence when supported.",
-                "clipboard.tools": "Use an installed local clipboard utility when available."}
+                "clipboard.tools": "Use an installed local clipboard utility when available.",
+                "intervals.jobs": "Global native polling request: 0.5 to 5 seconds. Changes update Jobs, CPU, GPU and trace polling; source limits and per-metric requests still apply."}
 
 
 def _setting_keys(app):
-    return list(SETTING_LABELS) + ["intervals." + name for name in app.cfg["intervals"]][:32]
+    from .refresh_rate import NATIVE_SOURCES
+    return list(SETTING_LABELS) + ["intervals." + name for name in app.cfg["intervals"]
+                                 if name not in NATIVE_SOURCES][:32]
 
 
 def _valid_setting(key, value):
     if key in SETTING_CHOICES:
         return value in SETTING_CHOICES[key]
+    if key == "intervals.jobs":
+        return type(value) in (int, float) and .5 <= value <= 5 and math.isfinite(value)
     if key in SETTING_LABELS:
         return type(value) is bool
     return isinstance(key, str) and key.startswith("intervals.") and len(key) < 64 and type(value) in (int, float) and math.isfinite(value) and 1 <= value <= 3600
 
 
 def _read_setting(app, key):
+    if key == "intervals.jobs":
+        from .refresh_rate import cadence
+        return cadence(app, "jobs")
     if key == "theme":
         return app.theme
     if key == "workspace.density":
@@ -418,13 +430,19 @@ def _locked_settings(app):
     return set(value) if isinstance(value, (set, tuple, list)) else set()
 
 
-def _apply_settings(app, values):
+def _apply_settings(app, values, *, polling=True):
     locked = _locked_settings(app)
     applied = {}
     for key, value in values.items():
         if key in locked or not _valid_setting(key, value):
             continue
         if key.startswith("intervals.") and key.split(".", 1)[1] not in app.cfg["intervals"]:
+            continue
+        if key == "intervals.jobs":
+            if polling:
+                from .refresh_rate import poll_position, set_multiplier
+                set_multiplier(app, poll_position(value))
+                applied[key] = _read_setting(app, key)
             continue
         app.cfg.set(key, value)
         applied[key] = value
@@ -447,6 +465,8 @@ def _apply_settings(app, values):
 
 def _open_settings(app):
     state = initialize(app)
+    from .refresh_rate import multiplier
+    state["polling_preview_backup"] = multiplier(app)
     state["preview_backup"] = {key: _read_setting(app, key) for key in _setting_keys(app)}
     state["draft"] = dict(state["preview_backup"])
     _open(app, "settings_editor")
@@ -456,6 +476,7 @@ def _settings_default(app):
     from .config import Config, DEFAULTS
     defaults = Config(DEFAULTS)
     values = {key: defaults.get(key, True) for key in _setting_keys(app)}
+    values["intervals.jobs"] = 5.0
     values["mouse"] = True
     for key in _locked_settings(app):
         if key in values:
@@ -468,13 +489,18 @@ def _settings_key(app, key):
     keys = _setting_keys(app)
     if key == "esc":
         _apply_settings(app, state["preview_backup"] or {})
+        if state.get("polling_preview_backup") is not None and "intervals.jobs" not in _locked_settings(app):
+            from .refresh_rate import set_multiplier
+            set_multiplier(app, state["polling_preview_backup"])
         state["preview_backup"] = None
+        state["polling_preview_backup"] = None
         app.mode = state["return_mode"]
         app.say("Settings preview cancelled")
     elif key == "enter":
         state["settings"].update({key: value for key, value in state["draft"].items() if key not in _locked_settings(app)})
         _apply_settings(app, state["draft"])
         state["preview_backup"] = None
+        state["polling_preview_backup"] = None
         app.mode = state["return_mode"]
         app.save()
         app.say("Settings applied and saved")
@@ -489,10 +515,14 @@ def _settings_key(app, key):
             value = choices[(choices.index(old) + (-1 if key == "left" else 1)) % len(choices)]
         elif type(old) is bool:
             value = not old
+        elif field == "intervals.jobs":
+            value = max(.5, min(5.0, round(float(old) * (0.8 if key == "left" else 1.25), 2)))
         else:
             value = max(1.0, min(3600.0, round(float(old) * (0.8 if key == "left" else 1.25), 2)))
         state["draft"][field] = value
         _apply_settings(app, {field: value})
+        if field == "intervals.jobs":
+            state["draft"][field] = _read_setting(app, field)
     elif key == "D":
         state["draft"] = _settings_default(app)
         _apply_settings(app, state["draft"])
@@ -622,7 +652,7 @@ for _alias, _source in {"cpu%": "cpu", "eff": "ce", "mem%": "me", "gpu%": "gpu",
 RESOURCE_INFO = {
     "sources": {"name": ("Source name", "The exact scheduler or plugin source identity. No units."),
                 "state": ("Source state", "Off means disabled; error means the last request failed; pending means no successful sample; ok means the last request succeeded."),
-                "every": ("Sample interval", "Configured seconds between this source's samples; failure backoff is additional."),
+                "every": ("Polling interval", "Effective seconds between this source's polling requests; failure backoff and in-flight work can delay updates further."),
                 "last": ("Last successful sample", "Timestamp of the most recent successful source request; the table displays its age."),
                 "latency": ("Request latency", "Milliseconds for the last completed source request."),
                 "calls": ("Source calls", "Count of requests in this Tower session."),
@@ -790,8 +820,9 @@ def _resource_field(app, table, key, snap):
     if record is None:
         raise ValueError("Select a " + table + " row before you inspect its value")
     if table == "sources":
+        from .refresh_rate import cadence
         values = {"name": record.name, "state": "off" if not record.enabled else "error" if record.error else "ok" if record.last_ok else "pending",
-                  "every": app.cfg["intervals"].get(record.name), "last": record.last_ok or None,
+                  "every": cadence(app, record.name), "last": record.last_ok or None,
                   "latency": record.latency_ms if record.calls else None, "calls": record.calls, "errors": record.errors,
                   "backoff": record.backoff, "error": record.error}
     elif table == "nodes":
@@ -842,6 +873,8 @@ def _field_open(app, table, key, peek=False):
     else:
         resource = RESOURCE_INFO.get(table, {}).get(key)
         info = (resource[0], resource[1], "Unknown when this source has no usable observation.") if resource else FIELD_INFO["gpus"] if key == "gpu" and table in ("jobs", "group") else FIELD_INFO.get(key, (key.upper(), "Reported source field; no derived formula is applied.", "Unknown when its source has no usable value."))
+        from .refresh_rate import cadence, NATIVE_SOURCES
+        from .metric_sampling import format_interval
         intervals = app.cfg["intervals"]
         source = "nodes" if table == "nodes" else "partitions" if table == "cluster" else "finished" if table in ("history", "recent") else "gpu" if key in ("gpu%", "gpu_util") else "live" if key in ("cpu", "cpu%", "ce", "eff", "mem", "mem%", "rss", "me") else "jobs"
         if table == "sources":
@@ -851,7 +884,11 @@ def _field_open(app, table, key, peek=False):
         health = app.store.snapshot().get("health", {}).get(source)
         age = (clock.now() - health.last_ok) if health and health.last_ok else None
         freshness = f"Last successful source sample: {max(0, age):.1f} seconds ago." if age is not None else "No successful source sample has been recorded."
-        state.update(field=info[0], value="\n\n".join((info[1], info[2], f"Source: {source}. Configured interval: {intervals.get(source, 'unknown')} seconds.", freshness)))
+        interval = format_interval(cadence(app, source), ascii_=bool(app.cfg.get("ascii", False)))
+        fetching = f"Source: {source}. Polling interval: {interval}; failure backoff is additional."
+        if source not in NATIVE_SOURCES:
+            fetching += f" Configured base: {intervals.get(source, 'unknown')} seconds."
+        state.update(field=info[0], value="\n\n".join((info[1], info[2], fetching, freshness)))
     _open(app, "value_peek" if peek else "field_explanation")
 
 
@@ -1009,7 +1046,9 @@ def overlay(views, snap, app, width, height):
     if app.mode == "settings_editor":
         keys = _setting_keys(app)
         locked = _locked_settings(app)
-        rows = [(SETTING_LABELS.get(key, key.replace("intervals.", "Sample interval · ")), str(state["draft"][key]) + (" [launch option]" if key in locked else "")) for key in keys]
+        rows = [(SETTING_LABELS.get(key, key.replace("intervals.", "Sample interval · ")),
+                 (f"{state['draft'][key]:.3g}" if key == "intervals.jobs" else str(state["draft"][key]))
+                 + (" [launch option]" if key in locked else "")) for key in keys]
         field = keys[min(state["cursor"], len(keys) - 1)]
         explanation = SETTING_HELP.get(field, "Seconds between existing source samples; from 1 to 3600 seconds.")
         if field in locked:

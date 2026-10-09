@@ -10,7 +10,7 @@ from tower import (chart_interaction as charts, clock, layout,
                    text_selection)
 from tower.config import Config
 from tower.controller import App
-from tower.model import Job, Live, Store
+from tower.model import GpuSample, Job, Live, Store
 from tower.research import ResearchHub
 from tower.sampler import Sampler
 from tower.views import Views
@@ -81,13 +81,13 @@ def test_native_and_details_mouse_drags_change_collection_independently_of_displ
     app.click(*point(control.rate_slider_full, right=True), hits, button="release")
     assert entry(app, control)["rate"] == 100
     assert d.sampler.sampling_interval("live", "7", control.key[4]) == .5
-    assert d.sampler.sampling_interval("live", "8") == 30
-    assert entry(app, control)["delta"] == 5.0
+    assert d.sampler.sampling_interval("live", "8") == 5.0
+    assert entry(app, control)["delta"] == 30.0
     assert not metric_live.enabled(app, control.key)
 
     app.click(*point(control.slider), hits, button="press")
     app.click(*point(control.slider_full, right=True), hits, button="release")
-    assert entry(app, control)["delta"] == .001
+    assert entry(app, control)["delta"] == 1.0
     assert entry(app, control)["rate"] == 100
     assert d.sampler.sampling_interval("live", "7", control.key[4]) == .5
 
@@ -99,7 +99,7 @@ def test_right_reset_is_consumed_before_any_job_or_line_deselect(dashboard, monk
     d, app = dashboard, dashboard.app
     _, hits = d.draw(tab)
     control = controls(app)[0]
-    metric_live.set_delta(app, control.key, .01)
+    metric_live.set_delta(app, control.key, 3.0)
     metric_live.set_rate(app, control.key, 100)
     refresh_rate.set_multiplier(app, 10)
     app.marks = {"7", "8"}
@@ -121,10 +121,11 @@ def test_right_reset_is_consumed_before_any_job_or_line_deselect(dashboard, monk
         if route == "screen_pressed_motion":
             bits |= MOUSE.REPORT_MOUSE_POSITION
         screen._apply_input(app, ("mouse", (0, x, y, 0, bits)), hits, MOUSE)
-    assert entry(app, control)["delta"] == (5.0 if kind == "window" else .01)
+    assert entry(app, control)["delta"] == (30.0 if kind == "window" else 3.0)
     assert entry(app, control)["rate"] == (1 if kind == "sampling" else 100)
     assert refresh_rate.multiplier(app) == 10
-    assert d.sampler.sampling_interval("live", "7", control.key[4]) == (3.0 if kind == "sampling" else .5)
+    expected = refresh_rate.poll_interval(10) if kind == "sampling" else .5
+    assert d.sampler.sampling_interval("live", "7", control.key[4]) == pytest.approx(expected)
     assert app.marks == {"7", "8"} and app.selected_id == "7"
     assert (app.sel_anchor, app.sel_end) == (3, 9)
     assert (app.logs.selection_path, app.logs.selection_anchor, app.logs.selection_end) == ("/logs/train.log", 2, 8)
@@ -141,20 +142,22 @@ def test_shared_cpu_memory_labels_follow_effective_collector_and_global_rate(das
     assert len(live_controls) >= 2
     cpu, memory = live_controls[:2]
     assert metric_live.set_rate(app, cpu.key, 4)
-    assert metric_sampling.cadence(app, memory.key) == 7.5
+    metric_cadence = refresh_rate.poll_interval(4, maximum=100)
+    assert metric_sampling.cadence(app, memory.key) == pytest.approx(metric_cadence)
     assert entry(app, memory)["rate"] == 1
     rows, _ = d.draw(tab)
     for control in (cpu, memory):
-        assert "7.5s" in layout.row_text(rows[control.rect.top])
+        assert metric_sampling.format_interval(metric_cadence) in layout.row_text(rows[control.rect.top])
     refresh_rate.set_multiplier(app, 10)
-    assert metric_sampling.cadence(app, cpu.key) == .75
-    assert metric_sampling.cadence(app, memory.key) == .75
+    global_cadence = refresh_rate.poll_interval(10)
+    assert metric_sampling.cadence(app, cpu.key) == pytest.approx(global_cadence)
+    assert metric_sampling.cadence(app, memory.key) == pytest.approx(global_cadence)
     rows, _ = d.draw(tab)
     for control in controls(app):
         text = layout.row_text(rows[control.rect.top])
         assert not re.search(r"\b\d+x\b", text)
         if metric_sampling.source(control.key) == "live":
-            assert "750ms" in text
+            assert metric_sampling.format_interval(global_cadence) in text
     assert d.sampler.intervals["live"] == 30.0
 
 
@@ -165,14 +168,14 @@ def test_restarted_attempt_drops_demands_and_old_published_input_cannot_reactiva
     assert metric_live.set_rate(app, old.key, 100)
     d.store.jobs[0].start = "restart"
     metric_live.tick(app)
-    assert d.sampler.sampling_interval("live", "7") == 30.0
+    assert d.sampler.sampling_interval("live", "7") == 5.0
     app.click(*point(old.rate_slider, right=True), hits, button="left")
     assert not metric_live.set_rate(app, old.key, 100)
     d.draw()
     new = controls(app)[0]
     assert new.key[4] != old.key[4]
     assert entry(app, new)["rate"] == 1
-    assert d.sampler.sampling_interval("live", "7", new.key[4]) == 30.0
+    assert d.sampler.sampling_interval("live", "7", new.key[4]) == 5.0
 
 
 def test_hover_feedback_reads_no_sources_and_never_admits_scheduler_work(dashboard, monkeypatch):
@@ -205,19 +208,74 @@ def test_accelerated_job_probes_do_not_accelerate_other_jobs(dashboard, monkeypa
         return Live(rate=.5, rss=1024**3, t=timestamp), previous, []
 
     d.slurm.live = live
-    assert metric_live.set_rate(app, control.key, 60)
+    assert metric_live.set_rate(app, control.key, 100)
     d.sampler.run_source("live")
     assert calls == ["7", "8"]
     now[0] += .5
     d.sampler.run_source("live")
     assert calls == ["7", "8", "7"]
-    now[0] += 29.5
+    now[0] += 4.5
     d.sampler.run_source("live")
     assert calls == ["7", "8", "7", "7", "8"]
     assert not d.store.health["live"].errors
 
 
-@pytest.mark.parametrize("remote,floor", [(False, .25), (True, 1.5)])
+@pytest.mark.parametrize("tab", ["analytics", "jobs"])
+@pytest.mark.parametrize("source", ["live", "gpu"])
+@pytest.mark.parametrize("edge,seconds", [("left", 5.0), ("right", .5)])
+def test_poll_slider_endpoints_gate_real_native_probes(dashboard, monkeypatch, tab, source, edge, seconds):
+    """Both layouts reach the same real collection deadlines, including GPU."""
+    d, app = dashboard, dashboard.app
+    now, calls = [100.0], []
+    monkeypatch.setattr("tower.sampler.time.monotonic", lambda: now[0])
+    sample = GpuSample(0, 50, 100, 200, "GPU")
+    for job in d.store.jobs:
+        job.gpus = 1
+        d.store.apply_gpu(job.id, [sample])
+
+    def live(job, previous, timestamp):
+        calls.append((job.id, now[0]))
+        return Live(rate=.5, rss=1024**3, t=timestamp), previous, []
+
+    def gpu(job):
+        calls.append((job.id, now[0]))
+        return [sample]
+
+    d.slurm.live, d.slurm.gpu = live, gpu
+    _, hits = d.draw(tab)
+    control = next(item for item in controls(app) if metric_sampling.source(item.key) == source)
+    right = edge == "right"
+    app.click(*point(control.rate_slider, right=right), hits, button="press")
+    app.click(*point(control.rate_slider_full, right=right), hits, button="release")
+    assert d.sampler.sampling_interval(source, "7", control.key[4]) == seconds
+    d.store.health[source].enabled = True
+    d.sampler.round(now=now[0], wait=True)
+    assert sorted(calls) == [("7", 100.0), ("8", 100.0)]
+    now[0] = 100.0 + seconds - .001
+    d.sampler.round(now=now[0], wait=True)
+    assert len(calls) == 2
+    now[0] = 100.0 + seconds
+    d.sampler.round(now=now[0], wait=True)
+    expected = [("7", 100.0), ("8", 100.0), ("7", now[0])]
+    if seconds == 5.0:
+        expected.append(("8", now[0]))
+    assert sorted(calls) == sorted(expected)
+    assert not d.store.health[source].errors
+
+
+def test_global_and_metric_fastest_endpoints_cannot_compound_below_stack_floor(dashboard):
+    d, app = dashboard, dashboard.app
+    d.draw()
+    control = controls(app)[0]
+    assert metric_live.set_rate(app, control.key, 100)
+    refresh_rate.set_multiplier(app, 50)
+    assert d.sampler.sampling_interval("live", "7", control.key[4]) == .5
+    assert d.sampler.sampling_interval("live", "8") == .5
+    assert metric_sampling.cadence(app, control.key) == .5
+    assert d.sampler.intervals["live"] == 30.0
+
+
+@pytest.mark.parametrize("remote,floor", [(False, .5), (True, 1.5)])
 def test_reported_metric_demand_changes_reader_cadence_without_rewriting_producer(dashboard, tmp_path, remote, floor):
     d, app = dashboard, dashboard.app
     source = tmp_path / "metrics.jsonl"

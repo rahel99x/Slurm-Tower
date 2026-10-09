@@ -41,34 +41,24 @@ def initialize(app):
     return state
 
 
-def _polling_base(app):
-    """Read the queue cadence without source work or changing its settings."""
-    sampler = getattr(app, "sampler", None)
-    intervals = getattr(sampler, "intervals", None)
-    if not isinstance(intervals, dict):
-        cfg = getattr(app, "cfg", None)
-        intervals = cfg.get("intervals", {}) if cfg else {}
-    return intervals.get("jobs", 2.0)
-
-
 def _polling_label(app, value=None, *, ascii_=None):
     from . import refresh_rate
-    from .metric_sampling import format_interval, interval
+    from .metric_sampling import format_interval
     if ascii_ is None:
         cfg = getattr(app, "cfg", None)
         ascii_ = initialize(app).get("ascii", cfg.get("ascii", False) if cfg else False)
     seconds = (refresh_rate.cadence(app, "jobs") if value is None else
-               interval(_polling_base(app), value, metric_rate=1, source="jobs"))
+               refresh_rate.poll_interval(value))
     return format_interval(seconds, ascii_=ascii_)
 
 
 def _polling_field_width(app, ascii_):
     """Keep capture geometry stable as interval labels change their units."""
     state = initialize(app)
-    token = (_polling_base(app), bool(ascii_))
+    token = bool(ascii_)
     cached = state.get("polling_label_width")
     if cached is None or cached[0] != token:
-        # Compute only when configuration or character mode changes. Labels
+        # Compute only when character mode changes. Labels
         # between the endpoints can need more cells than either endpoint.
         size = max(L.vlen(_polling_label(app, value, ascii_=ascii_)) for value in range(1, 51))
         cached = (token, max(3, size))

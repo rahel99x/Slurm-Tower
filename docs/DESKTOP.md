@@ -82,7 +82,7 @@ It therefore uses local Slurm commands and normal identity detection.
 
 | Setting | Desktop profile |
 | --- | --- |
-| Job sampling | Every 2 seconds |
+| Job sampling | Every 5 seconds at the default update setting |
 | Live resource sampling | Every 5 seconds |
 | Accounting sampling | Every 10 seconds |
 | Partition display | All reported local partitions, including idle CPU-only partitions |
@@ -244,11 +244,14 @@ The top-right update slider shows the effective Jobs fetching interval.
 Press and drag its track to request shorter or longer intervals.
 Its labels use `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
 Use `:rate` to inspect the effective Jobs interval.
-Use `:rate N` to select a whole-number request factor from one to 50, or `:rate reset` to restore the default request.
-The desktop Jobs interval starts at two seconds with the default request.
-Source minimum intervals and retry backoff limit higher rates.
+Its logarithmic scale spans five seconds to 500 milliseconds.
+Use `:rate N` to select a position from one to 50, or `:rate reset` to restore five seconds.
+The desktop Jobs interval starts at five seconds with the default request.
+GPU polling also spans five seconds to 500 milliseconds. Retry backoff and command duration can delay actual measurements.
 Sources shows the effective cadence.
 Running metric graphs have a separate polling slider next to their display-window slider.
+The window spans 30 seconds to one second; its right-click reset restores 30 seconds.
+The polling slider spans five seconds to 500 milliseconds; its right-click reset restores a five-second request.
 See [chart controls](guides/charts.md#follow-a-running-metric) to adjust one exact job's reads.
 See [Live workbench](guides/live-workbench.md) for the toolbar, controls, limits, and project reporting procedure.
 Use `:smoothscroll off` for immediate wheel movement.

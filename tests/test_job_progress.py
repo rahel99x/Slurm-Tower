@@ -402,7 +402,7 @@ def test_busy_worker_is_never_queued_behind(dashboard):
     dashboard.hub.poll_task()
 
 
-def test_progress_polling_respects_its_base_interval_and_requested_multiplier(dashboard, monkeypatch):
+def test_progress_polling_respects_its_base_interval_and_bounded_slider_speed(dashboard, monkeypatch):
     app = bound_app(dashboard)
     requests = []
     now = [100]
@@ -415,7 +415,9 @@ def test_progress_polling_respects_its_base_interval_and_requested_multiplier(da
     now[0] += .1
     assert P.tick(app) and len(requests) == 2
     app.refresh_rate_state = {"multiplier": 50}
-    now[0] += .24
+    # The fastest global position requests a tenfold speedup for non-native
+    # readers: the unchanged eight-second progress interval becomes 800 ms.
+    now[0] += .79
     assert not P.tick(app)
     now[0] += .01
     assert P.tick(app) and len(requests) == 3

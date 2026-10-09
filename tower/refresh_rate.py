@@ -1,8 +1,8 @@
-"""Shared live update-rate preference with bounded, non-compounding cadences.
+"""Shared polling controls with a useful 5-second to 500-millisecond range.
 
-The slider expresses a requested speedup. Existing base intervals stay intact;
-expensive scheduler probes, remote reads, and source error backoff keep their
-own limits. The default 1x rate preserves every existing interval exactly.
+Stored whole-number positions remain compatible with existing preferences.
+Native job and resource collectors use absolute requested intervals; other
+sources retain their configured cadence, cost limits, and error backoff.
 """
 from __future__ import annotations
 
@@ -11,9 +11,12 @@ import re
 
 MIN_MULTIPLIER = 1
 MAX_MULTIPLIER = 50
-SOURCE_FLOORS = {"gpu": 5.0, "weather": 30.0, "budget": 30.0}
+MIN_POLL_INTERVAL = 0.5
+MAX_POLL_INTERVAL = 5.0
+NATIVE_SOURCES = frozenset(("jobs", "live", "gpu", "trace"))
+SOURCE_FLOORS = {"weather": 30.0, "budget": 30.0}
 SOURCE_FLOOR = 0.5
-LOCAL_FILE_FLOOR = 0.25
+LOCAL_FILE_FLOOR = 0.5
 REMOTE_FILE_FLOOR = 1.5
 
 
@@ -25,8 +28,46 @@ def validate_multiplier(value):
     return int(value)
 
 
-def _interval(base, value, floor):
-    rate = validate_multiplier(value)
+def poll_interval(value, maximum=MAX_MULTIPLIER):
+    """Map a slider position to seconds, with exact reachable endpoints.
+
+    Logarithmic spacing distributes useful changes across the complete track;
+    there is no clamped high-speed region in a native collector's slider.
+    """
+    if type(maximum) is not int or maximum < 2:
+        raise ValueError("Polling slider maximum must be a whole number of at least 2")
+    if (type(value) not in (int, float) or not 1 <= value <= maximum
+            or not math.isfinite(value) or value != int(value)):
+        raise ValueError(f"Polling position must be a whole number from 1 to {maximum}")
+    if value == 1:
+        return MAX_POLL_INTERVAL
+    if value == maximum:
+        return MIN_POLL_INTERVAL
+    fraction = (value - 1) / (maximum - 1)
+    return MAX_POLL_INTERVAL * (MIN_POLL_INTERVAL / MAX_POLL_INTERVAL) ** fraction
+
+
+def poll_position(seconds, maximum=MAX_MULTIPLIER):
+    """Convert a positive interval to the nearest bounded slider position."""
+    if type(maximum) is not int or maximum < 2:
+        raise ValueError("Polling slider maximum must be a whole number of at least 2")
+    if type(seconds) not in (int, float) or seconds <= 0:
+        raise ValueError("Polling interval must be finite and positive")
+    try:
+        seconds = float(seconds)
+    except OverflowError as exc:
+        raise ValueError("Polling interval must be finite and positive") from exc
+    if not math.isfinite(seconds):
+        raise ValueError("Polling interval must be finite and positive")
+    if seconds >= MAX_POLL_INTERVAL:
+        return 1
+    if seconds <= MIN_POLL_INTERVAL:
+        return maximum
+    fraction = math.log(seconds / MAX_POLL_INTERVAL) / math.log(MIN_POLL_INTERVAL / MAX_POLL_INTERVAL)
+    return max(1, min(maximum, round(1 + (maximum - 1) * fraction)))
+
+
+def _base_interval(base):
     if type(base) not in (int, float) or base < 0:
         raise ValueError("polling interval must be finite and non-negative")
     try:
@@ -35,13 +76,25 @@ def _interval(base, value, floor):
         raise ValueError("polling interval must be finite and non-negative") from exc
     if not math.isfinite(base):
         raise ValueError("polling interval must be finite and non-negative")
+    return base
+
+
+def _interval(base, value, floor):
+    rate = validate_multiplier(value)
+    base = _base_interval(base)
     # Never slow down an existing explicit cadence, including zero intervals
     # used by one-shot callers. Changing speed never edits the base interval.
-    return base if rate == 1 else max(min(base, floor), base / rate)
+    speed = MAX_POLL_INTERVAL / poll_interval(rate)
+    return base if rate == 1 else max(min(base, floor), base / speed)
 
 
 def source_interval(base, value, *, source=""):
-    return _interval(base, value, SOURCE_FLOORS.get(source, SOURCE_FLOOR))
+    rate = validate_multiplier(value)
+    base = _base_interval(base)
+    if source in NATIVE_SOURCES:
+        # Zero is an explicit one-shot/testing request, not a live slider.
+        return 0.0 if base == 0 else poll_interval(rate)
+    return _interval(base, rate, SOURCE_FLOORS.get(source, SOURCE_FLOOR))
 
 
 def file_interval(base, value, *, remote=False):
@@ -116,7 +169,14 @@ def restore(app, data):
 
 
 def save(app):
-    return {"multiplier": multiplier(app)}
+    value = multiplier(app)
+    settings = getattr(app, "navigation_tools_state", None)
+    if isinstance(settings, dict) and isinstance(settings.get("preview_backup"), dict):
+        try:
+            value = validate_multiplier(settings["polling_preview_backup"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+    return {"multiplier": value}
 
 
 def cadence(app, source, base=None):

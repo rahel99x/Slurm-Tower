@@ -54,14 +54,56 @@ def worker(monkeypatch):
     sampler.shutdown()
 
 
-@pytest.mark.parametrize("rate,expected", [(1, 20), (2, 10), (20, 1), (40, .5), (100, .5), (100.0, .5)])
-def test_exact_job_rate_uses_original_interval(worker, rate, expected):
+@pytest.mark.parametrize("rate,expected", [(1, 5), (2, 4.885049786496126), (20, 3.21403655864216),
+                                         (40, 2.0185086292982772), (100, .5), (100.0, .5)])
+def test_exact_job_rate_uses_complete_polling_domain(worker, rate, expected):
     sampler, _, _, _ = worker
     sampler.set_metric_sampling({identity(): rate})
-    assert sampler.sampling_interval("live", "1", "submit|start") == expected
-    assert sampler.sampling_interval("live", "2", "submit|start") == 20
-    assert sampler.effective_interval("live") == expected
+    assert sampler.sampling_interval("live", "1", "submit|start") == pytest.approx(expected)
+    assert sampler.sampling_interval("live", "2", "submit|start") == 5
+    assert sampler.effective_interval("live") == pytest.approx(expected)
     assert sampler.intervals["live"] == 20
+
+
+@pytest.mark.parametrize("source,metric", [("live", "cpu:rate"), ("gpu", "gpu:util"),
+                                         ("trace", "gpu-trace:util")])
+def test_every_local_metric_slider_position_changes_actual_collector_interval(worker, source, metric):
+    sampler, _, _, _ = worker
+    intervals = []
+    for position in range(1, 101):
+        sampler.set_metric_sampling({identity(metric=metric): position})
+        intervals.append(sampler.sampling_interval(source, "1", "submit|start"))
+        assert sampler.sampling_interval(source, "2") == 5
+    assert intervals[0] == 5 and intervals[-1] == .5
+    assert all(left > right for left, right in zip(intervals, intervals[1:]))
+
+
+def test_middle_poll_slider_position_gates_real_probe_completion(worker):
+    sampler, _, calls, timer = worker
+    sampler.set_metric_sampling({identity(): 50})
+    sampler.run_source("live")
+    timer.value = 101.5996
+    sampler.run_source("live")
+    assert calls["live"] == [("1", 100), ("2", 100)]
+    timer.value = 101.5997
+    sampler.run_source("live")
+    assert calls["live"] == [("1", 100), ("2", 100), ("1", 101.5997)]
+
+
+def test_global_poll_slider_does_not_bypass_remote_trace_floor(worker):
+    sampler, _, _, _ = worker
+    sampler.files.remote = True
+    sampler.set_polling_multiplier(50)
+    assert sampler.sampling_interval("trace", "1") == 1.5
+    assert sampler.effective_interval("trace") == 1.5
+    assert sampler._baseline_interval("trace") == 1.5
+
+
+def test_trace_cadence_fallback_keeps_remote_floor_at_default_metric_position():
+    from tower.metric_sampling import cadence
+    model = SimpleNamespace(cfg={"polling_multiplier": 50},
+                            sampler=SimpleNamespace(intervals={"trace": 5}, files=SimpleNamespace(remote=True)))
+    assert cadence(model, identity(metric="gpu-trace:util"), rate=1) == 1.5
 
 
 @pytest.mark.parametrize("bad", [0, -1, 101, 1.5, True, False, "100", None, float("nan"), float("inf"), 10**1000])
@@ -71,7 +113,7 @@ def test_invalid_rate_is_atomic_and_does_not_wake(worker, bad):
     sampler.kick.clear()
     with pytest.raises(ValueError):
         sampler.set_metric_sampling({identity(): bad})
-    assert sampler.effective_interval("live") == 1
+    assert sampler.effective_interval("live") == pytest.approx(3.21403655864216)
     assert not sampler.kick.is_set()
 
 
@@ -81,23 +123,28 @@ def test_invalid_request_container_is_atomic(worker, bad):
     sampler.set_metric_sampling({identity(): 20})
     with pytest.raises(ValueError):
         sampler.set_metric_sampling(bad)
-    assert sampler.effective_interval("live") == 1
+    assert sampler.effective_interval("live") == pytest.approx(3.21403655864216)
 
 
-def test_shared_collector_uses_fastest_metric_and_reset_restores_base(worker):
+def test_shared_collector_uses_fastest_metric_and_reset_restores_global_request(worker):
     sampler, _, _, _ = worker
     cpu, memory = identity(), identity(metric="mem:peak")
-    sampler.set_polling_multiplier(2)
-    sampler.set_metric_sampling({cpu: 5, memory: 10})
-    assert sampler.effective_interval("live") == 1
-    assert sampler.sampling_interval("live", "1") == 1
-    assert sampler.sampling_interval("live", "2") == 10
-    sampler.set_metric_sampling({cpu: 5})
-    assert sampler.effective_interval("live") == 2
+    sampler.set_metric_sampling({cpu: 20, memory: 40})
+    assert sampler.effective_interval("live") == pytest.approx(2.0185086292982772)
+    assert sampler.sampling_interval("live", "1") == pytest.approx(2.0185086292982772)
+    assert sampler.sampling_interval("live", "2") == 5
+    sampler.set_metric_sampling({cpu: 20})
+    assert sampler.effective_interval("live") == pytest.approx(3.21403655864216)
     sampler.set_metric_sampling({cpu: 1})
-    assert sampler.effective_interval("live") == 10
+    assert sampler.effective_interval("live") == 5
+    sampler.set_polling_multiplier(50)
+    sampler.set_metric_sampling({cpu: 40})
+    assert sampler.effective_interval("live") == .5
+    assert sampler.sampling_interval("live", "2") == .5
     sampler.set_polling_multiplier(1)
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == pytest.approx(2.0185086292982772)
+    sampler.set_metric_sampling({})
+    assert sampler.effective_interval("live") == 5
     assert sampler.intervals["live"] == 20
 
 
@@ -130,27 +177,27 @@ def test_fast_live_ticks_do_not_probe_other_jobs(worker):
     sampler, _, calls, timer = worker
     sampler.set_metric_sampling({identity(): 100})
     sampler.run_source("live")
-    for tick in (100.5, 101, 105, 119.5):
+    for tick in (100.5, 101, 104.5):
         timer.value = tick
         sampler.run_source("live")
     assert [jid for jid, _ in calls["live"]].count("2") == 1
-    timer.value = 120
+    timer.value = 105
     sampler.run_source("live")
-    assert [time for jid, time in calls["live"] if jid == "2"] == [100, 120]
-    assert [time for jid, time in calls["live"] if jid == "1"] == [100, 100.5, 101, 105, 119.5, 120]
+    assert [time for jid, time in calls["live"] if jid == "2"] == [100, 105]
+    assert [time for jid, time in calls["live"] if jid == "1"] == [100, 100.5, 101, 104.5, 105]
     assert len(sampler._metric_completed) == 1
 
 
 def test_unaffected_jobs_follow_global_rate_without_local_acceleration(worker):
     sampler, _, calls, timer = worker
-    sampler.set_polling_multiplier(2)
+    sampler.set_polling_multiplier(25)
     sampler.set_metric_sampling({identity(): 100})
     sampler.run_source("live")
-    timer.value = 109.5
+    timer.value = 101.6187
     sampler.run_source("live")
-    timer.value = 110
+    timer.value = 101.6188
     sampler.run_source("live")
-    assert [time for jid, time in calls["live"] if jid == "2"] == [100, 110]
+    assert [time for jid, time in calls["live"] if jid == "2"] == [100, 101.6188]
 
 
 def test_direct_source_calls_remain_compatible_with_explicit_refresh(worker):
@@ -187,20 +234,20 @@ def test_probe_duration_starts_next_deadline_at_completion(worker):
 def test_gpu_floor_and_allocation_discovery_preserve_other_job_cadence(worker):
     sampler, _, calls, timer = worker
     sampler.set_metric_sampling({identity(metric="gpu:util"): 100})
-    assert sampler.effective_interval("gpu") == 1
-    assert sampler.sampling_interval("gpu", "2") == 10
-    for tick in (100, 101, 102, 110):
+    assert sampler.effective_interval("gpu") == .5
+    assert sampler.sampling_interval("gpu", "2") == 5
+    for tick in (100, 100.5, 101, 105):
         timer.value = tick
         sampler.run_source("gpu")
-    assert [time for jid, time in calls["gpu"] if jid == "1"] == [100, 101, 102, 110]
-    assert [time for jid, time in calls["gpu"] if jid == "2"] == [100, 110]
-    assert calls["allocations"] == [100, 101, 102, 110]
+    assert [time for jid, time in calls["gpu"] if jid == "1"] == [100, 100.5, 101, 105]
+    assert [time for jid, time in calls["gpu"] if jid == "2"] == [100, 105]
+    assert calls["allocations"] == [100, 100.5, 101, 105]
     sampler.set_polling_multiplier(50)
     sampler.set_metric_sampling({})
-    assert sampler.effective_interval("gpu") == 5
+    assert sampler.effective_interval("gpu") == .5
 
 
-@pytest.mark.parametrize("remote,expected", [(False, .25), (True, 1.5)])
+@pytest.mark.parametrize("remote,expected", [(False, .5), (True, 1.5)])
 def test_trace_file_floor_and_untouched_cache_retention(worker, remote, expected):
     sampler, store, calls, timer = worker
     sampler.files.remote = remote
@@ -221,7 +268,7 @@ def test_only_exact_running_attempt_is_accelerated(worker, state):
     sampler, store, _, _ = worker
     store.jobs[0].state = state
     assert sampler.set_metric_sampling({identity(): 100}) == 0
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == 5
 
 
 @pytest.mark.parametrize("key", [identity(attempt="other|attempt"), identity("9"), identity("1_[1-4]"),
@@ -229,7 +276,7 @@ def test_only_exact_running_attempt_is_accelerated(worker, state):
 def test_missing_wrong_or_unsupported_identity_is_ignored(worker, key):
     sampler, _, _, _ = worker
     assert sampler.set_metric_sampling({key: 100}) == 0
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == 5
 
 
 def test_scheduler_reported_metric_alias_can_request_same_source(worker):
@@ -239,7 +286,7 @@ def test_scheduler_reported_metric_alias_can_request_same_source(worker):
     sampler.set_metric_sampling({key: 100})
     assert sampler.effective_interval("live") == .5
     assert sampler.sampling_interval("live", "1", "scheduler:submit|start") == .5
-    assert sampler.sampling_interval("live", "1", "other|attempt") == 20
+    assert sampler.sampling_interval("live", "1", "other|attempt") == 5
 
 
 def test_queue_departure_and_reused_id_drop_demand_and_completion_marks(worker):
@@ -249,22 +296,22 @@ def test_queue_departure_and_reused_id_drop_demand_and_completion_marks(worker):
     sampler.slurm.jobs = lambda: [store.jobs[1]]
     sampler.src_jobs()
     assert not sampler._metric_requests and not sampler._metric_completed
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == 5
     sampler.slurm.jobs = lambda: [Job("1", "new", "local", "RUNNING", submit="new", start="new")]
     sampler.src_jobs()
     assert sampler.set_metric_sampling({identity(): 100}) == 0
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == 5
 
 
 def test_list_replacement_and_in_place_completion_invalidate_rates_immediately(worker):
     sampler, store, _, _ = worker
     sampler.set_metric_sampling({identity(): 100})
     store.jobs[0].state = "COMPLETED"
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == 5
     store.jobs[0].state = "RUNNING"
     assert sampler.effective_interval("live") == .5
     store.apply_jobs([store.jobs[1]])
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == 5
 
 
 @pytest.mark.parametrize("change", ["depart", "reuse", "mutate", "same_attempt"])
@@ -306,8 +353,8 @@ def test_failure_preserves_source_backoff_and_completion_deadline(worker):
     assert sampler._metric_completed[("live", "1", "submit|start", 0)] == 100
     sampler.set_metric_sampling({identity(): 50})
     assert sampler.health("live").backoff == 20
-    assert not sampler.due("live", 120.49)
-    assert sampler.due("live", 120.5)
+    assert not sampler.due("live", 121.59)
+    assert sampler.due("live", 121.6)
 
 
 def test_inflight_and_disabled_sources_do_not_overlap_or_enable(worker):
@@ -356,13 +403,13 @@ def test_reset_keeps_other_jobs_original_next_deadline(worker):
     sampler.health("jobs").calls = 1
     sampler.set_metric_sampling({identity(): 100})
     sampler.round(now=100, wait=True)
-    timer.value = 119.5
-    sampler.round(now=119.5, wait=True)
+    timer.value = 104.5
+    sampler.round(now=104.5, wait=True)
     sampler.set_metric_sampling({})
-    timer.value = 120
-    assert sampler.due("live", 120)
-    sampler.round(now=120, wait=True)
-    assert [time for jid, time in calls["live"] if jid == "2"] == [100, 120]
+    timer.value = 105
+    assert sampler.due("live", 105)
+    sampler.round(now=105, wait=True)
+    assert [time for jid, time in calls["live"] if jid == "2"] == [100, 105]
 
 
 def test_scheduling_does_not_admit_empty_ticks_before_probe_completion_deadline(worker):
@@ -401,7 +448,7 @@ def test_reused_id_never_inherits_retained_request_with_same_timestamp_strings(w
     sampler.slurm.jobs = lambda: [replacement]
     sampler.src_jobs()
     assert not sampler._metric_requests
-    assert sampler.effective_interval("live") == 20
+    assert sampler.effective_interval("live") == 5
 
 
 @pytest.mark.parametrize("change", ["reuse", "mutate", "path", "same_attempt"])

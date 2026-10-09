@@ -21,7 +21,7 @@ A custom configuration or a saved off preference can still disable it.
 
 **Expected result:** Valid observed utilization produces a GPU rate curve and an observed busy-mean curve.
 Unknown counters stay unknown. They do not become zero utilization.
-The normal GPU interval is a configuration setting.
+The default GPU polling request is five seconds.
 Confirmed allocation counts stay available across ordinary queue refreshes.
 Tower refreshes that evidence once per GPU polling round.
 Changed job attempts or resource settings invalidate the cached count.
@@ -34,11 +34,13 @@ GPU utilization and busy-mean curves share a probe, so the fastest request for e
 The sampling request remains active while Live is off and can remain active when the graph moves offscreen.
 It resets when Tower restarts or the job attempt ends.
 
-Per-metric GPU requests have a one-second minimum.
-The global update control alone retains its five-second GPU minimum.
+The global and per-metric polling controls span five seconds to 500 milliseconds.
+The fastest request sets the shared GPU probe interval; the requests do not multiply.
+GPU polling cannot request more than two polls per second.
 Command duration and source retry backoff can delay measurements further.
 Read the effective polling interval and source age below the graph.
-Right-click the window slider to restore five seconds, or the polling slider to restore its default sampling request.
+The window slider spans 30 seconds to one second.
+Right-click it to restore 30 seconds, or right-click the polling slider to restore its five-second request.
 Both resets preserve the other slider and graph selection.
 For a CSV trace, a faster polling request increases file reads; it cannot increase the job's trace-writing cadence.
 See [chart controls](charts.md#follow-a-running-metric) for commands, shared-probe behavior, and source limits.

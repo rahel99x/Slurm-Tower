@@ -82,11 +82,18 @@ def test_reported_context_job_identity_wins_over_other_running_selection(dashboa
 
 
 @pytest.mark.parametrize("ascii_", [False, True])
-def test_live_card_uses_only_observed_values_keeps_gaps_and_rejects_future_raster_endpoint(dashboard, monkeypatch, ascii_):
+@pytest.mark.parametrize("delta", [1.0, 30.0])
+def test_live_card_uses_only_observed_values_keeps_gaps_and_rejects_future_raster_endpoint(dashboard, monkeypatch, ascii_, delta):
+    if delta == 1:
+        # Keep a real discontinuity within the smallest permitted window,
+        # rather than passing through an empty raster at this endpoint.
+        for point, timestamp in zip(dashboard.points, [199.1, 199.3, 199.6, 199.9, 203.0]):
+            point["t"] = timestamp
     dashboard.views.g = L.Glyphs(ascii_)
     research_frame(dashboard)
     identity = M.initialize(dashboard.app)["records"][0].key
     assert M.set_enabled(dashboard.app, identity, True)
+    assert M.set_delta(dashboard.app, identity, delta)
     captured = []
     raster = A.charts.braille_chart
 
@@ -96,13 +103,14 @@ def test_live_card_uses_only_observed_values_keeps_gaps_and_rejects_future_raste
 
     monkeypatch.setattr(A.charts, "braille_chart", chart)
     rows, _ = research_frame(dashboard)
-    assert captured[-1][0] == (2.0, None, dashboard.points[3]["value"])
-    assert captured[-1][1] == [194.0, 196.0, 199.0]
-    assert captured[-1][2] == (195.0, 200.0)
-    assert captured[-1][3] == 3.5
+    assert captured[-1][0] == (1.0, 2.0, None, dashboard.points[3]["value"])
+    assert captured[-1][1] == [point["t"] for point in dashboard.points[:4]]
+    assert captured[-1][2] == (200.0 - delta, 200.0)
+    assert captured[-1][3] == pytest.approx(.3 if delta == 1 else 3.5)
     source = next(L.row_text(row) for row in rows if " Source:" in L.row_text(row))
-    assert "2/5 samples" in source and "gaps 1" in source
-    assert "ahead of clock" in source and "observed cadence 3.5s" in source
+    assert "4/5 samples" in source and "gaps 1" in source
+    assert "ahead of clock" in source
+    assert ("observed cadence 300ms" if delta == 1 else "observed cadence 3.5s") in source
     header = next(L.row_text(row) for row in rows if "loss  last" in L.row_text(row))
     assert "999" not in header
     if ascii_:
@@ -118,11 +126,17 @@ def test_moving_window_invalidates_raster_without_new_samples_and_off_restores_c
     research_frame(dashboard)
     dashboard.now[0] += 1
     research_frame(dashboard)
-    assert calls == [(195.0, 200.0), (196.0, 201.0)]
-    assert M.set_delta(dashboard.app, identity, .001)
+    assert calls == [(170.0, 200.0), (171.0, 201.0)]
+    assert M.set_delta(dashboard.app, identity, 1.0)
     rows, _ = research_frame(dashboard)
-    assert calls[-1] == pytest.approx((200.999, 201.0))
+    assert calls[-1] == (200.0, 201.0)
     assert any("0/5 samples" in L.row_text(row) for row in rows)
+    narrow_calls = len(calls)
+    assert M.set_delta(dashboard.app, identity, 30.0)
+    rows, _ = research_frame(dashboard)
+    assert len(calls) == narrow_calls  # The retained 30-second raster is reused.
+    assert C.initialize(dashboard.app)["plots"][0].x_bounds == (171.0, 201.0)
+    assert any("4/5 samples" in L.row_text(row) for row in rows)
     assert M.set_enabled(dashboard.app, identity, False)
     research_frame(dashboard)
     off_calls = len(calls)
@@ -201,7 +215,7 @@ def test_modal_controls_align_with_box_content_and_cursor_keeps_exact_samples(da
     assert line[0] + line[1].index("[Live ON ") == record.toggle.left
     plot = C.initialize(dashboard.app)["plots"][0]
     assert plot.visible.top >= record.visible.bottom + 1
-    assert plot.x_bounds == (195.0, 200.0)
+    assert plot.x_bounds == (170.0, 200.0)
     A.handle_key(dashboard.app, "end")
     rendered = modal_frame(dashboard)
     assert dashboard.app.analysis_state["cursor_t"] == 199.0
@@ -294,4 +308,4 @@ def test_inline_reported_live_has_one_canonical_graph_node_per_button_and_shared
     assert app.research_view == "passport" and app.tab == "jobs" and app.research_job_id == "1"
     dashboard.views.compose(dashboard.store.snapshot(), app, 180, 70)
     plots = C.initialize(app)["plots"]
-    assert any(plot.key == records[0].key and plot.x_bounds == (195.0, 200.0) for plot in plots)
+    assert any(plot.key == records[0].key and plot.x_bounds == (170.0, 200.0) for plot in plots)

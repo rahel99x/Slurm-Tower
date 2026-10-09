@@ -215,7 +215,7 @@ def test_live_controls_follow_exact_job_in_native_and_inline_series(dashboard, m
     rows, hits = draw(dashboard, 180, 70)
     assert metric_live.enabled(app, target.key)
     plot = next(plot for plot in C.initialize(app)["plots"] if plot.key == target.key)
-    assert plot.x_bounds == (1186.0, 1191.0)
+    assert plot.x_bounds == (1161.0, 1191.0)
     assert "Source age" in "\n".join(map(L.row_text, rows))
     assert all(control.key[1] == "7" for control in metric_live.initialize(app)["records"])
     # A window is source scoped. Turning CPU Live on leaves memory unchanged.
@@ -223,24 +223,24 @@ def test_live_controls_follow_exact_job_in_native_and_inline_series(dashboard, m
 
 
 @pytest.mark.parametrize("tab", ["analytics", "jobs"])
-def test_one_millisecond_live_window_stays_active_when_samples_are_absent(dashboard, monkeypatch, tab):
+def test_one_second_live_window_stays_active_when_samples_are_absent(dashboard, monkeypatch, tab):
     app, views, store = dashboard.app, dashboard.views, dashboard.store
     app.tab = tab
     app.job_panel_state["mode"] = "analytics"
-    monkeypatch.setattr(clock, "now", lambda: 1191.0)
+    monkeypatch.setattr(clock, "now", lambda: 1192.0)
     draw(dashboard, 180, 70)
     control = next(c for c in metric_live.initialize(app)["records"] if c.key[2] == "cpu-rate")
     full = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
     assert metric_live.set_enabled(app, control.key, True)
-    assert metric_live.set_delta(app, control.key, .001)
+    assert metric_live.set_delta(app, control.key, 1.0)
     original = list(store.series_of("7"))
     rows, hits = draw(dashboard, 180, 70)
-    assert metric_live.window(app, control.key) == (1190.999, 1191.0)
+    assert metric_live.window(app, control.key) == (1191.0, 1192.0)
     assert metric_live.document_interval(app) == .1
     text = "\n".join(map(L.row_text, rows))
-    assert "1ms" in text and "no observations in live window" in text
+    assert "1s" in text and "no observations in live window" in text
     empty = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
-    assert empty.kind == "metric-empty" and empty.x_bounds == (1190.999, 1191.0)
+    assert empty.kind == "metric-empty" and empty.x_bounds == (1191.0, 1192.0)
     y, x = empty.visible.top, empty.visible.left
     assert not C.hover(app, y, x) and C.feedback(app) == []
     assert not C.handle_mouse(app, y, x, button="press") and not C.active(app)
@@ -254,6 +254,24 @@ def test_one_millisecond_live_window_stays_active_when_samples_are_absent(dashbo
     assert restored.kind == "metric"
     assert restored.x_bounds == full.x_bounds and restored.y_bounds == full.y_bounds
     assert list(store.series_of("7")) == original
+
+
+@pytest.mark.parametrize("tab", ["analytics", "jobs"])
+def test_one_second_live_window_renders_a_genuine_recent_sample(dashboard, monkeypatch, tab):
+    app = dashboard.app
+    app.tab = tab
+    app.job_panel_state["mode"] = "analytics"
+    monkeypatch.setattr(clock, "now", lambda: 1190.5)
+    draw(dashboard, 180, 70)
+    control = next(c for c in metric_live.initialize(app)["records"] if c.key[2] == "cpu-rate")
+    assert metric_live.set_enabled(app, control.key, True)
+    assert metric_live.set_delta(app, control.key, 1.0)
+    original = list(dashboard.store.series_of("7"))
+    rows, _ = draw(dashboard, 180, 70)
+    plot = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
+    assert plot.kind == "metric" and plot.x_bounds == (1189.5, 1190.5)
+    assert "no observations in live window" not in "\n".join(map(L.row_text, rows))
+    assert list(dashboard.store.series_of("7")) == original
 
 
 def test_live_slider_motion_is_cosmetic_and_redraw_deadline_is_bounded(dashboard, monkeypatch):
@@ -302,13 +320,15 @@ def test_live_controls_disappear_when_selected_job_finishes(dashboard, monkeypat
     assert "[Live" not in "\n".join(map(L.row_text, rows))
 
 
-def test_native_live_curve_cannot_use_future_observations_to_fill_current_window(dashboard, monkeypatch):
+@pytest.mark.parametrize("delta", [1.0, 30.0])
+def test_native_live_curve_cannot_use_future_observations_to_fill_current_window(dashboard, monkeypatch, delta):
     from tower import charts
     app, views = dashboard.app, dashboard.views
     monkeypatch.setattr(clock, "now", lambda: 1191.0)
     identity = C.key(app, "cpu-rate", "%", "7", scope="resource-series", attempt="2026-10-08T00:00:00|")
     metric_live.set_running(app, identity, True)
     metric_live.set_enabled(app, identity, True)
+    assert metric_live.set_delta(app, identity, delta)
     observed = []
     original = charts.braille_chart
 
@@ -323,13 +343,15 @@ def test_native_live_curve_cannot_use_future_observations_to_fill_current_window
                               times=(1180, 1200), sample_interval=12)
     C.publish(app, 80, 30)
     assert observed == [([10], [1180])]
-    empty, = C.initialize(app)["plots"]
-    assert empty.kind == "metric-empty" and empty.key == identity
-    assert empty.x_bounds == (1186.0, 1191.0)
-    y, x = empty.visible.top, empty.visible.left
-    assert not C.hover(app, y, x) and C.feedback(app) == []
-    assert not C.handle_mouse(app, y, x, button="press") and not C.active(app)
+    plot, = C.initialize(app)["plots"]
+    assert plot.kind == ("metric-empty" if delta == 1 else "metric") and plot.key == identity
+    assert plot.x_bounds == (1191.0 - delta, 1191.0)
+    y, x = plot.visible.top, plot.visible.left
+    if delta == 1:
+        assert not C.hover(app, y, x) and C.feedback(app) == []
+        assert not C.handle_mouse(app, y, x, button="press") and not C.active(app)
     text = "\n".join(map(L.row_text, rows))
-    assert "Source age 11s" in text and "no observations in live window" in text
+    assert "Source age 11s" in text
+    assert ("no observations in live window" in text) == (delta == 1)
     assert C.handle_mouse(app, y, x, button="right")
     assert not metric_live.enabled(app, identity) and C.bounds(app, identity) is None

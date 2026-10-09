@@ -93,12 +93,12 @@ def test_wheel_cancels_chart_and_live_previews_before_scrolling_and_preserves_po
     identity = ("resource-series", "900", "cpu-rate", "%", "|")
     live = M.initialize(app)
     entry = M.set_running(app, identity, True)
-    assert M.set_delta(app, identity, .01)
-    live["capture"] = {"control": SimpleNamespace(key=identity, token=entry["token"]), "original": 5.0}
+    assert M.set_delta(app, identity, 1.0)
+    live["capture"] = {"control": SimpleNamespace(key=identity, token=entry["token"]), "original": 30.0}
     app.interaction_state.update(active=True, focused="job:900")
     wheel(app, hits, y, x)
     assert app.chart_interaction_state["capture"] is None
-    assert live["capture"] is None and live["entries"][identity]["delta"] == 5.0
+    assert live["capture"] is None and live["entries"][identity]["delta"] == 30.0
     assert not app.interaction_state["active"] and app.interaction_state["focused"] is None
     assert app.layout_state.scroll["jobs:details"] == 1
     assert app.interaction_state["pointer"] == app.chart_interaction_state["pointer"] == (y, x)

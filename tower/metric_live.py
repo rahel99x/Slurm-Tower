@@ -15,8 +15,8 @@ import time
 from . import clock, layout as L
 from .interaction import Rect
 
-MIN_DELTA = 0.001
-MAX_DELTA = 5.0
+MIN_DELTA = 1.0
+MAX_DELTA = 30.0
 MAX_METRICS = 128
 MIN_WIDTH = 24
 DOCUMENT_INTERVAL = 0.1
@@ -92,7 +92,7 @@ def _finite(value):
 
 
 def fraction(delta):
-    """Left is five seconds; right is one millisecond, with equal log steps."""
+    """Left is thirty seconds; right is one second, with equal log steps."""
     if not _finite(delta):
         delta = MAX_DELTA
     delta = min(MAX_DELTA, max(MIN_DELTA, delta))
@@ -115,7 +115,7 @@ def format_delta(value):
 
 
 def rate_fraction(value):
-    """Sampling multipliers use an independent, linear integer scale."""
+    """Sampling positions use an independent integer scale."""
     from .metric_sampling import validate_rate
 
     try:
@@ -443,21 +443,24 @@ def _row(g, entry, width, *, app=None, identity=None):
         return format_interval(value, ascii_=g.ascii) if value is not None else "?"
 
     current_interval = interval()
-    slow_interval, fast_interval = interval(MIN_RATE), interval(MAX_RATE)
+    # These are the requested polling domain. The current value above remains
+    # the effective shared-source interval, including any source constraints.
+    slow_interval = format_interval(5.0, ascii_=g.ascii)
+    fast_interval = format_interval(0.5, ascii_=g.ascii)
     if width < 64:
         toggle = (
             ("+" if entry["enabled"] else "o")
             if g.ascii
             else ("●" if entry["enabled"] else "○")
         )
-        delta_prefix, delta_suffix = "5s", "1ms"
+        delta_prefix, delta_suffix = "30s", "1s"
         rate_prefix = L.pad(current_interval, 6)
         rate_suffix = L.pad(fast_interval, 6)
         separator = " "
     else:
         toggle = "[Live ON ]" if entry["enabled"] else "[Live off]"
-        delta_prefix = "Delta " + L.pad(format_delta(entry["delta"]), 6) + " 5s "
-        delta_suffix = " 1ms"
+        delta_prefix = "Delta " + L.pad(format_delta(entry["delta"]), 6) + " 30s "
+        delta_suffix = " 1s"
         rate_prefix = (
             "Poll " + L.pad(current_interval, 6) + " "
             + L.pad(slow_interval, 6) + " "
@@ -558,7 +561,7 @@ def controls(g, app, identity, width, *, running=True, row=0, column=0, layer=0)
             "control",
             {
                 "id": "metric-window:" + entry["token"],
-                "label": "Adjust Live metric time window; right-click resets to 5 seconds",
+                "label": "Adjust Live metric time window; right-click resets to 30 seconds",
                 "left": column + spans[2],
                 "right": column + spans[3],
                 "action": ("command", "metric-window " + entry["token"] + " focus"),
@@ -1097,7 +1100,7 @@ def run_command(app, args):
             except (ValueError, OverflowError):
                 value = float("nan")
             if not set_delta(app, control.key, value):
-                _say(app, "Metric window must be 0.001 to 5 seconds")
+                _say(app, "Metric window must be 1 to 30 seconds")
     else:
         _say(
             app,

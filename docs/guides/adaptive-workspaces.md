@@ -122,8 +122,9 @@ Use `u` while pointing at the plot to undo, or `0` to reset rectangular zoom.
 Right-click inside the plot to restore its full view and turn off that metric's Live window.
 The graph keeps the exact selected job and source.
 
-A running metric can show its own Live toggle and a window slider from five seconds to one millisecond.
-Live changes the displayed interval and keeps the normal source sampling rate.
+A running metric can show its own Live toggle and a window slider from 30 seconds to one second.
+Its adjacent polling slider spans five seconds to 500 milliseconds.
+Live and the window slider change the displayed interval. The polling slider changes source-read requests.
 A valid rectangular zoom turns Live off.
 GPU utilisation and observed busy mean use recorded device observations and retain missing-data gaps.
 The busy mean indicates activity; it does not measure computation efficiency.
@@ -350,7 +351,7 @@ The reader uses discovered standard project inventories and rejects ambiguous jo
 It reads at most four reports in a cycle and rotates through the remaining visible jobs.
 Each report read uses a confined tail of at most 64 KiB.
 The inventory lookup examines at most 256 runs, and the scalar progress cache holds at most 128 entries.
-Its base interval is eight seconds, subject to the update multiplier and file-reader minimum intervals.
+Its base interval is eight seconds, subject to the global update speed ratio and file-reader minimum intervals.
 An explicit Quick Advisor or project task takes priority.
 Use `:columns jobs` to hide other optional fields, or enlarge Main when the terminal has insufficient width.
 Click the column heading for its cascading sort, or use `:sortby jobs progress asc`, `desc`, or `off`.

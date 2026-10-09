@@ -134,13 +134,13 @@ Menu actions use the same commands and reviews as their keyboard equivalents.
 | Click Copy / Yank | Switch between clipboard copying and a running local Vim/Neovim target |
 | Edit → Switch to Vim/Neovim yanking / Switch to clipboard copying | Change the same copy destination |
 | Click or drag the update track | Request a fetching interval; the label shows the effective Jobs interval |
-| Right-click the update track, interval, or step buttons | Restore the default polling request and preserve selections |
-| Click `[-]` / `[+]`, or use the wheel over the update control | Decrease or increase the request factor by one |
+| Right-click the update track, interval, or step buttons | Restore five-second polling and preserve selections |
+| Click `[-]` / `[+]`, or use the wheel over the update control | Move one polling position toward five seconds or 500 milliseconds |
 | Click the interval, or View → Focus update-rate slider | Focus slider keyboard controls |
-| Arrows, `-` / `+` with slider focus | Adjust the request factor by one |
-| Home / End with slider focus | Select the default or fastest permitted request |
+| Arrows, `-` / `+` with slider focus | Move one polling position |
+| Home / End with slider focus | Request five seconds or 500 milliseconds |
 | Esc / Enter / Tab with slider focus | Return input to the page |
-| `:rate [N\|reset]` | Inspect the effective Jobs interval, set a factor from 1 to 50, or restore the default request |
+| `:rate [N\|reset]` | Inspect the effective Jobs interval, select position 1 to 50, or restore five seconds |
 | `:about` | Open version and toolbar instructions |
 
 A menu choice ending in `...` opens an editable command prompt.
@@ -240,6 +240,10 @@ Space changes a Boolean value.
 Use `D` to preview defaults.
 Enter applies the draft.
 Esc cancels the draft.
+The Polling interval row controls the native global request from five seconds to 500 milliseconds.
+Separate live, GPU, and trace interval rows are not shown.
+Esc restores the exact previous polling position; unaccepted previews are not saved.
+See [Settings](guides/navigation.md#32-change-settings-with-a-preview) for source bases and launch overrides.
 
 In key bindings, `e` or Enter edits the selected action.
 Use `t` to test a key.
@@ -690,12 +694,12 @@ See [Operations](guides/operations.md) for precise persistence, limits, and trou
 | `:chart undo`, `:chart reset` | Undo or reset rectangular zoom for the inspector's current metric |
 | `:chartzoom undo`, `:chartzoom reset` | Undo or reset rectangular zoom for the last selected or zoomed metric graph |
 | `:metric-live TOKEN on\|off\|toggle` | Control Live for a currently visible running metric; TOKEN is its session control token |
-| `:metric-window TOKEN SECONDS` | Set that metric's display window from 0.001 to 5 seconds |
+| `:metric-window TOKEN SECONDS` | Set that metric's display window from 1 to 30 seconds |
 | `:metric-window TOKEN focus` | Enter its window-slider keyboard controls |
-| `:metric-window TOKEN reset` | Restore that metric's five-second window |
-| `:metric-sampling TOKEN N` | Request a sampling multiplier from 1 to 100 for that exact running metric |
+| `:metric-window TOKEN reset` | Restore that metric's 30-second window |
+| `:metric-sampling TOKEN N` | Select polling position 1 to 100 for that exact running metric; endpoints request five seconds and 500 milliseconds |
 | `:metric-sampling TOKEN focus` | Enter its sampling-slider keyboard controls |
-| `:metric-sampling TOKEN reset` | Restore that metric's default sampling request factor of one |
+| `:metric-sampling TOKEN reset` | Restore that metric's five-second polling request |
 | `:series-scroll up\|down\|page-up\|page-down\|home\|end` | Scroll the compact native Analytics Job Series metric document |
 | `:chart axis auto` | Fit the axis to available measurements |
 | `:chart axis fixed LOW HIGH` | Apply fixed numeric bounds |
@@ -756,20 +760,23 @@ Chart Events and Timeline links also support F8 navigation and Enter activation.
 Display labels and precision do not change recorded values.
 A running metric can show **Live off/ON** and two adjacent sliders.
 Compact rows use empty/filled Live symbols, or `o`/`+` in ASCII mode.
-The first slider controls the display window. Drag left for five seconds or right for one millisecond.
-The second slider controls polling. Drag left for the default request, or right for faster reads.
+The first slider controls the display window. Drag left for 30 seconds or right for one second.
+The second slider controls polling. Drag left for five seconds or right for 500 milliseconds.
+Both scales use logarithmic steps. Native polling requests do not have a flat region caused by a lower-limit clamp.
 Its value and endpoints show effective intervals in `s`, `ms`, or `µs`; ASCII mode uses `us`.
-The request scale runs from factors one to 100. Source limits can make several slider positions show the same interval.
-Right-click the first slider to restore five seconds. Right-click the second to restore factor one.
+Numeric polling commands use positions one to 100; they do not multiply the polling frequency.
+Remote file reads retain a 1.5-second minimum, which can limit their faster positions.
+Right-click the first slider to restore 30 seconds. Right-click the second to restore its five-second request.
 Each reset preserves the other control, Live state, job selection, and graph zoom.
 While the slider has focus, use Left/Right, Page Up/Page Down, Home, and End.
 Home and End select that slider's minimum and maximum endpoint positions.
 Enter or Esc leaves slider focus. Esc during a drag restores that slider's previous value.
 Live displays `[current time - duration, current time]`. Changing the window alone does not change source polling.
 The sampling slider requests more frequent source reads, even while Live is off.
-The effective interval below the graph accounts for source limits and the global update multiplier.
+The effective interval below the graph accounts for source limits and the fastest global or per-metric request.
 Shared probes use the fastest requested rate: CPU and memory share a resource probe, and GPU curves share a GPU probe.
-Another job keeps its own sampling request. Job-produced files retain their own writing cadence.
+The requests do not multiply. Another job keeps its global cadence and its own sampling request.
+Job-produced files retain their own writing cadence.
 A valid rectangular zoom turns Live off. A cancelled rectangle resumes it.
 Completed jobs have no active Live or sampling controls. Metric preferences reset when Tower restarts.
 
@@ -858,8 +865,8 @@ Run `tower --help` for the parser's complete current syntax.
 | `--ssh-user USER` | Select the remote SSH login |
 | `--user USER` | Select the scheduler user |
 | `--account ACCOUNT` | Select the account used for aggregate views |
-| `--interval SECONDS` | Set the job sampling interval |
-| `--rate MULTIPLIER` | Set the startup fetching multiplier from 1 to 50; override the saved preference |
+| `--interval SECONDS` | Select the nearest polling position within five seconds to 500 milliseconds; `--rate` takes precedence |
+| `--rate N` | Select startup polling position 1 to 50; override the saved preference |
 | `--days DAYS` | Set the accounting lookback window |
 | `--no-gpu` | Disable live GPU sampling |
 | `--bell` | Ring on observed job starts |

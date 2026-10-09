@@ -490,13 +490,16 @@ def test_positive_cache_is_bounded_even_with_more_active_jobs(monkeypatch):
         sampler.shutdown()
 
 
-def test_positive_cache_expiry_has_a_fixed_upper_bound(monkeypatch, tmp_path):
+def test_positive_cache_expiry_uses_bounded_effective_polling(monkeypatch, tmp_path):
     from tower import sampler as module
     monkeypatch.setattr(module.time, "monotonic", lambda: 100.)
     sampler, _, _, _ = cached_sampler(tmp_path)
     sampler.intervals["gpu"] = 3600
     try:
         sampler.src_gpu()
-        assert sampler._gpu_allocation_cache["7"]["expires"] == 220
+        # A legacy slow base cannot move native polling outside the slider's
+        # domain. Allocation metadata still survives multiple GPU polls.
+        assert sampler.effective_interval("gpu") == 5
+        assert sampler._gpu_allocation_cache["7"]["expires"] == 110
     finally:
         sampler.shutdown()

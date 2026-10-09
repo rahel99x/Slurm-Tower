@@ -11,7 +11,7 @@ from typing import Callable, Dict, List, Optional
 
 from . import clock
 from .model import Health, Job, Store
-from .refresh_rate import source_interval, validate_multiplier
+from .refresh_rate import validate_multiplier
 from .slurm import CommandError, Slurm
 
 
@@ -112,7 +112,13 @@ class Sampler(threading.Thread):
         with self._schedule_lock:
             rate = max(self._active_metric_rates_locked(name).values(), default=1)
             return interval(self.intervals.get(name, 30.0), self.polling_multiplier, rate, source=name,
-                            file=name == "trace" and rate > 1, remote=bool(getattr(self.files, "remote", False)))
+                            file=name == "trace", remote=bool(getattr(self.files, "remote", False)))
+
+    def _baseline_interval(self, name):
+        """Use the same source bounds for scheduling and displayed cadences."""
+        from .metric_sampling import interval
+        return interval(self.intervals.get(name, 30.0), self.polling_multiplier, 1, source=name,
+                        file=name == "trace", remote=bool(getattr(self.files, "remote", False)))
 
     @staticmethod
     def _metric_attempt(job):
@@ -199,7 +205,7 @@ class Sampler(threading.Thread):
             if attempt is not None and (record is None or attempt not in (record[1], "scheduler:" + record[1], record[2])):
                 rate = 1
             return interval(self.intervals.get(name, 30.0), self.polling_multiplier, rate, source=name,
-                            file=name == "trace" and rate > 1, remote=bool(getattr(self.files, "remote", False)))
+                            file=name == "trace", remote=bool(getattr(self.files, "remote", False)))
 
     def _sampling_targets(self, name, jobs):
         """Gate scheduled probes; direct source calls retain their old behavior."""
@@ -209,7 +215,7 @@ class Sampler(threading.Thread):
         now = time.monotonic()
         with self._schedule_lock:
             rates = self._active_metric_rates_locked(name)
-            base = source_interval(self.intervals.get(name, 30.0), self.polling_multiplier, source=name)
+            base = self._baseline_interval(name)
             last = self._baseline_completed.get(name)
             baseline_due = last is None or now - last >= base
             # No active per-job override preserves existing source scheduling,
@@ -251,7 +257,7 @@ class Sampler(threading.Thread):
         now = time.monotonic()
         with self._schedule_lock:
             last = self._baseline_completed.get(name)
-            baseline = source_interval(self.intervals.get(name, 30.0), self.polling_multiplier, source=name)
+            baseline = self._baseline_interval(name)
             if last is None or now - last >= baseline:
                 return True
             for jid in self._active_metric_rates_locked(name):

@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import math
 
-from .refresh_rate import (SOURCE_FLOOR, SOURCE_FLOORS, LOCAL_FILE_FLOOR,
-                           REMOTE_FILE_FLOOR, validate_multiplier)
+from .refresh_rate import (NATIVE_SOURCES, SOURCE_FLOOR, SOURCE_FLOORS,
+                           LOCAL_FILE_FLOOR, REMOTE_FILE_FLOOR,
+                           poll_interval, source_interval, file_interval,
+                           validate_multiplier)
 
 MIN_RATE = 1
 MAX_RATE = 100
 MAX_REQUESTS = 128
-GPU_FLOOR = 1.0
+GPU_FLOOR = 0.5
 
 
 def validate_rate(value):
@@ -24,7 +26,7 @@ def validate_rate(value):
 
 
 def interval(base, global_rate=1, metric_rate=1, *, source="", remote=False, file=False):
-    """Apply both requests once to the original interval, preserving limits."""
+    """Use the fastest requested interval, without multiplying slider indices."""
     global_rate, metric_rate = validate_multiplier(global_rate), validate_rate(metric_rate)
     if type(base) not in (int, float) or base < 0:
         raise ValueError("Polling interval must be finite and non-negative")
@@ -34,10 +36,19 @@ def interval(base, global_rate=1, metric_rate=1, *, source="", remote=False, fil
         raise ValueError("Polling interval must be finite and non-negative") from exc
     if not math.isfinite(base):
         raise ValueError("Polling interval must be finite and non-negative")
-    floor = (REMOTE_FILE_FLOOR if remote else LOCAL_FILE_FLOOR) if file else SOURCE_FLOORS.get(source, SOURCE_FLOOR)
-    if not file and source == "gpu" and metric_rate > 1:
-        floor = GPU_FLOOR
-    return base if global_rate == metric_rate == 1 else max(min(base, floor), base / (global_rate * metric_rate))
+    if base == 0:
+        return 0.0
+    if source in NATIVE_SOURCES:
+        requested = min(poll_interval(global_rate), poll_interval(metric_rate, MAX_RATE))
+        floor = REMOTE_FILE_FLOOR if file and remote else SOURCE_FLOOR
+        return max(floor, requested)
+    baseline = (file_interval(base, global_rate, remote=remote) if file
+                else source_interval(base, global_rate, source=source))
+    if metric_rate == 1:
+        return baseline
+    floor = ((REMOTE_FILE_FLOOR if remote else LOCAL_FILE_FLOOR) if file
+             else SOURCE_FLOORS.get(source, SOURCE_FLOOR))
+    return max(min(base, floor), min(baseline, poll_interval(metric_rate, MAX_RATE)))
 
 
 def format_interval(value, *, ascii_=False):
@@ -182,7 +193,7 @@ def cadence(app, identity, rate=None):
                         if source(key) == collector and key[1] == identity[1] and key[4] == identity[4]
                         and entry.get("running")), default=1)
         return interval(base, global_rate, rate, source=collector,
-                        file=collector == "trace" and rate > 1,
+                        file=collector == "trace",
                         remote=bool(getattr(getattr(sampler, "files", None), "remote", False)))
     hub = getattr(owner, "research", None)
     if rate is None:

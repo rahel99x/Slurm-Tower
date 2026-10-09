@@ -238,7 +238,7 @@ def test_manual_attachment_suppresses_auto_until_job_selection_changes(app, tmp_
     assert app.research.settings["metrics_file"] == str(run8 / "metrics.jsonl")
 
 
-def test_auto_cadence_uses_base_interval_once_and_slider_multiplier(app, tmp_path, monkeypatch):
+def test_auto_cadence_uses_base_interval_once_and_bounded_slider_speed(app, tmp_path, monkeypatch):
     make_run(tmp_path)
     attach_workdir(app, tmp_path)
     times = [100.0]
@@ -250,7 +250,9 @@ def test_auto_cadence_uses_base_interval_once_and_slider_multiplier(app, tmp_pat
     assert refresh(app, force=False)
     times[0] = 105.1
     assert not refresh(app, force=False)
-    times[0] = 105.2
+    times[0] = 105.399
+    assert not refresh(app, force=False)
+    times[0] = 105.4
     assert refresh(app, force=False)
 
 

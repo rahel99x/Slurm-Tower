@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.8.0 |
+| Release | Tower 4.8.1 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -30,11 +30,12 @@ It also provides an ASCII display mode and plain-text reports.
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
 
-## Changes in Tower 4.8.0
+## Changes in Tower 4.8.1
 
-- Each running metric has two adjacent sliders: a display window from five seconds to one millisecond, and a sampling interval control. Sampling labels show effective time intervals in seconds, milliseconds, or microseconds.
-- Right-click either slider to restore its default: five seconds for the window, or the default sampling request. The other control and graph selection stay unchanged.
-- Sampling requests apply to the exact job and source. Metrics that share a probe use the fastest requested rate. Source limits and retry backoff remain active.
+- Each running metric has two adjacent sliders: a display window from 30 seconds to one second, and a polling interval from five seconds to 500 milliseconds. Both scales use logarithmic steps.
+- The top-right polling slider also spans five seconds to 500 milliseconds. Each native polling position changes the requested interval; requests cannot exceed two polls per second.
+- Right-click either metric slider to restore its default: 30 seconds for the window, or five seconds for its polling request. The other control and graph selection stay unchanged.
+- Sampling requests apply to the exact job and source. Shared probes use the fastest global or per-metric request, without multiplying the requests. Source limits and retry backoff remain active.
 - The graph footer shows the effective sampling interval. Published application metrics and CSV traces remain limited by how often the job writes them.
 
 See [chart controls](docs/guides/charts.md#follow-a-running-metric) for mouse, keyboard, commands, and sampling limits.
@@ -158,7 +159,7 @@ tower
 ```
 
 The desktop profile uses local Slurm commands and normal user detection.
-It samples Jobs every two seconds and accounting every ten seconds.
+It polls Jobs every five seconds at the default update setting and accounting every ten seconds.
 Cluster shows reported local partitions, including idle CPU-only partitions.
 GPU sampling is enabled for detected running GPU allocations.
 Forecast probes and allocation-budget queries remain disabled.
@@ -341,11 +342,11 @@ See [Live workbench](docs/guides/live-workbench.md) for panel navigation and liv
 
 For a running job, each metric has a Live button and two adjacent sliders.
 Use these controls on Analytics → Job series or Jobs → Details → Analytics → Job series.
-Set the first slider's window from five seconds to one millisecond.
+Set the first slider's window from 30 seconds to one second.
 Live follows the current time and displays recorded observations within that window.
-Drag the second slider to request more frequent reads for that exact job and source, subject to source limits.
+Drag the second slider from five seconds to 500 milliseconds to request reads for that exact job and source, subject to source limits.
 Its label shows the effective interval in `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
-Right-click the window slider to restore five seconds, or the sampling slider to restore its default request.
+Right-click the window slider to restore 30 seconds, or the sampling slider to restore its five-second request.
 Sampling requests also apply while Live is off.
 Read the source age and sampling interval when the window is empty.
 
@@ -572,7 +573,9 @@ The [navigation guide](docs/guides/navigation.md) describes interactive settings
 
 Use the always-visible update control to request a fetching interval.
 Its value and endpoints show time units rather than multiplier labels.
-Use `:rate N` to set its request factor from one to 50, or `:rate reset` to restore the default request.
+The endpoints are five seconds and 500 milliseconds.
+Use `:rate N` to select a position from one to 50, or `:rate reset` to restore five seconds.
+Position one requests five seconds; position 50 requests 500 milliseconds.
 Source minimum intervals and retry backoff remain in effect.
 Sources shows the effective intervals.
 

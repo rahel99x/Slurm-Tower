@@ -8,11 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from tower import command_ui, navigation_tools as N, navigation_ui, workbench
+from tower import command_ui, navigation_tools as N, navigation_ui, refresh_rate as R, workbench
 from tower.config import Config
 from tower.controller import App
 from tower.layout import Glyphs, row_text, vlen
 from tower.model import Finished, GpuSample, Health, Job, Live, Node, NodeCell, Partition, Store
+from tower.sampler import Sampler
 from tower.views import Views
 
 
@@ -38,6 +39,18 @@ def dashboard(tmp_path, monkeypatch):
     if app.research:
         app.research.close()
     workbench.modules.cache_clear()
+
+
+@pytest.fixture
+def native_polling(dashboard):
+    app, _, store = dashboard
+    worker = Sampler(SimpleNamespace(), store, dict(app.cfg["intervals"]), [])
+    app.sampler = worker
+    R.set_multiplier(app, R.multiplier(app))
+    try:
+        yield app, worker
+    finally:
+        worker.shutdown()
 
 
 def test_forward_restores_source_identity_and_cascades(dashboard):
@@ -129,9 +142,9 @@ def test_jump_command_opens_unexecuted_palette_and_exact_log(dashboard):
     assert app.tab == "log" and app.log_job == "123_2" and app.logs.entry["path"].endswith("stderr.log")
 
 
-def test_settings_preview_cancel_and_apply_update_sampler(dashboard):
-    app, _, _ = dashboard
-    app.sampler = SimpleNamespace(intervals=dict(app.cfg["intervals"]), gpu_sampling=True)
+def test_settings_preview_cancel_and_apply_update_sampler(native_polling):
+    app, worker = native_polling
+    original_bases = dict(worker.intervals)
     original_theme = app.theme
     app.run_command("settings")
     N.handle_key(app, "right")
@@ -141,19 +154,131 @@ def test_settings_preview_cancel_and_apply_update_sampler(dashboard):
     app.run_command("settings")
     keys = N._setting_keys(app)
     app.navigation_tools_state["cursor"] = keys.index("intervals.jobs")
-    N.handle_key(app, "right")
-    assert app.sampler.intervals["jobs"] == 2.5
+    N.handle_key(app, "left")
+    actual = R.poll_interval(R.poll_position(4))
+    assert worker.effective_interval("jobs") == actual
+    assert all(worker.effective_interval(source) == actual for source in ("live", "gpu", "trace"))
+    assert worker.intervals == original_bases
     N.handle_key(app, "enter")
-    assert N.save(app)["settings"]["intervals.jobs"] == 2.5
+    assert N.save(app)["settings"]["intervals.jobs"] == actual
     assert app.mode == "main"
 
 
-@pytest.mark.parametrize("settings", [{"intervals.jobs": 0}, {"intervals.jobs": float("nan")}, {"mouse": "false"}, {"theme": "invalid"}, {"intervals.jobs": True}])
+@pytest.mark.parametrize("settings", [{"intervals.jobs": 0}, {"intervals.jobs": .49}, {"intervals.jobs": 5.01},
+    {"intervals.jobs": 10**1000}, {"intervals.jobs": float("nan")}, {"mouse": "false"}, {"theme": "invalid"}, {"intervals.jobs": True}])
 def test_settings_restore_rejects_bad_preferences(dashboard, settings):
     app, _, _ = dashboard
     original = dict(N.save(app)["settings"])
     N.restore(app, {"settings": settings})
     assert N.save(app)["settings"] == original
+
+
+def test_polling_settings_cancel_restores_exact_position_and_other_saves_keep_original(native_polling, dashboard):
+    app, worker = native_polling
+    _, _, store = dashboard
+    R.set_multiplier(app, 20)
+    original = worker.effective_interval("jobs")
+    assert app.cfg["intervals"]["jobs"] == 2 and original != 2
+    app.run_command("settings")
+    state = N.initialize(app)
+    assert state["draft"]["intervals.jobs"] == original
+    state["cursor"] = N._setting_keys(app).index("intervals.jobs")
+    N.handle_key(app, "left")
+    assert R.multiplier(app) > 20 and worker.effective_interval("jobs") < original
+    assert state["draft"]["intervals.jobs"] == worker.effective_interval("jobs")
+    app.save()
+    fresh = App(store, None, None, Config({"log_lines": 0}), "test")
+    try:
+        assert R.multiplier(fresh) == 20
+        assert N._read_setting(fresh, "intervals.jobs") == original
+    finally:
+        if fresh.research:
+            fresh.research.close()
+    N.handle_key(app, "esc")
+    assert R.multiplier(app) == 20 and worker.effective_interval("jobs") == original
+    assert app.cfg["intervals"]["jobs"] == 2
+    assert state["preview_backup"] is None and state["polling_preview_backup"] is None
+
+
+def test_polling_settings_apply_survives_restart_using_actual_cadence(native_polling, dashboard):
+    app, worker = native_polling
+    _, _, store = dashboard
+    app.run_command("settings")
+    state = N.initialize(app)
+    state["cursor"] = N._setting_keys(app).index("intervals.jobs")
+    N.handle_key(app, "left")
+    N.handle_key(app, "left")
+    position, actual = R.multiplier(app), worker.effective_interval("jobs")
+    N.handle_key(app, "enter")
+    assert N.save(app)["settings"]["intervals.jobs"] == actual
+    fresh = App(store, None, None, Config({"log_lines": 0}), "test")
+    try:
+        assert R.multiplier(fresh) == position
+        assert N._read_setting(fresh, "intervals.jobs") == actual
+        assert fresh.cfg["intervals"]["jobs"] == 2
+    finally:
+        if fresh.research:
+            fresh.research.close()
+
+
+def test_legacy_source_settings_do_not_override_restored_polling_preference(native_polling):
+    app, worker = native_polling
+    R.set_multiplier(app, 33)
+    actual = worker.effective_interval("jobs")
+    N.restore(app, {"settings": {"intervals.jobs": 2, "intervals.live": 60}})
+    assert R.multiplier(app) == 33 and worker.effective_interval("jobs") == actual
+    assert worker.intervals["jobs"] == 2 and worker.intervals["live"] == 60
+    assert worker.effective_interval("live") == actual
+    assert N.save(app)["settings"]["intervals.jobs"] == actual
+
+
+def test_polling_settings_are_bounded_and_cancelled_defaults_restore_previous_position(native_polling):
+    app, worker = native_polling
+    R.set_multiplier(app, 17)
+    app.run_command("settings")
+    state = N.initialize(app)
+    state["cursor"] = N._setting_keys(app).index("intervals.jobs")
+    for _ in range(40):
+        N.handle_key(app, "left")
+        assert .5 <= state["draft"]["intervals.jobs"] <= 5
+        assert state["draft"]["intervals.jobs"] == worker.effective_interval("jobs")
+    assert R.multiplier(app) == 50 and worker.effective_interval("jobs") == .5
+    for _ in range(40):
+        N.handle_key(app, "right")
+        assert .5 <= state["draft"]["intervals.jobs"] <= 5
+    assert R.multiplier(app) == 1 and worker.effective_interval("jobs") == 5
+    N.handle_key(app, "D")
+    assert state["draft"]["intervals.jobs"] == 5
+    N.handle_key(app, "esc")
+    assert R.multiplier(app) == 17
+
+
+def test_settings_exposes_one_native_polling_control_and_preserves_other_source_edits(native_polling):
+    app, worker = native_polling
+    keys = N._setting_keys(app)
+    assert keys.count("intervals.jobs") == 1
+    assert not {"intervals.live", "intervals.gpu", "intervals.trace"}.intersection(keys)
+    app.run_command("settings")
+    state = N.initialize(app)
+    state["cursor"] = keys.index("intervals.starts")
+    N.handle_key(app, "right")
+    assert worker.intervals["starts"] == app.cfg["intervals"]["starts"] == 12.5
+    assert R.multiplier(app) == 1
+    N.handle_key(app, "esc")
+    assert worker.intervals["starts"] == app.cfg["intervals"]["starts"] == 10
+
+
+def test_settings_polling_caption_and_help_show_requested_domain(native_polling, dashboard):
+    app, _ = native_polling
+    _, views, store = dashboard
+    R.set_multiplier(app, 20)
+    app.run_command("settings")
+    N.initialize(app)["cursor"] = N._setting_keys(app).index("intervals.jobs")
+    rows = N.overlay(views, store.snapshot(), app, 140, 30)
+    text = "\n".join(row_text(row) for _, _, row in rows)
+    assert "Polling interval (seconds)" in text and "0.5 to 5 seconds" in text
+    assert "2.05" in text
+    assert not any("Sample interval · " + source in text for source in ("live", "gpu", "trace"))
 
 
 def test_keybinding_conflicts_test_and_apply_are_real(dashboard):
@@ -301,6 +426,22 @@ def test_resource_peeks_read_full_selected_resource_records(dashboard):
     assert N.raw_field(app, "nodes", "cpus") == "12/64"
 
 
+def test_source_polling_peek_and_explanation_use_effective_native_interval(native_polling):
+    app, worker = native_polling
+    app.source_ids = ["jobs"]
+    app.cursor["sources"] = 0
+    R.set_multiplier(app, 50)
+    assert worker.intervals["jobs"] == 2
+    assert N.raw_field(app, "sources", "every") == .5
+    N._field_open(app, "sources", "every")
+    description = N.initialize(app)["value"]
+    assert "Source: jobs. Polling interval: 500ms" in description
+    assert "Configured interval: 2" not in description
+    assert "backoff" in description
+    N._field_open(app, "sources", "every", peek=True)
+    assert N.initialize(app)["raw_value"] == "0.5"
+
+
 def test_saved_location_captures_all_independent_table_settings(dashboard):
     from tower.table_tools import parse_rule
     app, _, _ = dashboard
@@ -429,7 +570,7 @@ def test_unaccepted_live_settings_preview_does_not_persist_during_other_saves(da
     app.run_command("settings")
     for key in ("theme", "workspace.density", "bell", "gpu_sampling", "intervals.jobs"):
         app.navigation_tools_state["cursor"] = N._setting_keys(app).index(key)
-        N.handle_key(app, "right")
+        N.handle_key(app, "left" if key == "intervals.jobs" else "right")
     assert app.theme != original["theme"]
     app.save()
     fresh = App(store, None, None, Config({"log_lines": 0, "clipboard": {"osc52": False, "tools": False}}), "test")
@@ -469,10 +610,11 @@ def test_explicit_launch_settings_survive_restore_and_editor_defaults(dashboard)
     app.cfg.set("intervals.jobs", .5)
     app.cfg.ui_locked_settings = {"color", "intervals.jobs"}
     app.sampler = SimpleNamespace(intervals=dict(app.cfg["intervals"]), gpu_sampling=True)
+    R.set_multiplier(app, 50)
     N.restore(app, {"settings": {"color": True, "intervals.jobs": 60}})
     assert app.cfg["color"] is False and app.sampler.intervals["jobs"] == .5
     assert N.save(app)["settings"]["color"] is True
-    assert N.save(app)["settings"]["intervals.jobs"] == 60
+    assert "intervals.jobs" not in N.save(app)["settings"]
     app.run_command("settings")
     state = N.initialize(app)
     state["cursor"] = N._setting_keys(app).index("color")

@@ -76,14 +76,15 @@ Each metric has its own request. A curve and its filled companion share the same
 
 1. Open the exact running job's metric view.
 2. Click **Live off** to enable Live.
-3. Drag the first slider toward the left for five seconds, or toward the right for one millisecond.
+3. Drag the first slider toward the left for 30 seconds, or toward the right for one second.
 4. Read the duration beside the toggle. Wider rows label the first slider **Delta**.
-5. Drag the second slider to request the required sampling interval. Left restores the default request; right requests faster reads.
+5. Drag the second slider toward the left for five-second polling, or toward the right for 500-millisecond polling.
 6. Read the effective polling interval beside that slider and below the graph.
 7. Click **Live ON** to return to the ordinary retained view.
 
 **Expected result:** Live displays the interval from the dashboard's current time minus the chosen duration to its current time.
-The slider uses logarithmic steps between `5s` and `1ms`.
+The window slider uses logarithmic steps between `30s` and `1s`.
+The polling slider uses logarithmic steps between `5s` and `500ms`.
 Subsecond axes show fractional seconds in their timestamp labels.
 Selected time intervals use relative offsets with adaptive `s`, `ms`, or `us` units and an exact start-time anchor.
 Labels use available terminal space and do not imply a finer source cadence.
@@ -97,13 +98,13 @@ An interval label describes a polling request. It does not establish the spacing
 Select the slider with the mouse or directional button focus.
 Use Left and Right for one slider step, Page Up and Page Down for larger steps,
 Home for the left endpoint, and End for the right endpoint.
-The window endpoints are five seconds and one millisecond.
-The polling endpoints are the default request and the fastest permitted request.
+The window endpoints are 30 seconds and one second.
+The polling endpoints request five seconds and 500 milliseconds.
 Press Enter or Esc to leave slider focus.
 Press Esc during a drag to restore that slider's previous value.
 A page, source, geometry, or terminal-size change also discards an unfinished drag.
-Right-click the window slider to restore five seconds.
-Right-click the polling slider to restore the default sampling request.
+Right-click the window slider to restore 30 seconds.
+Right-click the polling slider to restore its five-second request.
 Each reset preserves the other slider, Live state, selected job, and graph zoom.
 Right-click inside the graph retains its separate full-view reset behavior.
 
@@ -113,12 +114,12 @@ Use these commands with that visible token:
 | Command | Function |
 | --- | --- |
 | `:metric-live TOKEN on\|off\|toggle` | Change the moving display window state |
-| `:metric-window TOKEN SECONDS` | Set a duration from 0.001 to 5 seconds |
+| `:metric-window TOKEN SECONDS` | Set a duration from 1 to 30 seconds |
 | `:metric-window TOKEN focus` | Focus the window slider |
-| `:metric-window TOKEN reset` | Restore a five-second window |
-| `:metric-sampling TOKEN N` | Set a whole-number sampling request factor from 1 to 100 |
+| `:metric-window TOKEN reset` | Restore a 30-second window |
+| `:metric-sampling TOKEN N` | Select polling position 1 to 100; position 1 requests five seconds and position 100 requests 500 milliseconds |
 | `:metric-sampling TOKEN focus` | Focus the polling slider |
-| `:metric-sampling TOKEN reset` | Restore the default request factor of one |
+| `:metric-sampling TOKEN reset` | Restore the five-second polling request |
 
 Tokens are session controls, not project metric IDs. Commands reject a hidden or nonrunning source.
 Previously set sampling requests remain active when their graphs move offscreen.
@@ -130,7 +131,7 @@ Live and the first slider change only the displayed interval.
 The polling slider changes background read requests even when Live is off.
 The Live clock requests at most ten scheduled display refreshes per second while an uncaptured Live plot is visible.
 Input and scrolling animations can request other display refreshes.
-A one-millisecond window can therefore contain no recorded observations.
+A one-second window can contain no recorded observations when its source reports less often.
 Valid empty axes retain their Live controls and time labels, but have no crosshair or rectangular selection until recorded data is visible.
 Read the source-age and sampling-cadence note below the graph before interpreting a sparse window.
 Missing observations and sampling outages remain gaps.
@@ -147,28 +148,33 @@ Enabling Live again clears that metric's completed rectangular zoom.
 
 ### Read the sampling limits
 
-The polling slider uses a request factor from one to 100 internally.
-Tower combines that request with the top-right global update setting using the configured base interval.
+The polling slider uses positions one to 100 internally.
+For position `N`, its requested interval is `5 × 10^(-(N - 1) / 99)` seconds.
+The global control uses the same range with positions one to 50.
+Its requested interval is `5 × 10^(-(N - 1) / 49)` seconds.
+Each scale reaches both endpoints and gives every native polling position a distinct interval.
+Tower uses the fastest request for an exact job and shared source; global and metric requests do not multiply.
 Repeated adjustments do not compound or change the configured base.
 The display shows the effective interval after source limits are applied.
 
 | Source | Minimum interval for a faster metric request |
 | --- | --- |
 | Live CPU and memory probe | 0.5 seconds |
-| Live GPU probe | 1 second |
-| Local application metrics or CSV traces | 0.25 seconds |
+| Live GPU probe | 0.5 seconds |
+| Local application metrics or CSV traces | 0.5 seconds |
 | Remote application metrics or CSV traces | 1.5 seconds |
 
 CPU and memory measurements share one job probe, so the fastest request for either metric sets that probe's interval.
 GPU utilization and busy-mean curves share a GPU probe and use their fastest request.
-The request does not speed up another job.
+Other jobs retain the global cadence and their own per-metric requests.
 Reported application metrics can share a file reader; their fastest request sets the reader's interval for that exact run.
 Reading that file more often cannot make the application write measurements more often.
 The same limit applies to job-produced CSV traces.
 
-An explicitly configured base interval below a minimum retains its existing faster interval.
-The global control alone retains its existing five-second GPU minimum.
-A per-metric GPU request can lower that minimum to one second.
+Jobs, CPU and memory probes, GPU probes, and local trace reads start with a five-second native polling request.
+Their controls cannot request more than two polls per second.
+Other global sources retain their configured bases, adjusted by the global speed ratio from one to ten.
+Remote file reads retain a 1.5-second minimum. Forecast and budget sources retain their 30-second minimums.
 Source errors retain retry backoff. Command duration, worker limits, and disabled-source settings still apply.
 Tower does not overlap reads to meet a shorter requested interval.
 The graph footer reports the effective polling interval, source age, and any relevant producer limits.
@@ -537,14 +543,14 @@ A filled companion uses the same canonical identity as its resource curve.
 | `canonical(identity)` | Share a resource area's Live identity with its source curve. |
 | `fraction(delta)`, `delta_at(value)` | Convert between durations and the logarithmic slider position. |
 | `format_delta(value)` | Format the duration in seconds or milliseconds. |
-| `rate_fraction(value)`, `rate_at(value)` | Convert between integer sampling request factors and the second slider's linear position. |
+| `rate_fraction(value)`, `rate_at(value)` | Convert between integer polling positions and the logarithmic interval scale. |
 | `set_running(app, identity, running)` | Publish exact source eligibility and stop a finished source. |
 | `window(app, identity, now=None)` | Return the active display interval, or the captured plot's fixed mapping. |
 | `enabled(app, identity)` | Check that Live is enabled for the current running source. |
 | `set_enabled(app, identity, value)` | Toggle Live and clear its rectangular zoom when enabling it. |
 | `stop_for_zoom(app, identity)` | Stop Live after a valid rectangular zoom. |
-| `set_delta(app, identity, value)` | Set a finite duration from 0.001 to 5 seconds. |
-| `set_rate(app, identity, value)` | Set an integer request factor from one to 100 and publish the changed background sampling demand. |
+| `set_delta(app, identity, value)` | Set a finite duration from 1 to 30 seconds. |
+| `set_rate(app, identity, value)` | Set a polling position from one to 100 and publish the changed background sampling demand. |
 | `controls(g, app, identity, width, ...)` | Render and stage the running metric's control row. |
 | `publish(app, records)` | Freeze controls after final layout transformation. |
 | `descriptors(app)` | Return visible toggle and both slider actions for the control graph. |
@@ -563,14 +569,14 @@ Its validation and interval calculations perform no scheduler or file I/O.
 
 | Method | Purpose and result |
 | --- | --- |
-| `validate_rate(value)` | Validate an integer request factor from one to 100. Reject Boolean, nonfinite, and fractional values. |
-| `interval(base, global_rate=1, metric_rate=1, ...)` | Apply global and metric requests once to the original base interval, with the source's lower limit. |
+| `validate_rate(value)` | Validate an integer polling position from one to 100. Reject Boolean, nonfinite, and fractional values. |
+| `interval(base, global_rate=1, metric_rate=1, ...)` | Select the fastest global or metric interval, with the source's lower limit. Native intervals span five seconds to 500 milliseconds. |
 | `format_interval(value, ascii_=False)` | Format seconds, milliseconds, or microseconds; return `?` for an invalid interval. |
 | `source(identity)` | Map a metric to its live resource, GPU, trace, or application-file collector. |
 | `attempt(job)`, `matches(identity, job)` | Identify and validate the exact running scheduler attempt. |
 | `research_matches(identity, context)` | Validate a reported metric's exact job, project, run, and published generation. |
 | `sync(app)` | Publish a bounded replacement request snapshot to the background collectors when demands change. |
-| `cadence(app, identity, rate=None)` | Return the effective shared collector interval, or an endpoint interval for a supplied request factor. |
+| `cadence(app, identity, rate=None)` | Return the effective shared collector interval, or an endpoint interval for a supplied polling position. |
 
 `Sampler.set_metric_sampling(requests)` validates and replaces at most 128 exact metric requests.
 `Sampler.sampling_interval(name, jid, attempt=None)` returns the safe interval for one job's shared source.
@@ -580,6 +586,19 @@ The sampler schedules those probes separately from jobs that have no faster requ
 `ResearchHub.refresh_interval(context=None)` returns the interval for the current exact run context.
 `ResearchHub.sampling_interval(identity)` reports that run's shared file-reader interval.
 These methods change requests without reading files immediately.
+
+### `tower.refresh_rate`
+
+This layer stores the global polling position and maps it to requested intervals.
+The stored `polling_multiplier` field keeps its existing name for compatibility.
+
+| Method | Purpose and result |
+| --- | --- |
+| `poll_interval(value, maximum=50)` | Convert a whole-number position to a logarithmic interval from five seconds to 500 milliseconds. |
+| `poll_position(seconds, maximum=50)` | Return the nearest bounded position for a finite positive interval. |
+| `source_interval(base, value, *, source="")` | Use the requested interval directly for native jobs, live resources, GPU, and trace sources; adjust other configured bases by the global speed ratio. |
+| `file_interval(base, value, *, remote=False)` | Adjust a file-reader base by the global speed ratio while retaining local or remote limits. |
+| `cadence(app, source, base=None)` | Return the source's effective global interval without reading the source. |
 
 ### `tower.analysis_ui`
 

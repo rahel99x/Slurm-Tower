@@ -206,7 +206,7 @@ def session(monkeypatch):
     monkeypatch.setattr(module.time, "time", timer)
     slurm = Scheduler()
     store = memory()
-    sampler = Sampler(slurm, store, {"jobs": 2, "finished": 60}, [], workers=2)
+    sampler = Sampler(slurm, store, {"jobs": 5, "finished": 60}, [], workers=2)
     for name, health in store.health.items():
         health.enabled = name in {"jobs", "finished"}
     sampler.round(wait=True)
@@ -219,21 +219,26 @@ def session(monkeypatch):
 
 def test_departure_refreshes_accounting_without_restart_and_coalesces_queries(session):
     timer, slurm, store, sampler = session
-    timer.value = 1002
     slurm.queue = []
-    sampler.round(wait=True)
-    assert slurm.calls == 1 and store.departed_jobs
     timer.value = 1004.9
     sampler.round(wait=True)
-    assert slurm.calls == 1
+    assert slurm.calls == 1 and store.jobs and not store.departed_jobs
     timer.value = 1005
+    sampler.round(wait=True)
+    assert slurm.calls in (1, 2) and store.departed_jobs
+    # Queue and accounting deadlines coincide. Depending on worker order, an
+    # empty accounting snapshot can arrive in this round or the next frame.
+    timer.value = 1005.01
     slurm.accounting = [done(state="FAILED")]
     sampler.round(wait=True)
-    assert slurm.calls == 2 and store.finished[0].state == "FAILED"
+    timer.value = 1010
+    sampler.round(wait=True)
+    assert slurm.calls in (2, 3) and store.finished[0].state == "FAILED"
     assert store.history_revision == 1 and not store.departed_jobs
-    for timer.value in (1006, 1010, 1020):
+    confirmed_calls = slurm.calls
+    for timer.value in (1011, 1015, 1020):
         sampler.round(wait=True)
-    assert slurm.calls == 2  # Confirmation stops expedited polling.
+    assert slurm.calls == confirmed_calls  # Confirmation stops expedited polling.
 
 
 def test_lag_retries_are_limited_then_normal_refresh_continues(session):
@@ -279,7 +284,7 @@ def test_new_departures_do_not_clear_accounting_failure_backoff(session):
 
 def test_departure_during_inflight_accounting_is_not_lost(session):
     timer, slurm, store, sampler = session
-    timer.value = 1002
+    timer.value = 1005
     slurm.queue = [active("2")]
     sampler.round(wait=True)
     entered, release = threading.Event(), threading.Event()
@@ -291,11 +296,11 @@ def test_departure_during_inflight_accounting_is_not_lost(session):
         return [done()]  # Snapshot predates job 2's departure.
 
     slurm.finished = slow
-    timer.value = 1005
+    timer.value = 1010
     futures = sampler.round()
     try:
         assert entered.wait(1)
-        timer.value = 1007
+        timer.value = 1012
         slurm.queue = []
         sampler.src_jobs()
         release.set()
@@ -303,11 +308,11 @@ def test_departure_during_inflight_accounting_is_not_lost(session):
             future.result(timeout=2)
         assert store.history_revision == 1 and "2" in store.departed_jobs
         assert sampler._finished_requested > sampler._finished_handled
-        assert not sampler.due("finished", 1011.9)
-        assert sampler.due("finished", 1012)
+        assert not sampler.due("finished", 1016.9)
+        assert sampler.due("finished", 1017)
         slurm.finished = original
         slurm.accounting = [done(), done("2")]
-        timer.value = 1012
+        timer.value = 1017
         sampler.round(wait=True)
         assert store.history_revision == 2 and not store.departed_jobs
     finally:

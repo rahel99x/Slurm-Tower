@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from tower import metric_sampling as rates
+from tower import metric_sampling as rates, refresh_rate
 from tower.config import Config
 from tower.model import Job
 from tower.research import ResearchHub
@@ -42,7 +42,7 @@ def test_file_reader_rate_does_not_transfer_to_other_job_attempt_source_or_view(
     hub = ResearchHub(Config())
     try:
         hub.set_metric_sampling({key(): 100})
-        assert hub.refresh_interval(context()) == .25
+        assert hub.refresh_interval(context()) == .5
         assert hub.refresh_interval(context(**mutation)) == 5
         assert hub.refresh_interval() == 5
     finally:
@@ -57,9 +57,9 @@ def test_bound_file_request_matches_exact_run_and_reset_preserves_other_demands(
         loss = key(attempt=3, root="/project", run="run-a")
         accuracy = key(name="accuracy", attempt=3, root="/project", run="run-a")
         hub.set_metric_sampling({loss: 20, accuracy: 5})
-        assert hub.refresh_interval(ctx) == .25
+        assert hub.refresh_interval(ctx) == pytest.approx(refresh_rate.poll_interval(20, maximum=100))
         hub.set_metric_sampling({accuracy: 5})
-        assert hub.refresh_interval(ctx) == 1
+        assert hub.refresh_interval(ctx) == pytest.approx(refresh_rate.poll_interval(5, maximum=100))
         assert hub.refresh_interval(context(binding=dict(binding, run_id="run-b"))) == 5
         hub.set_metric_sampling({})
         assert hub.refresh_interval(ctx) == 5
@@ -71,7 +71,7 @@ def test_changing_report_source_invalidates_old_demand_without_changing_base_int
     hub = ResearchHub(Config())
     try:
         hub.set_metric_sampling({key(): 100})
-        assert hub.refresh_interval(context()) == .25
+        assert hub.refresh_interval(context()) == .5
         hub.configure(metrics_file="/new/metrics.jsonl")
         assert hub.metric_sampling == {}
         assert hub.refresh_interval(context(generation=hub.generation)) == 5
@@ -98,7 +98,7 @@ def test_faster_read_requests_gate_real_reads_and_do_not_rewrite_measurements(mo
         now[0] += .1
         hub.request(ctx, wait=True)
         assert calls == ["7", "7"]
-        now[0] += .15
+        now[0] += .4
         hub.request(ctx, wait=True)
         assert calls == ["7", "7", "7"]
         hub.set_metric_sampling({})

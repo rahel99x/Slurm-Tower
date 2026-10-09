@@ -107,14 +107,21 @@ The editor provides these settings:
 | GPU sampling | Enable or disable the existing GPU sampler. |
 | Terminal clipboard | Enable or disable OSC 52 clipboard output. |
 | Local clipboard tools | Enable or disable installed clipboard utilities. |
-| Source sample intervals | Change the active sampler interval for each source. |
+| Polling interval | Change the global native polling request from five seconds to 500 milliseconds. |
+| Other source intervals | Change the configured base for sources such as accounting, nodes, and forecast probes. |
 
-Intervals range from 1 to 3,600 seconds.
-Left decreases an interval by 20 percent.
-Right increases it by 25 percent.
+The **Polling interval** row selects the nearest position on the top-right control's logarithmic scale.
+It governs Jobs, live CPU and memory probes, GPU probes, and trace reads, subject to source limits.
+Separate editable rows for live, GPU, and trace intervals are not shown.
+Other source intervals range from 1 to 3,600 seconds.
+Left decreases an interval by 20 percent; Right increases it by 25 percent.
+Polling changes stay within 500 milliseconds to five seconds and snap to the nearest supported position.
 GPU sampling can use a small job allocation step.
 The editor updates the active sampler when you preview a change.
-Cancel restores its previous settings.
+Cancel restores its previous settings and exact polling position.
+Unaccepted previews are not saved. Enter accepts the draft and saves its polling preference.
+Positive legacy configuration values in `intervals.jobs`, `intervals.live`, `intervals.gpu`, and `intervals.trace` no longer determine native polling intervals.
+Use the Polling interval row, `polling_multiplier`, `--rate`, or `--interval` to choose the active native interval.
 Explicit launch options and environment overrides retain priority over saved settings.
 A locked row shows `[launch option]`.
 Restart Tower with different launch options to change that value.

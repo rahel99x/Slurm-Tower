@@ -67,12 +67,25 @@ def enable(app, identity=None):
     return current(app)
 
 
-@pytest.mark.parametrize("value", [5.0, 1.0, 0.1, 0.01, 0.001])
+@pytest.mark.parametrize("value", [30.0, 15.0, 5.0, 2.0, 1.0])
 def test_log_mapping_is_reversible_and_endpoints_exact(value):
     assert M.delta_at(M.fraction(value)) == pytest.approx(value)
     assert 0 <= M.fraction(value) <= 1
-    assert M.delta_at(0) == 5.0 and M.delta_at(1) == 0.001
-    assert M.delta_at(0.5) == pytest.approx(math.sqrt(5 * 0.001))
+    assert M.delta_at(0) == 30.0 and M.delta_at(1) == 1.0
+    assert M.delta_at(0.5) == pytest.approx(math.sqrt(30 * 1))
+
+
+@pytest.mark.parametrize("value", [
+    True, False, None, "10", -1, 0, .001, .999, 30.001, 31,
+    float("nan"), float("inf"), 10**1000,
+])
+def test_invalid_window_values_preserve_display_state_and_revision(app, value):
+    enable(app)
+    assert M.set_delta(app, key(), 10.0)
+    revision = M.document_revision(app)
+    assert not M.set_delta(app, key(), value)
+    assert M.window(app, key(), now=100.0) == (90.0, 100.0)
+    assert M.document_revision(app) == revision
 
 
 @pytest.mark.parametrize("ascii_", [False, True])
@@ -80,7 +93,7 @@ def test_log_mapping_is_reversible_and_endpoints_exact(value):
 def test_controls_always_fit_one_row_with_two_labeled_ends(app, ascii_, width):
     rows, hits = draw(app, width=width, ascii_=ascii_, column=0)
     assert len(rows) == 1 and L.vlen(L.row_text(rows[0])) == width
-    assert "5s" in L.row_text(rows[0]) and "1ms" in L.row_text(rows[0])
+    assert "30s" in L.row_text(rows[0]) and "1s" in L.row_text(rows[0])
     assert len(hits) == 3
     if ascii_:
         assert L.row_text(rows[0]).isascii()
@@ -98,26 +111,26 @@ def test_slider_state_is_independent_for_metrics_jobs_and_attempts(app):
     otherjob = key("102")
     attempt = key(attempt="new-start")
     draw(app, one)
-    M.set_delta(app, one, 0.1)
+    M.set_delta(app, one, 10.0)
     M.set_enabled(app, one, True)
     draw(app, two, row=4)
     M.set_delta(app, two, 1.0)
     draw(app, otherjob, row=6)
-    M.set_delta(app, otherjob, 0.01)
-    assert M.window(app, one, now=100.0) == (99.9, 100.0)
+    M.set_delta(app, otherjob, 2.0)
+    assert M.window(app, one, now=100.0) == (90.0, 100.0)
     assert M.window(app, two, now=100.0) is None
     draw(app, attempt, row=8)
     assert not M.enabled(app, one)
-    assert M.initialize(app)["entries"][one]["delta"] == 0.1
+    assert M.initialize(app)["entries"][one]["delta"] == 10.0
     assert not M.enabled(app, attempt)
-    assert M.initialize(app)["entries"][otherjob]["delta"] == 0.01
+    assert M.initialize(app)["entries"][otherjob]["delta"] == 2.0
 
 
 def test_area_companion_reads_exact_same_canonical_window_with_one_control_row(app):
     curve = key()
     area = key(scope="resource-area")
     enable(app, curve)
-    M.set_delta(app, curve, 0.001)
+    M.set_delta(app, curve, 1.0)
     assert M.canonical(area) == curve
     assert M.window(app, area, now=100.0) == M.window(app, curve, now=100.0)
     assert len(M.initialize(app)["records"]) == 1
@@ -140,7 +153,7 @@ def test_finished_removed_and_mutated_jobs_disable_live_without_full_snapshot(ap
     )
     identity = key(attempt="s|r")
     enable(app, identity)
-    assert M.window(app, identity, now=100.0) == (95.0, 100.0)
+    assert M.window(app, identity, now=100.0) == (70.0, 100.0)
     job.state = "COMPLETED"
     M.tick(app)
     assert not M.enabled(app, identity) and M.window(app, identity, now=100.0) is None
@@ -163,7 +176,7 @@ def test_old_native_attempt_cannot_be_enabled_again_after_inplace_restart(app):
     new = key(attempt="s|new")
     draw(app, new)
     assert M.set_enabled(app, new, True)
-    assert M.window(app, new, now=100.0) == (95.0, 100.0)
+    assert M.window(app, new, now=100.0) == (70.0, 100.0)
 
 
 def test_clock_anchored_window_never_requests_sampler_or_source_io(app, monkeypatch):
@@ -176,11 +189,11 @@ def test_clock_anchored_window_never_requests_sampler_or_source_io(app, monkeypa
         refresh_all=lambda: pytest.fail("live refreshed scheduler")
     )
     enable(app)
-    M.set_delta(app, key(), 0.001)
+    M.set_delta(app, key(), 1.0)
     monkeypatch.setattr(clock, "now", lambda: 100.0)
-    assert M.window(app, key()) == (99.999, 100.0)
+    assert M.window(app, key()) == (99.0, 100.0)
     for i in range(1000):
-        assert M.window(app, key(), now=100.0 + i) == (99.999 + i, 100.0 + i)
+        assert M.window(app, key(), now=100.0 + i) == (99.0 + i, 100.0 + i)
     assert M.window(app, key(), now=float("nan")) is None
     assert M.window(app, key(), now=float("inf")) is None
 
@@ -193,15 +206,15 @@ def test_raw_slider_drag_clamps_log_endpoints_and_keyboard_adjusts_same_metric(a
     assert M.handle_mouse(app, y, left, button="press")
     assert M.active(app)
     assert M.handle_mouse(app, y, right, button="motion")
-    assert M.initialize(app)["entries"][key()]["delta"] == 0.001
+    assert M.initialize(app)["entries"][key()]["delta"] == 1.0
     assert M.handle_mouse(app, y, right + 50, button="release")
-    assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 0.001
+    assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 1.0
     assert M.handle_key(app, "home")
-    assert M.initialize(app)["entries"][key()]["delta"] == 5.0
+    assert M.initialize(app)["entries"][key()]["delta"] == 30.0
     assert M.handle_key(app, "right")
-    assert 0.001 < M.initialize(app)["entries"][key()]["delta"] < 5.0
+    assert 1.0 < M.initialize(app)["entries"][key()]["delta"] < 30.0
     assert M.handle_key(app, "end")
-    assert M.initialize(app)["entries"][key()]["delta"] == 0.001
+    assert M.initialize(app)["entries"][key()]["delta"] == 1.0
     assert not M.handle_key(app, "down") and M.initialize(app)["focus"] is None
 
 
@@ -214,7 +227,7 @@ def test_slider_stale_context_cancels_restores_preview_and_consumes_release(
 ):
     control = enable(app)
     M.handle_mouse(app, control.slider.top, control.slider.right - 1, button="press")
-    assert M.initialize(app)["entries"][key()]["delta"] != 5.0
+    assert M.initialize(app)["entries"][key()]["delta"] != 30.0
     if change == "width":
         app.width += 1
     elif change == "height":
@@ -237,7 +250,7 @@ def test_slider_stale_context_cancels_restores_preview_and_consumes_release(
     assert M.handle_mouse(
         app, control.slider.top, control.slider.right - 1, button="release"
     )
-    assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 5.0
+    assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 30.0
 
 
 def test_slider_geometry_change_timeout_vertical_outside_and_escape_cancel(app):
@@ -245,7 +258,7 @@ def test_slider_geometry_change_timeout_vertical_outside_and_escape_cancel(app):
     M.handle_mouse(app, control.slider.top, control.slider.right - 1, button="press")
     C.begin_frame(app, 120, 40)
     draw(app, width=60)
-    assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 5.0
+    assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 30.0
     for mode in ("timeout", "outside", "escape"):
         control = current(app)
         M.handle_mouse(
@@ -262,7 +275,7 @@ def test_slider_geometry_change_timeout_vertical_outside_and_escape_cancel(app):
             )
         else:
             assert M.handle_key(app, "esc")
-        assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 5.0
+        assert not M.active(app) and M.initialize(app)["entries"][key()]["delta"] == 30.0
 
 
 def test_layout_pipeline_maps_live_controls_and_clips_them_with_source_document(app):
@@ -287,7 +300,7 @@ def test_xy_capture_temporarily_freezes_clock_mapping_then_commit_stops_live(app
     enable(app)
     metadata = {
         "plot_rect": (5, 10, 13, 60),
-        "x_bounds": (95.0, 100.0),
+        "x_bounds": (70.0, 100.0),
         "y_bounds": (0.0, 100.0),
         "valid": True,
         "has_data": True,
@@ -295,10 +308,10 @@ def test_xy_capture_temporarily_freezes_clock_mapping_then_commit_stops_live(app
     C.record(app, key(), metadata)
     C.publish(app, 120, 40)
     assert C.handle_mouse(app, 6, 15, button="press")
-    assert M.window(app, key(), now=999.0) == (95.0, 100.0)
+    assert M.window(app, key(), now=999.0) == (70.0, 100.0)
     assert M.document_interval(app) is None
     C.cancel(app)
-    assert M.window(app, key(), now=999.0) == (994.0, 999.0) and M.enabled(app, key())
+    assert M.window(app, key(), now=999.0) == (969.0, 999.0) and M.enabled(app, key())
     C.handle_mouse(app, 6, 15, button="press")
     C.handle_mouse(app, 11, 45, button="release")
     assert not M.enabled(app, key()) and M.window(app, key(), now=999.0) is None
@@ -338,9 +351,9 @@ def test_enabling_live_removes_line_and_area_boxes_only_for_this_metric(app):
     assert M.window(app, key(), now=100.0) is None
 
 
-def test_empty_one_millisecond_graph_still_gets_bounded_document_deadline(app):
+def test_empty_one_second_graph_still_gets_bounded_document_deadline(app):
     enable(app)
-    M.set_delta(app, key(), 0.001)
+    M.set_delta(app, key(), 1.0)
     assert C.initialize(app)["plots"] == ()
     assert M.document_interval(app) == 0.1
     assert M.document_revision(app) > 0
@@ -370,7 +383,7 @@ def test_cached_feedback_keeps_pointer_and_arrow_focus_without_activating_twice(
     assert I.handle_key(app, "enter")
     assert M.initialize(app)["focus"] == control.token
     assert M.handle_key(app, "right")
-    assert M.initialize(app)["entries"][key()]["delta"] < 5.0
+    assert M.initialize(app)["entries"][key()]["delta"] < 30.0
 
 
 def test_commands_only_target_visible_exact_running_source(app):
@@ -378,11 +391,11 @@ def test_commands_only_target_visible_exact_running_source(app):
     token = current(app).token
     assert M.run_command(app, ["metric-live", token, "on"])
     assert M.enabled(app, key())
-    assert M.run_command(app, ["metric-window", token, "0.001"])
-    assert M.initialize(app)["entries"][key()]["delta"] == 0.001
-    for invalid in ("nan", "inf", "0", "6", "bad"):
+    assert M.run_command(app, ["metric-window", token, "1"])
+    assert M.initialize(app)["entries"][key()]["delta"] == 1.0
+    for invalid in ("nan", "inf", "0", "0.999", "31", "bad"):
         assert M.run_command(app, ["metric-window", token, invalid])
-        assert M.initialize(app)["entries"][key()]["delta"] == 0.001
+        assert M.initialize(app)["entries"][key()]["delta"] == 1.0
     assert M.run_command(app, ["metric-live", "old-token", "on"])
     C.begin_frame(app, 120, 40)
     draw(app, running=False)
@@ -465,8 +478,8 @@ def test_actual_app_palette_live_commands_restore_main_without_a_redraw(
     assert M.enabled(dashboard.app, control.key)
     assert M.initialize(dashboard.app)["records"] == ()
     palette_frame(dashboard)
-    type_palette_command(dashboard, "metric-window " + control.token + " 0.001")
-    assert M.initialize(dashboard.app)["entries"][control.key]["delta"] == 0.001
+    type_palette_command(dashboard, "metric-window " + control.token + " 1")
+    assert M.initialize(dashboard.app)["entries"][control.key]["delta"] == 1.0
     palette_frame(dashboard)
     type_palette_command(dashboard, "metric-live " + control.token + " off")
     assert not M.enabled(dashboard.app, control.key)
@@ -520,6 +533,47 @@ def open_reported_modal(dashboard):
     return current(app)
 
 
+@pytest.mark.parametrize("surface", ["analytics", "jobs", "reported-modal"])
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_actual_graph_windows_cover_both_delta_endpoints_and_right_reset(
+    palette_dashboard, surface, ascii_
+):
+    dashboard = palette_dashboard
+    app = dashboard.app
+    dashboard.views.set_ascii(ascii_)
+    app.tab = "jobs" if surface == "jobs" else "analytics"
+    app.job_panel_state["mode"] = "analytics"
+    if surface == "reported-modal":
+        control = open_reported_modal(dashboard)
+    else:
+        palette_frame(dashboard)
+        control = current(app)
+    retained_samples = tuple(dict(sample) for sample in dashboard.store.series["7"])
+    assert M.set_enabled(app, control.key, True)
+    for delta, expected in ((30.0, (170.0, 200.0)), (1.0, (199.0, 200.0))):
+        assert M.set_delta(app, control.key, delta)
+        palette_frame(dashboard)
+        plot = next(
+            plot for plot in C.initialize(app)["plots"]
+            if M.canonical(plot.key) == control.key
+        )
+        assert plot.x_bounds == expected
+        assert M.window(app, control.key) == expected
+    control = next(
+        record for record in M.initialize(app)["records"]
+        if record.key == control.key
+    )
+    app.click(control.slider.top, control.slider.left, [], button="right")
+    palette_frame(dashboard)
+    restored = next(
+        plot for plot in C.initialize(app)["plots"]
+        if M.canonical(plot.key) == control.key
+    )
+    assert restored.x_bounds == (170.0, 200.0)
+    assert M.enabled(app, control.key)
+    assert tuple(dashboard.store.series["7"]) == retained_samples
+
+
 def test_actual_app_palette_commands_restore_exact_chart_modal(palette_dashboard):
     dashboard = palette_dashboard
     control = open_reported_modal(dashboard)
@@ -527,8 +581,8 @@ def test_actual_app_palette_commands_restore_exact_chart_modal(palette_dashboard
     type_palette_command(dashboard, "metric-live " + control.token + " on")
     assert dashboard.app.mode == "analysis" and M.enabled(dashboard.app, control.key)
     palette_frame(dashboard)
-    type_palette_command(dashboard, "metric-window " + control.token + " 0.1")
-    assert M.initialize(dashboard.app)["entries"][control.key]["delta"] == 0.1
+    type_palette_command(dashboard, "metric-window " + control.token + " 10")
+    assert M.initialize(dashboard.app)["entries"][control.key]["delta"] == 10.0
 
 
 @pytest.mark.parametrize("modal", [False, True])
@@ -670,7 +724,7 @@ def test_running_job_beyond_ten_thousand_rows_stays_eligible_with_bounded_index(
     identity = key(jid="10001", attempt="s|r")
     draw(app, identity)
     assert M.set_enabled(app, identity, True)
-    assert M.window(app, identity, now=100.0) == (95.0, 100.0)
+    assert M.window(app, identity, now=100.0) == (70.0, 100.0)
     assert M.initialize(app)["job_map"] == {"10001": wanted}
     # Adding a second metric for this ID reuses the same bounded Job index.
     existing = M.initialize(app)["job_map"]
@@ -692,7 +746,7 @@ def test_inplace_job_append_refreshes_only_wanted_id_index(app):
     identity = key(jid="102")
     draw(app, identity)
     assert M.set_enabled(app, identity, True)
-    assert M.window(app, identity, now=100.0) == (95.0, 100.0)
+    assert M.window(app, identity, now=100.0) == (70.0, 100.0)
     assert len(M.initialize(app)["job_map"]) == 2
 
 
@@ -711,14 +765,14 @@ def test_reported_scheduler_attempt_fallback_rejects_previous_requeue(app):
     )
     draw(app, old)
     assert M.set_enabled(app, old, True)
-    assert M.window(app, old, now=100.0) == (95.0, 100.0)
+    assert M.window(app, old, now=100.0) == (70.0, 100.0)
     job.start = "StartB"
     assert M.window(app, old, now=100.0) is None
     assert not M.set_enabled(app, old, True)
     new = (*old[:4], "scheduler:S|StartB", *old[5:])
     draw(app, new)
     assert M.set_enabled(app, new, True)
-    assert M.window(app, new, now=100.0) == (95.0, 100.0)
+    assert M.window(app, new, now=100.0) == (70.0, 100.0)
 
 
 def test_project_declared_attempt_stays_opaque_to_scheduler_start_labels(app):
@@ -736,7 +790,7 @@ def test_project_declared_attempt_stays_opaque_to_scheduler_start_labels(app):
     )
     draw(app, identity)
     assert M.set_enabled(app, identity, True)
-    assert M.window(app, identity, now=100.0) == (95.0, 100.0)
+    assert M.window(app, identity, now=100.0) == (70.0, 100.0)
 
 
 def test_stale_running_snapshot_cannot_show_controls_for_finished_actual_job(app):
@@ -770,7 +824,7 @@ def test_same_length_inplace_job_slot_replacement_uses_new_actual_attempt(app):
     C.begin_frame(app, 120, 40)
     rows, _ = draw(app, fresh)
     assert len(rows) == 1 and M.set_enabled(app, fresh, True)
-    assert M.window(app, fresh, now=100.0) == (95.0, 100.0)
+    assert M.window(app, fresh, now=100.0) == (70.0, 100.0)
     assert M.initialize(app)["job_map"]["101"] is fresh_job
 
 
@@ -818,7 +872,7 @@ def test_invalid_sampling_values_do_not_change_a_valid_request(app, value):
 @pytest.mark.parametrize("kind", ["window", "sampling"])
 def test_right_reset_only_changes_its_slider_and_keeps_live_zoom_and_marks(app, kind):
     control = enable(app)
-    assert M.set_delta(app, key(), .1) and M.set_rate(app, key(), 50)
+    assert M.set_delta(app, key(), 10.0) and M.set_rate(app, key(), 50)
     app.marks = {"101", "102"}
     app.sel_anchor, app.sel_end = 2, 8
     C.initialize(app)["zoom"][key()] = {
@@ -827,7 +881,7 @@ def test_right_reset_only_changes_its_slider_and_keeps_live_zoom_and_marks(app, 
     slider = control.slider if kind == "window" else control.rate_slider
     assert M.handle_mouse(app, slider.top, slider.left, button="right")
     entry = M.initialize(app)["entries"][key()]
-    assert entry["delta"] == (5.0 if kind == "window" else .1)
+    assert entry["delta"] == (30.0 if kind == "window" else 10.0)
     assert entry["rate"] == (1 if kind == "sampling" else 50)
     assert entry["enabled"]
     assert app.marks == {"101", "102"} and (app.sel_anchor, app.sel_end) == (2, 8)
@@ -892,7 +946,7 @@ def test_rate_slider_keyboard_uses_integer_steps_home_end_and_pages(app):
                                 ("home", 1), ("left", 1), ("pgup", 1)):
         assert M.handle_key(app, input_key)
         assert M.initialize(app)["entries"][key()]["rate"] == expected
-    assert M.initialize(app)["entries"][key()]["delta"] == 5.0
+    assert M.initialize(app)["entries"][key()]["delta"] == 30.0
     assert M.handle_key(app, "esc")
     assert M.initialize(app)["focus"] is None
 
@@ -905,11 +959,11 @@ def test_sampling_and_delta_commands_reset_without_live_or_source_actions(app):
     for invalid in ("0", "101", "nan", "inf", "2.5", "bad", "1.0"):
         assert M.run_command(app, ["metric-sampling", control.token, invalid])
         assert M.initialize(app)["entries"][key()]["rate"] == 50
-    assert M.run_command(app, ["metric-window", control.token, "0.001"])
+    assert M.run_command(app, ["metric-window", control.token, "1"])
     assert M.run_command(app, ["metric-window", control.token, "reset"])
     assert M.run_command(app, ["metric-sampling", control.token, "reset"])
     entry = M.initialize(app)["entries"][key()]
-    assert entry["delta"] == 5.0 and entry["rate"] == 1 and entry["enabled"]
+    assert entry["delta"] == 30.0 and entry["rate"] == 1 and entry["enabled"]
 
 
 @pytest.mark.parametrize("change", ["completed", "removed", "attempt", "replacement"])
@@ -988,7 +1042,7 @@ def test_sampling_palette_focus_and_rate_restore_exact_main_or_modal(palette_das
     assert state["focus_kind"] == "sampling" and state["pending_focus"] is None
     dashboard.app.handle("right")
     assert state["entries"][control.key]["rate"] == 2
-    assert state["entries"][control.key]["delta"] == 5.0
+    assert state["entries"][control.key]["delta"] == 30.0
 
 
 @pytest.mark.parametrize("kind", ["window", "sampling"])
@@ -1003,7 +1057,7 @@ def test_actual_app_right_reset_does_not_clear_selected_jobs_or_text(palette_das
         control = current(dashboard.app)
     app = dashboard.app
     assert M.set_enabled(app, control.key, True)
-    assert M.set_delta(app, control.key, .1) and M.set_rate(app, control.key, 50)
+    assert M.set_delta(app, control.key, 10.0) and M.set_rate(app, control.key, 50)
     app.marks = {"7", "8"}
     app.sel_anchor, app.sel_end = 3, 9
     selected_lines = {"anchor": "preserved sentinel"}
@@ -1011,7 +1065,7 @@ def test_actual_app_right_reset_does_not_clear_selected_jobs_or_text(palette_das
     slider = control.slider if kind == "window" else control.rate_slider
     app.click(slider.top, slider.left, [], button="right")
     entry = M.initialize(app)["entries"][control.key]
-    assert entry["delta"] == (5.0 if kind == "window" else .1)
+    assert entry["delta"] == (30.0 if kind == "window" else 10.0)
     assert entry["rate"] == (1 if kind == "sampling" else 50)
     assert entry["enabled"] and app.marks == {"7", "8"}
     assert (app.sel_anchor, app.sel_end) == (3, 9)
@@ -1057,7 +1111,7 @@ def test_store_generation_reuse_resets_hidden_rate_window_and_live_without_dates
     app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)))
     identity = key(attempt="|")
     old_control = enable(app, identity)
-    assert M.set_rate(app, identity, 100) and M.set_delta(app, identity, .001)
+    assert M.set_rate(app, identity, 100) and M.set_delta(app, identity, 1.0)
     assert M.initialize(app)["entries"][identity]["generation"] == (id(store), 0)
     # The metric can be hidden while a job leaves and reuses the same ID; its
     # absent submit/start fields do not supply a distinct canonical chart key.
@@ -1074,7 +1128,7 @@ def test_store_generation_reuse_resets_hidden_rate_window_and_live_without_dates
     fresh = current(app)
     entry = M.initialize(app)["entries"][identity]
     assert fresh.token != old_control.token
-    assert entry["rate"] == 1 and entry["delta"] == 5.0 and not entry["enabled"]
+    assert entry["rate"] == 1 and entry["delta"] == 30.0 and not entry["enabled"]
     assert requests[-1] == {}
     M.run_command(app, ["metric-sampling", old_control.token, "100"])
     assert entry["rate"] == 1
@@ -1091,7 +1145,7 @@ def test_same_identity_reused_attempt_cancels_capture_without_restoring_old_valu
     app.sampler = SimpleNamespace(set_metric_sampling=lambda value: requests.append(dict(value)))
     identity = key(attempt="|")
     old_control = enable(app, identity)
-    assert M.set_rate(app, identity, 17) and M.set_delta(app, identity, .1)
+    assert M.set_rate(app, identity, 17) and M.set_delta(app, identity, 10.0)
     slider = old_control.slider if kind == "window" else old_control.rate_slider
     assert M.handle_mouse(app, slider.top, slider.right - 1, button="press")
     assert M.active(app)
@@ -1102,10 +1156,10 @@ def test_same_identity_reused_attempt_cancels_capture_without_restoring_old_valu
     M.tick(app)
     entry = M.initialize(app)["entries"][identity]
     assert not M.active(app) and entry["token"] != old_control.token
-    assert entry["rate"] == 1 and entry["delta"] == 5.0 and not entry["enabled"]
+    assert entry["rate"] == 1 and entry["delta"] == 30.0 and not entry["enabled"]
     assert requests[-1] == {}
     assert M.handle_mouse(app, slider.top, slider.left, button="release")
-    assert entry["rate"] == 1 and entry["delta"] == 5.0
+    assert entry["rate"] == 1 and entry["delta"] == 30.0
     C.begin_frame(app, 120, 40)
     draw(app, identity)
     fresh = current(app)

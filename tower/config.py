@@ -26,9 +26,9 @@ DEFAULTS: Dict[str, Any] = {
     "animations": True,                  # short completion motion and two History pulses (reader is static)
     "startup_animation": True,           # brief, dismissible welcome on interactive terminal launches
     "smooth_scrolling": True,            # bounded scroll easing; animations=false and reader keep direct scrolling
-    "polling_multiplier": 1,             # requested live update speed, whole number 1..50; source floors and backoff still apply
+    "polling_multiplier": 1,             # polling slider position 1..50: 5s..500ms; source floors and backoff still apply
     "workspace": {"density": "comfortable", "split": 45},
-    "intervals": {                       # seconds between samples of each source
+    "intervals": {                       # base seconds for other sources; native polls use polling_multiplier
         "jobs": 2.0, "starts": 10.0, "live": 10.0, "gpu": 5.0, "nodes": 15.0, "partitions": 60.0, "finished": 60.0,
         "share": 120.0, "account": 30.0, "details": 20.0, "weather": 120.0, "budget": 600.0, "trace": 60.0, "fin_details": 5.0,
     },
@@ -92,7 +92,7 @@ bell = false                    # terminal bell when one of your jobs starts
 animations = true               # short completion motion and two History pulses; false keeps static notices
 startup_animation = true        # brief welcome on interactive launches; :startup off disables it
 smooth_scrolling = true         # bounded scroll easing; :smoothscroll off restores direct scrolling
-polling_multiplier = 1           # live update speed 1..50; base intervals, source limits and error backoff stay intact
+polling_multiplier = 1           # logarithmic polling position 1..50: 5s..500ms; source limits and backoff stay intact
 
 # partitions = ["gpu", "main"]  # cluster tab: partitions to show (empty: those with GPUs or with your jobs)
 weather = true                  # queue weather on the Cluster tab: pending work ahead per partition, sbatch --test-only probes
@@ -125,7 +125,7 @@ passport = ""                   # immutable JSON run passport
 planning_file = ""              # observations or a scaling/workflow recipe
 interval = 5.0                  # bounded background inspections, minimum 1 second
 
-[intervals]                     # seconds between samples of each source
+[intervals]                     # base seconds; jobs/live/gpu/trace use the polling slider's 5s..500ms range
 jobs = 2.0
 starts = 10.0
 live = 10.0

@@ -670,9 +670,10 @@ def test_rate_crossing_ten_keeps_capture_and_drag_bounds_in_place():
     assert R.multiplier(app) == 1 and not app.toolbar_state["dragging"]
 
 
-@pytest.mark.parametrize("base,rate,label", [(2.0, 1, "2s"), (2.0, 3, "667ms"),
-    (2.0, 50, "500ms"), (.0005, 1, "500µs"), (.0005, 100 // 2, "500µs"),
-    (.005, 1, "5ms"), (0.0, 50, "0s")])
+@pytest.mark.parametrize("base,rate,label", [(2.0, 1, "5s"), (2.0, 3, "4.55s"),
+    (2.0, 25, "1.62s"), (2.0, 49, "524ms"), (2.0, 50, "500ms"),
+    (.0005, 1, "5s"), (.0005, 50, "500ms"), (.005, 1, "5s"),
+    (0.0, 50, "0s"), (30.0, 1, "5s"), (30.0, 50, "500ms")])
 @pytest.mark.parametrize("ascii_", [False, True])
 def test_global_slider_displays_actual_safe_cadence_and_character_mode(base, rate, label, ascii_):
     app = instance()
@@ -687,6 +688,47 @@ def test_global_slider_displays_actual_safe_cadence_and_character_mode(base, rat
     assert any(label in item["label"] for item in T.control_descriptors(app))
 
 
+@pytest.mark.parametrize("ascii_", [False, True])
+def test_global_slider_every_keyboard_step_changes_poll_interval_within_domain(ascii_):
+    app = instance()
+    T.render_bar(views(ascii_), app, 120)
+    assert click(app, target(app, "rate"))
+    readings, labels, geometry = [], [], []
+    for index in range(1, 51):
+        assert R.multiplier(app) == index
+        row = T.render_bar(views(ascii_), app, 120)
+        readings.append(R.cadence(app, "jobs"))
+        labels.append(T._polling_label(app, ascii_=ascii_))
+        assert labels[-1] in L.row_text(row)
+        geometry.append([(hit[1], hit[2], hit[3], hit[4])
+                         for hit in app.toolbar_state["hits"]])
+        assert T.handle_key(app, "right")
+    assert readings[0] == 5.0 and readings[-1] == .5
+    assert all(.5 <= value <= 5 for value in readings)
+    assert all(left > right for left, right in zip(readings, readings[1:]))
+    assert len(set(labels)) == 50
+    assert all(painted == geometry[0] for painted in geometry)
+    assert R.multiplier(app) == 50
+    assert T.handle_key(app, "home") and R.cadence(app, "jobs") == 5
+    assert T.handle_key(app, "end") and R.cadence(app, "jobs") == .5
+
+
+def test_global_slider_every_visible_drag_position_changes_poll_interval():
+    app = instance()
+    T.render_bar(views(), app, 120)
+    track = [hit for hit in app.toolbar_state["hits"] if hit[3] == "track"]
+    assert len(track) > 2
+    intervals = []
+    assert click(app, track[0], "press")
+    for hit in track:
+        assert T.handle_mouse(app, hit[0], hit[1], button="drag")
+        intervals.append(R.cadence(app, "jobs"))
+    assert intervals[0] == 5.0 and intervals[-1] == .5
+    assert all(left > right for left, right in zip(intervals, intervals[1:]))
+    assert click(app, track[-1], "release")
+    assert R.cadence(app, "jobs") == .5 and not app.toolbar_state["dragging"]
+
+
 def test_toolbar_uses_live_sampler_queue_cadence_not_stale_configuration():
     app = instance()
     app.sampler = SimpleNamespace(intervals={"jobs": 10.0},
@@ -694,9 +736,9 @@ def test_toolbar_uses_live_sampler_queue_cadence_not_stale_configuration():
     text = L.row_text(T.render_bar(views(), app, 100))
     assert "750ms" in text
     reset = next(item for item in T.menu_items(app, "View") if item.key == "rate-reset")
-    assert reset.label == "Reset queue polling to 10s"
+    assert reset.label == "Reset queue polling to 5s"
     help_text = T._rate_help(app)
-    assert "Home 10s" in help_text and "End 500ms" in help_text
+    assert "Home 5s" in help_text and "End 500ms" in help_text
     assert "1x" not in help_text and "50x" not in help_text
 
 
@@ -712,7 +754,7 @@ def test_global_slider_right_click_resets_without_changing_jobs_or_modal(kind):
     assert app.mode == "confirm" and app.marks == {"41", "42"}
     assert app.selected_id == "41" and not app.commands_seen
     assert not app.toolbar_state["dragging"] and not app.toolbar_state["pressed"]
-    assert app.messages == ["Queue polling reset to 2s."]
+    assert app.messages == ["Queue polling reset to 5s."]
 
 
 def test_global_slider_right_click_ends_drag_without_late_release_mutation():
@@ -795,6 +837,6 @@ def test_actual_curses_paint_keeps_global_bar_visible_above_tiny_confirmation(te
     # a two-row terminal. The renderer must repaint the actual global controls
     # last; this verifies the final cells, rather than only renderer call order.
     top = "".join(window.rows[0])
-    assert "File" in top and "Edit" in top and "2s" in top
+    assert "File" in top and "Edit" in top and "5s" in top
     assert top.lstrip().startswith("x")
     assert not app.command_state["confirm_controls_visible"]

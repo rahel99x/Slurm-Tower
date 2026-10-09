@@ -112,14 +112,14 @@ See [Graph interaction](charts.md#zoom-a-time-interval) for keyboard commands, s
 3. Release the button at the required interval.
 
 **Expected result:** The label follows the effective Jobs polling interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
-With default configuration, the endpoints are two seconds and 500 milliseconds.
+The logarithmic endpoints are five seconds and 500 milliseconds.
 Dragging changes the requested fetching rate during the session.
 It keeps source minimum intervals and retry backoff.
-Right-click the update control to restore its default request without clearing the selected job or lines.
+Right-click the update control to restore five seconds without clearing the selected job or lines.
 
 Use a direct track click when the terminal does not report dragging.
 Use the wheel, `[-]` and `[+]`, or `:rate N` for exact one-step or numeric control.
-The command accepts request factors from one to 50; the visible control shows intervals.
+The command accepts positions from one to 50; position one requests five seconds and position 50 requests 500 milliseconds.
 See [Update rate](live-workbench.md#set-the-update-rate) for source limits and saved preferences.
 
 ## Resize a panel by dragging

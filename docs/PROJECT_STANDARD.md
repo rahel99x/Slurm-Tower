@@ -482,7 +482,7 @@ when that limit is unavailable. The `t` value is not completion or ETA.
 Visible Main jobs refresh from discovered standard project inventories during
 runtime. The existing background reader reads at most four linked reports per
 cycle and rotates through the visible jobs. Its base interval is eight seconds,
-subject to the update multiplier and reader minimum intervals. Each report read
+subject to the global update speed ratio and reader minimum intervals. Each report read
 uses a confined tail of at most 64 KiB. Inventory lookup examines at most 256
 runs, and the scalar cache holds at most 128 entries. Ambiguous run attempts and
 stale results cannot update another job. Explicit Quick Advisor and project

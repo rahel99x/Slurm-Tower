@@ -125,13 +125,14 @@ The reader theme and `animations = false` skip the welcome.
 One-frame, JSON, scripted, and ANSI watch output also skip it.
 
 Running metric plots can show a per-metric Live toggle and two adjacent sliders.
-The first is a logarithmic display-window slider, from five seconds at the left to one millisecond at the right.
-The second requests a sampling interval for that exact job and source.
-It uses request factors from one to 100 internally and shows the effective interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
+The first is a logarithmic display-window slider, from 30 seconds at the left to one second at the right.
+The second requests polling from five seconds to 500 milliseconds for that exact job and source.
+Its interval scale is logarithmic. Numeric commands use positions one to 100, rather than frequency multipliers.
+It shows the effective interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
 Live displays the interval ending at the dashboard's current time, using retained observations.
 Changing the display window alone does not change Slurm sampling or create new measurements.
 The separate sampling request applies even when Live is off.
-Right-click the first slider to restore five seconds, or the second to restore its default sampling request.
+Right-click the first slider to restore 30 seconds, or the second to restore its five-second polling request.
 Each reset preserves the other slider, Live state, and graph selection.
 The Live clock requests at most ten scheduled display refreshes per second; input and animations can request other refreshes.
 A valid rectangular zoom turns Live off; cancellation resumes it.
@@ -396,9 +397,9 @@ Shift adds the dragged range to existing marks.
 Esc during capture restores the earlier marks.
 Release completes the marked range; supported bulk actions use their existing confirmation.
 Drag the top-right slider to change the fetching interval.
-Its labels show the effective Jobs interval; default configuration spans two seconds down to 500 milliseconds.
-Use `:rate N` to select a request factor from one to 50.
-Right-click the update control to restore its default request.
+Its labels show the effective Jobs interval, from five seconds down to 500 milliseconds.
+Use `:rate N` to select a logarithmic position from one to 50.
+Right-click the update control to restore five seconds.
 
 Click any visible **column heading**, including **JOBID**, to cycle ascending,
 descending, then off. Cascades follow the order in which you activate columns:
@@ -693,9 +694,9 @@ MEM EFF are what `seff` reports, computed from sacct.
 
 | source | command | every |
 |---|---|---|
-| jobs | `squeue -u $USER` | 2 s |
+| jobs | `squeue -u $USER` | 5 s |
 | starts | `squeue --start` (pending jobs) | 10 s, and after every queue change |
-| live | `sstat` (CPU time, peak memory of the batch step) | 10 s |
+| live | `sstat` (CPU time, peak memory of the batch step) | 5 s |
 | gpu | `nvidia-smi` through `srun --jobid ID --overlap --immediate=5`, ssh to the node as the fallback | 5 s |
 | nodes | `scontrol show node` | 15 s |
 | partitions | `sinfo` (partitions, GPU inventory per node) | 60 s |
@@ -705,7 +706,7 @@ MEM EFF are what `seff` reports, computed from sacct.
 | details | `scontrol show job` of the selected job | 20 s |
 | weather | `squeue -t PD` cluster-wide (pending work per partition) and `sbatch --test-only` per probe | 120 s |
 | budget | `sreport cluster AccountUtilizationByUser` since the first of the month and over the last 7 days, `sacctmgr show assoc` for the limits | 600 s |
-| trace | the GPU trace CSV of each running GPU job and of the job the analytics view shows, through the file reader (local or ssh) | 60 s |
+| trace | the GPU trace CSV of each running GPU job and of the job the analytics view shows, through the file reader (local or ssh) | 5 s |
 | fin_details | `sacct -j` of the finished job whose details are open | on demand |
 
 Every source runs in a small thread pool on its own cadence, never overlapping itself, with a timeout per command;
@@ -713,22 +714,24 @@ a failing source backs off (doubling up to five minutes) without touching the ot
 header and on the Sources tab.  Nothing in the screen thread ever waits on Slurm.  A job that leaves the queue shows
 within one `jobs` round.
 
-The intervals above are unmodified defaults.
-Profiles can set different base intervals.
-The top-right update slider shows effective Jobs polling intervals.
-The command `:rate N` requests a whole-number global factor from one to 50.
-The effective interval is the base interval divided by that factor, subject to source limits.
-Ordinary sources retain a 0.5-second minimum.
-GPU sampling with the global control alone retains a 5-second minimum; weather and budget retain 30-second minimums.
-Local and remote file readers retain 0.25-second and 1.5-second minimums respectively.
-An existing explicit base interval below a minimum remains unchanged by that minimum.
-With the default global request and no faster metric request, Tower uses each base interval exactly.
-Use `:rate reset` or right-click the update control to restore that global request.
-Per-metric sampling requests use factors from one to 100 and combine with the global factor from the unchanged base interval.
-CPU and memory share a job probe. GPU curves share a GPU probe. Each uses its fastest requested rate for the exact job.
-A faster per-metric GPU request permits a one-second minimum.
+The intervals above are effective defaults without a faster metric request.
+Profiles can set different bases for sources other than jobs, live, GPU, and trace.
+Those four native sources follow the global polling request directly, from five seconds to 500 milliseconds.
+The top-right update slider shows the effective Jobs interval.
+The command `:rate N` selects a position from one to 50, using a logarithmic interval scale.
+Position one requests five seconds; position 50 requests 500 milliseconds.
+Other sources use their configured base divided by the global speed ratio, from one to ten.
+Ordinary sources, GPU probes, and local file readers retain a 0.5-second minimum.
+Weather and budget retain 30-second minimums. Remote file readers retain a 1.5-second minimum.
+Use `:rate reset` or right-click the update control to restore five seconds.
+Per-metric sampling commands select positions one to 100 across the same five-second to 500-millisecond range.
+CPU and memory share a job probe. GPU curves share a GPU probe.
+Each uses the fastest global or per-metric request for the exact job, without multiplying those requests.
+Jobs without a faster metric request retain their global cadence.
 Reported application metrics and CSV traces retain their job-produced measurement cadence; faster polling only reads their files more often.
 Failure backoff, source timeouts, and worker limits remain in effect.
+The Sources table's **EVERY** column shows the effective collector cadence, using adaptive units such as `5s` and `500ms`.
+It reflects active global and shared metric requests rather than the legacy configured native bases.
 See [Update rate](guides/live-workbench.md#set-the-update-rate) for controls and persistence.
 
 ## Configuration
@@ -785,10 +788,21 @@ A nonempty `partitions` list still restricts the displayed partition names.
 
 Set `polling_multiplier` to a whole number from 1 to 50.
 The default is `1`.
+The field name is retained for compatibility; its value selects a logarithmic polling position.
+Position one requests five seconds and position 50 requests 500 milliseconds.
 Use `:rate N` or the update slider to change the active preference.
-The saved multiplier uses the same scoped UI state as other preferences.
-A valid saved multiplier overrides the configured launch default.
-An explicit `--rate N` startup argument overrides the saved multiplier.
+The saved position uses the same scoped UI state as other preferences.
+A valid saved position overrides the configured launch default.
+An explicit `--rate N` startup argument overrides the saved position.
+
+Positive values in `intervals.jobs`, `intervals.live`, `intervals.gpu`, and `intervals.trace` remain accepted for configuration compatibility.
+They no longer set the actual native polling interval.
+Use `polling_multiplier`, the top-right slider, or Settings → Polling interval to choose that interval.
+`--interval SECONDS` selects the nearest position in the five-second to 500-millisecond domain; `--rate N` takes precedence.
+Settings retains `intervals.jobs` as a compatibility key for its Polling interval row and omits separate editable live, GPU, and trace rows.
+Other `intervals` values still set source bases, adjusted by the global speed ratio and source limits.
+Settings previews take effect during editing. Esc restores the exact previous position, and Enter saves the accepted preference.
+An unaccepted preview is not written to saved UI state.
 
 Set `startup_animation = true` to enable the interactive welcome by default.
 Set `smooth_scrolling = true` to enable mouse-wheel viewport interpolation by default.

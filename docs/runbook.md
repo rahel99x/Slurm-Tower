@@ -68,10 +68,11 @@ machine and transfer the source directory using your site's file-transfer proced
 Then run setup from that directory. The default setup is offline and needs no
 administrator access.
 
-The `carc` example profile polls jobs every 10 seconds, disables in-allocation GPU
-sampling, disables forecast probes, and disables allocation-budget queries. Start
+The `carc` example profile configures slower history and cluster-source bases,
+disables in-allocation GPU sampling, disables forecast probes, and disables allocation-budget queries. Start
 there, then adjust the profile to your site's usage guidelines. It does not assume
 an account name, partition, scheduler version, or institution-specific hostname.
+The global Jobs and live-resource controls use five-second polling by default and can request intervals down to 500 milliseconds.
 
 Every mode validates simulated JSON output, all ten terminal tabs, all twelve
 Research workspaces in Unicode and ASCII, and a plain-text report.
@@ -96,7 +97,7 @@ python3 scripts/setup.py --mode local --profile desktop
 The desktop profile clears configured host, user, account, and partition restrictions.
 It uses local commands and normal identity detection.
 Cluster includes reported idle CPU-only partitions.
-Jobs samples every 2 seconds, live resources every 5 seconds, and accounting every 10 seconds.
+Jobs and live resources poll every 5 seconds at the default update setting; accounting polls every 10 seconds.
 It enables GPU sampling for detected running GPU allocations.
 Queue forecast probes and allocation-budget queries remain disabled.
 The desktop profile also uses a separate state namespace.
@@ -379,9 +380,10 @@ The top-right update control remains available on every page.
 Press and drag its track to adjust the fetching interval.
 Its labels show the effective Jobs polling interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
 Use `:rate` to inspect that interval.
-Use `:rate 5` to request five times the configured fetching frequency.
-The command accepts request factors from one to 50.
-Use `:rate reset` or right-click the update control to restore the default request.
+The logarithmic endpoints are five seconds and 500 milliseconds.
+Use `:rate 50` to request 500-millisecond Jobs polling.
+The command accepts positions from one to 50; position one requests five seconds.
+Use `:rate reset` or right-click the update control to restore five seconds.
 Source minimum intervals, timeouts, and retry backoff remain active.
 Inspect Sources for the effective cadences.
 See [Live workbench](guides/live-workbench.md) for the toolbar and complete panel controls.

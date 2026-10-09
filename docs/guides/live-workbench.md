@@ -66,7 +66,7 @@ The reporter validates the source and records the destination in the run invento
 See [Report publication](../PROJECT_STANDARD.md#publish-a-per-view-source-without-a-tower-dependency) for all supported views.
 
 Tower rechecks inventories and bound source files in its background worker.
-The normal Research interval is five seconds before a fetching multiplier is applied.
+The normal Research interval is five seconds before the global speed ratio is applied.
 Late-created metrics, log indexes, contracts, planning reports, and verified passports can appear during the session.
 Atomic replacements update subsequent reads.
 The reader keeps the current page and selection under your control.
@@ -249,17 +249,18 @@ See [Mouse and button navigation](pointer-navigation.md) for mouse support and d
 
 The top-right update control shows the effective Jobs polling interval.
 Its value and endpoints use `s`, `ms`, or `µs`; ASCII mode uses `us` for microseconds.
-Move right to request shorter intervals. Move left to return toward the configured intervals.
-The control uses a bounded request factor from one to 50 internally.
+Move right toward 500 milliseconds. Move left toward five seconds.
+The scale is logarithmic and uses positions one to 50 internally.
+These positions select intervals; they do not act as frequency multipliers.
 It changes fetching intervals without changing recorded timestamps or metric values.
 
 1. Click the slider track to choose a rate.
 2. Keep the left mouse button pressed and drag horizontally to adjust the rate.
-3. Click `[-]` or `[+]` to change the request factor by one.
+3. Click `[-]` or `[+]` to move one position.
 4. Use the mouse wheel over the control for one-step changes.
 5. Click the interval label to focus keyboard controls.
 6. Use arrows or `-` / `+` to adjust the request.
-7. Press Home for the default request or End for the fastest permitted request.
+7. Press Home for five seconds or End for 500 milliseconds.
 8. Press Esc to return input to the current page.
 
 **Expected result:** The interval label and effective source cadences update during the session.
@@ -272,59 +273,68 @@ Use a track click or `:rate N` if the terminal cannot report drag events.
 | Command | Function |
 | --- | --- |
 | `:rate` | Show the effective Jobs polling interval |
-| `:rate N` | Request a whole-number multiplier from 1 to 50 |
-| `:rate reset` | Restore the default request factor of one |
+| `:rate N` | Select a polling position from 1 to 50; position 1 requests five seconds and position 50 requests 500 milliseconds |
+| `:rate reset` | Restore five-second polling |
 
-For example, `:rate 5` requests a Jobs interval of two seconds from a ten-second base interval.
-The same multiplier applies to scheduler sources, plugin sources, and supported file readers.
-Tower keeps each base interval unchanged, so repeated adjustments do not compound.
+For example, `:rate 50` requests 500-millisecond Jobs polling.
+Jobs, live CPU and memory probes, GPU probes, and local trace reads use this interval directly.
+Other sources and supported file readers use the resulting speed ratio: five seconds divided by the requested interval.
+That ratio spans one to ten and adjusts their configured bases, subject to source limits.
+Tower keeps each configured base unchanged, so repeated adjustments do not compound.
 
 ### Read the limits
 
 | Source | Minimum effective interval when speeding up |
 | --- | --- |
 | Ordinary Slurm and plugin sources | 0.5 seconds |
-| GPU sampling inside an allocation | 5 seconds |
+| GPU sampling inside an allocation | 0.5 seconds |
 | Queue forecast probes and allocation-budget reads | 30 seconds |
-| Local file readers | 0.25 seconds |
+| Local file readers | 0.5 seconds |
 | Remote file readers | 1.5 seconds |
 
-An explicitly configured base interval below a minimum keeps its existing faster interval.
-At the default request factor, every source retains its configured base interval.
+The native sources listed above start with a five-second polling request.
+Other sources retain their configured bases at the default setting.
 Source errors retain their existing retry backoff.
-A higher multiplier does not start overlapping reads or increase the worker count.
+A shorter requested interval does not start overlapping reads or increase the worker count.
 Disabled sources remain disabled.
 
 Sources shows effective fetching intervals.
 Use that page to verify the actual cadence.
-The requested factor can exceed the speed permitted by a source's minimum interval.
-Several slider positions can therefore show the same effective interval.
+Every native polling position selects a distinct interval between five seconds and 500 milliseconds.
+Remote file limits, expensive-source limits, and retry backoff can delay those sources further.
 The preference persists with normal UI state and follows the selected state namespace.
 Use the top-level `polling_multiplier` configuration field to set a launch default.
-A valid saved multiplier overrides that default.
-Use `tower --rate N` to override the saved multiplier at launch.
+A valid saved position overrides that default.
+The configuration field keeps its existing name for compatibility and now stores a position from one to 50.
+Use `tower --rate N` to override the saved position at launch.
+Use `tower --interval SECONDS` to choose the nearest position within five seconds to 500 milliseconds.
+An explicit `--rate N` takes precedence over `--interval`.
 Use `:rate reset` to restore the default request in the active session.
+Settings → Polling interval changes the same native request.
+Cancelling its preview restores the exact previous position; accepting the draft saves it.
+Positive legacy `intervals.jobs`, `intervals.live`, `intervals.gpu`, and `intervals.trace` values do not set actual native cadences.
+See [Settings](navigation.md#32-change-settings-with-a-preview) for compatibility and preview controls.
 
 ### Set one metric's interval
 
 A running metric has a display-window slider and a separate polling slider.
 Use them on Analytics → Job series or Jobs → Details → Analytics → Job series.
-The first sets a window from five seconds to one millisecond.
-The second requests faster reads for that exact job and source, using factors from one to 100 internally.
-It shows effective time intervals rather than multiplier labels.
+The first sets a window from 30 seconds to one second.
+The second requests reads from five seconds to 500 milliseconds for that exact job and source.
+Both use logarithmic scales. Numeric metric polling commands use positions one to 100.
+The controls show effective time intervals.
 
-Right-click the first slider to restore five seconds.
-Right-click the second to restore its default sampling request.
+Right-click the first slider to restore 30 seconds.
+Right-click the second to restore its five-second polling request.
 These resets preserve the other slider, Live state, graph zoom, and job selection.
 Sampling requests apply while Live is off and can remain active after the graph moves offscreen.
 They reset when Tower restarts or the exact job attempt ends.
 
-The per-metric request combines with the global request from the configured base interval.
+The fastest global or per-metric request sets the shared interval. Requests do not multiply.
 CPU and memory share one job probe. GPU curves share another.
-The fastest request for a shared probe applies; other jobs retain their own requests.
-A per-metric GPU request permits intervals down to one second, while the global control alone keeps its five-second GPU limit.
-Ordinary live probes retain a half-second minimum.
-Application file reads retain a quarter-second local minimum or a 1.5-second remote minimum.
+Other jobs retain their global cadence and their own requests.
+CPU, memory, GPU, and local application-file polling retain a half-second minimum.
+Remote application-file reads retain a 1.5-second minimum.
 Command duration and retry backoff still apply.
 
 The sampling control changes how often Tower reads an application metrics file or CSV trace.

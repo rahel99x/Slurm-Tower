@@ -47,7 +47,9 @@ During a graph drag, both painted axis mappings stay fixed while new sampler res
 Automatic sample updates do not cancel capture.
 A valid rectangular release changes display bounds and requests a fresh document.
 Each zoom belongs to the exact metric, source, job, and attempt.
-Live advances the visible time window at a bounded display rate; a one-millisecond window does not request one-millisecond scheduler samples.
+Live advances the visible time window at a bounded display rate.
+Its window spans 30 seconds to one second; the separate polling control spans five seconds to 500 milliseconds.
+Changing the window alone does not change scheduler polling.
 
 The control graph indexes visible rows and control identities.
 Advisor results and wrapped Details documents reuse their current published inputs.

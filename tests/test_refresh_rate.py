@@ -1,4 +1,4 @@
-"""Live rate changes preserve original cadences, admission bounds, and backoff."""
+"""Polling ranges use complete tracks while retaining admission and error bounds."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -37,6 +37,44 @@ def test_rate_accepts_finite_whole_values(value):
     assert rate.validate_multiplier(value) == int(value)
 
 
+@pytest.mark.parametrize("maximum", [50, 100])
+def test_poll_slider_uses_entire_domain_without_clamped_dead_regions(maximum):
+    intervals = [rate.poll_interval(position, maximum) for position in range(1, maximum + 1)]
+    assert intervals[0] == 5 and intervals[-1] == .5
+    assert all(.5 <= value <= 5 for value in intervals)
+    assert all(left > right for left, right in zip(intervals, intervals[1:]))
+    assert all(rate.poll_position(value, maximum) == position
+               for position, value in enumerate(intervals, 1))
+
+
+@pytest.mark.parametrize("seconds,expected", [(100, 1), (5, 1), (2, 20), (.5, 50), (.001, 50)])
+def test_interval_input_maps_to_nearest_bounded_polling_position(seconds, expected):
+    assert rate.poll_position(seconds) == expected
+
+
+@pytest.mark.parametrize("bad", [None, True, False, "5", [], 0, -1, float("nan"),
+                                float("inf"), float("-inf"), 10**1000])
+def test_bad_interval_input_cannot_become_polling_position(bad):
+    with pytest.raises(ValueError, match="finite and positive"):
+        rate.poll_position(bad)
+
+
+@pytest.mark.parametrize("bad", [None, True, "2", 1, 0, 2.5])
+def test_polling_helpers_reject_bad_slider_maximum(bad):
+    for helper in (rate.poll_interval, rate.poll_position):
+        with pytest.raises(ValueError, match="slider maximum"):
+            helper(2, bad)
+
+
+@pytest.mark.parametrize("source", ["jobs", "live", "gpu", "trace"])
+def test_native_global_polling_is_independent_of_old_configured_base(source):
+    for base in (.01, .5, 2, 30, 600):
+        assert rate.source_interval(base, 1, source=source) == 5
+        assert rate.source_interval(base, 50, source=source) == .5
+        assert rate.source_interval(base, 25, source=source) == pytest.approx(1.618728771408822)
+    assert rate.source_interval(0, 50, source=source) == 0
+
+
 @pytest.mark.parametrize("value", [None, True, False, "1", "50", [], {}, -1, 0, 51, 1.5,
                                    float("nan"), float("inf"), float("-inf"), 10**1000])
 def test_invalid_rate_rejected_before_pool_creation(value, monkeypatch):
@@ -46,24 +84,24 @@ def test_invalid_rate_rejected_before_pool_creation(value, monkeypatch):
 
 
 @pytest.mark.parametrize("base", [0, .01, .25, .5, 2, 5, 30, 60, 600])
-@pytest.mark.parametrize("source", ["jobs", "gpu", "weather", "budget", "plugin.source"])
-def test_one_x_preserves_every_existing_interval(base, source):
+@pytest.mark.parametrize("source", ["weather", "budget", "plugin.source"])
+def test_default_preserves_non_native_configured_intervals(base, source):
     assert rate.source_interval(base, 1, source=source) == base
     assert rate.file_interval(base, 1, remote=False) == base
     assert rate.file_interval(base, 1, remote=True) == base
 
 
-@pytest.mark.parametrize("source,base,expected", [("jobs", 2, .5), ("plugin.source", 100, 2),
-                                                 ("gpu", 5, 5), ("gpu", 600, 12),
-                                                 ("weather", 120, 30), ("budget", 600, 30),
-                                                 ("gpu", 2, 2), ("jobs", .1, .1), ("jobs", 0, 0)])
-def test_acceleration_respects_cost_floors_without_slowing_existing_base(source, base, expected):
+@pytest.mark.parametrize("source,base,expected", [("jobs", 2, .5), ("plugin.source", 100, 10),
+                                                 ("gpu", 5, .5), ("gpu", 600, .5),
+                                                 ("weather", 120, 30), ("budget", 600, 60),
+                                                 ("gpu", 2, .5), ("jobs", .1, .5), ("jobs", 0, 0)])
+def test_fastest_polling_respects_native_range_and_other_source_cost_floors(source, base, expected):
     assert rate.source_interval(base, 50, source=source) == expected
 
 
-@pytest.mark.parametrize("base,remote,expected", [(5, False, .25), (5, True, 1.5),
-                                               (.5, False, .25), (.5, True, .5),
-                                               (100, False, 2), (100, True, 2)])
+@pytest.mark.parametrize("base,remote,expected", [(5, False, .5), (5, True, 1.5),
+                                               (.5, False, .5), (.5, True, .5),
+                                               (100, False, 10), (100, True, 10)])
 def test_file_polling_floors(base, remote, expected):
     assert rate.file_interval(base, 50, remote=remote) == expected
 
@@ -79,14 +117,14 @@ def test_changing_rate_recomputes_dynamic_plugin_intervals_without_compounding()
     try:
         worker.add_source("sensor", 100, lambda slurm, store: None)
         worker.set_polling_multiplier(5)
-        assert worker.effective_interval("sensor") == 20
+        assert worker.effective_interval("sensor") == pytest.approx(82.86427728546845)
         assert worker.intervals["sensor"] == 100
         worker.set_polling_multiplier(10)
-        assert worker.effective_interval("sensor") == 10
+        assert worker.effective_interval("sensor") == pytest.approx(65.51285568595508)
         worker.intervals["sensor"] = 40
-        assert worker.effective_interval("sensor") == 4
+        assert worker.effective_interval("sensor") == pytest.approx(26.205142274382033)
         worker.add_source("late", 200, lambda slurm, store: None)
-        assert worker.effective_interval("late") == 20
+        assert worker.effective_interval("late") == pytest.approx(131.02571137191016)
         worker.set_polling_multiplier(1)
         assert worker.effective_interval("sensor") == 40
         assert worker.effective_interval("late") == 200
@@ -105,14 +143,14 @@ def test_live_rate_changes_preserve_last_run_and_failure_backoff():
         assert health.backoff == 10 and health.errors == 1
         worker.set_polling_multiplier(50)
         assert worker.last_run["sensor"] == 100 and health.backoff == 10
-        assert not worker.due("sensor", 110.49)
-        assert worker.due("sensor", 110.5)
-        worker.round(now=110.5, wait=True)
+        assert not worker.due("sensor", 110.99)
+        assert worker.due("sensor", 111)
+        worker.round(now=111, wait=True)
         assert health.backoff == 20 and health.errors == 2
         worker.set_polling_multiplier(1)
-        assert worker.last_run["sensor"] == 110.5 and health.backoff == 20
-        assert not worker.due("sensor", 140.49)
-        assert worker.due("sensor", 140.5)
+        assert worker.last_run["sensor"] == 111 and health.backoff == 20
+        assert not worker.due("sensor", 140.99)
+        assert worker.due("sensor", 141)
     finally:
         worker.shutdown()
 
@@ -152,7 +190,7 @@ def test_running_source_never_overlaps_after_rate_change():
         release.set()
         concurrent.futures.wait(futures, timeout=2)
         assert all(f.done() for f in futures)
-        worker.round(now=102, wait=True)
+        worker.round(now=110, wait=True)
         assert calls == [1, 1]
     finally:
         release.set()
@@ -205,8 +243,8 @@ def test_preference_restores_to_all_available_readers_and_future_reader_config()
         assert worker.polling_multiplier == hub.polling_multiplier == logs.polling_multiplier == 12
         assert logs.catalog.polling_multiplier == 12
         assert rate.save(model) == {"multiplier": 12}
-        assert rate.cadence(model, "jobs") == .5
-        assert "500ms" in rate.cadence_summary(model) and "12x" not in rate.cadence_summary(model)
+        assert rate.cadence(model, "jobs") == pytest.approx(2.9818116582973215)
+        assert "2.98s" in rate.cadence_summary(model) and "12x" not in rate.cadence_summary(model)
         saved = rate.save(model)
         restarted = app()
         rate.restore(restarted, saved)
@@ -214,7 +252,7 @@ def test_preference_restores_to_all_available_readers_and_future_reader_config()
         assert rate.multiplier(restarted) == 12
         rate.execute(model, "rate", ["reset"])
         assert rate.multiplier(model) == worker.polling_multiplier == 1
-        assert worker.effective_interval("jobs") == 2
+        assert worker.effective_interval("jobs") == 5
     finally:
         worker.shutdown()
 
@@ -247,21 +285,21 @@ def test_command_query_reset_and_clamped_adjustments_with_no_workers():
     assert rate.adjust(model, 10**1000) == 50
     assert rate.run_command(model, ["rate", "reset"])
     assert rate.run_command(model, ["rate"])
-    assert "2s" in model.messages[-1] and "1x" not in model.messages[-1]
+    assert "5s" in model.messages[-1] and "1x" not in model.messages[-1]
     assert rate.multiplier(SimpleNamespace()) == 1
     assert not rate.handle_key(model, "x")
     assert not rate.handle_mouse(model, 0, 0)
     assert rate.overlay(None, {}, model, 80, 24) is None
 
 
-def test_dynamic_ui_base_interval_changes_are_reflected_in_cadence_without_sampler():
+def test_native_ui_cadence_is_absolute_without_sampler():
     model = app()
     rate.set_multiplier(model, 5)
-    assert rate.cadence(model, "jobs") == .5
+    assert rate.cadence(model, "jobs") == pytest.approx(4.143213864273422)
     model.cfg.set("intervals.jobs", 100)
-    assert rate.cadence(model, "jobs") == 20
+    assert rate.cadence(model, "jobs") == pytest.approx(4.143213864273422)
     rate.set_multiplier(model, 1)
-    assert rate.cadence(model, "jobs") == 100
+    assert rate.cadence(model, "jobs") == 5
 
 
 def test_bad_configured_rate_does_not_initialize_application_state():
@@ -283,19 +321,19 @@ def test_hub_polling_rate_reads_new_files_without_resetting_base_cache_or_worker
         hub.request(context, wait=True)
         initial_pool, initial_generation = hub.pool, hub.generation
         hub.set_polling_multiplier(50)
-        assert hub.interval == 5 and hub.refresh_interval() == .25
+        assert hub.interval == 5 and hub.refresh_interval() == .5
         assert hub.pool is initial_pool and hub.generation == initial_generation
-        timer.value = 100.24
+        timer.value = 100.49
         hub.request(context, wait=True)
         assert reads == ["7"]
-        timer.value = 100.25
+        timer.value = 100.5
         hub.request(context, wait=True)
         assert reads == ["7", "7"]
         hub.set_polling_multiplier(1)
-        timer.value = 105.24
+        timer.value = 105.49
         hub.request(context, wait=True)
         assert reads == ["7", "7"]
-        timer.value = 105.25
+        timer.value = 105.5
         hub.request(context, wait=True)
         assert reads == ["7", "7", "7"]
     finally:
@@ -309,7 +347,7 @@ def test_config_rate_constructs_hub_and_remote_file_limit_remains_bounded():
         assert hub.polling_multiplier == 50
         assert hub.interval == 5 and hub.refresh_interval() == 1.5
         hub.interval = 100
-        assert hub.refresh_interval() == 2
+        assert hub.refresh_interval() == 10
     finally:
         hub.close()
 
@@ -323,8 +361,8 @@ def test_real_app_command_restores_rate_from_scoped_ui_preferences(tmp_path):
         model = App(store, worker, None, Config(), "alice")
         assert "rate" in model.commands()
         model.run_command("rate 20")
-        assert model.command_ok and "500ms" in model.message and "20x" not in model.message
-        assert worker.effective_interval("jobs") == .5
+        assert model.command_ok and "2.05s" in model.message and "20x" not in model.message
+        assert worker.effective_interval("jobs") == pytest.approx(2.047457531190213)
         model.save()
         restored = App(Store(state_dir=state_root), None, None, Config(), "alice")
         assert rate.multiplier(restored) == restored.logs.polling_multiplier == 20
@@ -415,8 +453,8 @@ def test_arrow_selection_preserves_failing_job_details_deadline():
             worker.select(jid)
             assert worker.last_run["details"] == 1000
         worker.set_polling_multiplier(50)
-        assert not worker.due("details", 1040.49)
-        assert worker.due("details", 1040.5)
+        assert not worker.due("details", 1041.99)
+        assert worker.due("details", 1042)
         health.backoff = 0
         worker.select("8")
         assert worker.last_run["details"] == 0

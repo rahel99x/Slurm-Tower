@@ -1976,11 +1976,12 @@ class Views:
         chosen = previous[old_cursor] if 0 <= old_cursor < len(previous) else None
         now = clock.now()
         rows = []
+        from .refresh_rate import cadence
+        from .metric_sampling import format_interval
         for h in hs:
             state = "off" if not h.enabled else ("error" if h.error else ("ok" if h.last_ok else "pending"))
-            from .refresh_rate import cadence
             every = cadence(app, h.name)
-            rows.append(dict(name=h.name, state=state, every=f"{every:g}s", last=short_duration(now - h.last_ok) + " ago" if h.last_ok else "never",
+            rows.append(dict(name=h.name, state=state, every=format_interval(every, ascii_=self.g.ascii), last=short_duration(now - h.last_ok) + " ago" if h.last_ok else "never",
                              latency=f"{h.latency_ms:.0f} ms" if h.latency_ms else "", calls=h.calls, errors=h.errors, backoff=f"{h.backoff:.0f}s" if h.backoff else "",
                              _sort={"every": every,
                                     "last": now - h.last_ok if h.last_ok else None,

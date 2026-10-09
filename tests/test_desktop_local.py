@@ -65,6 +65,27 @@ def test_native_desktop_automatically_links_and_refreshes_actual_project_reports
     finally:
         session.close()
     assert {call[0] for call in fixture.calls()} <= {'squeue', 'scontrol', 'sinfo', 'sacct', 'sstat', 'sshare'}
+
+
+@pytest.mark.parametrize('flags,interval', [
+    (('--interval', '5'), 5.0),
+    (('--interval', '.5'), .5),
+    (('--interval', '60'), 5.0),
+    (('--interval', '.01'), .5),
+    (('--interval', '5', '--rate', '50'), .5),
+    (('--interval', '.5', '--rate', '1'), 5.0),
+])
+def test_explicit_interval_selects_bounded_polling_and_rate_takes_precedence(native_desktop, flags, interval):
+    session = native_desktop.build('--no-state', *flags)
+    try:
+        assert session.sampler.effective_interval('jobs') == interval
+        assert session.sampler.effective_interval('live') == interval
+        assert session.sampler.effective_interval('gpu') == interval
+        assert native_desktop.calls() == []
+    finally:
+        session.close()
+
+
 CPU_ROW = ('7|desktop-cpu|localcpu|RUNNING|00:00:12|01:00:00|1|2|N/A|fedora-box|1G|'
            '2026-10-07T00:00:00|2026-10-07T00:00:00|None|1|(null)||normal|N/A|/tmp/cpu.sbatch\n')
 NATIVE_COMMAND = r'''
