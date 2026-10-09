@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Project standard](../PROJECT_STANDARD.md)
 
-Use this guide for Tower 4.8's toolbar, inline job inspection, and update-rate control.
+Use this guide for the toolbar, inline job inspection, and update-rate control.
 All controls run inside the terminal.
 Use the current job ID and source path to check the identity of displayed evidence.
 
@@ -159,6 +159,9 @@ Drag its divider to adjust the split, or maximize the focused pane.
 Narrow terminals stack Main and Details vertically.
 Missing historical files or measurements remain unavailable; an active job does not supply replacement data.
 Completed jobs do not receive running-metric Live or polling controls.
+If the exact selected job is still running, timestamped metric graphs use the same buffered display as Jobs and Analytics.
+The graph status identifies its display lag; the current job values and source polling remain current.
+See [Buffered running graphs](charts.md#read-buffered-running-graphs) for startup and source-outage behavior.
 Quick Advisor still requires explicit activation and reports its evidence limits.
 
 Right-click inside the History job list to open log export for the marked or selected job IDs.

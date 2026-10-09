@@ -12,6 +12,7 @@ from itertools import islice
 import math
 import os
 import statistics
+import sys
 import time
 
 from . import charts, chart_tools, chart_interaction, clock, layout as L, scrollbars as S
@@ -23,6 +24,7 @@ MAX_POINTS = 10000
 MAX_EVENTS = 512
 MAX_CARD_CACHE = 8
 MAX_CARD_CACHE_POINTS = MAX_POINTS * MAX_CARD_CACHE
+MAX_SOURCE_CACHE = 8
 COLORS = ("cyan", "magenta", "green", "yellow", "blue", "red")
 SECTIONS = ("Overview", "Resources", "Steps", "Files", "Evidence")
 _NEGATIVE_ZERO = ("negative-zero",)
@@ -259,7 +261,7 @@ def _chart_frame_series(app):
 def _viewport_key(state, name, points):
     return (state.get("chart_job"), name, id(points), len(points),
             state.get("zoom", 1), state.get("pan", 0), state.get("window"), state.get("chart_box"),
-            state.get("chart_live_window"))
+            state.get("chart_live_window"), state.get("chart_display_window"))
 
 
 def _chart_visible_points(app, series, name):
@@ -270,14 +272,19 @@ def _chart_visible_points(app, series, name):
     box = chart_interaction.bounds(app, identity,
                                    scale="log" if state["axes"].get(name, {}).get("mode") == "log" else "linear")
     from . import metric_live
-    live_window = metric_live.window(app, identity)
+    # Input acts on the published frame. Advancing a playback clock here would
+    # change which sample an arrow selects before the replacement frame paints.
+    current = state.get("chart_interaction_key") == identity
+    live_window = state.get("chart_live_window") if current else metric_live.window(app, identity)
+    display_window = state.get("chart_display_window") if current else None
     state["chart_box"] = (box["x"], box["y"]) if box else None
     state["chart_live_window"] = live_window
+    state["chart_display_window"] = display_window
     cached = state.get("chart_visible", {})
     if cached.get("key") == _viewport_key(state, name, points):
         return cached["points"]
     normalized = _points(points)
-    times = box["x"] if box else live_window
+    times = box["x"] if box else live_window or display_window
     visible = [point for point in normalized if times[0] <= point["t"] <= times[1]] if times else viewport(normalized, state, normalized=True)[0]
     state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
     return visible
@@ -389,6 +396,11 @@ def _source_row(g, source, metadata, *, app=None, identity=None):
             if seconds is not None:
                 kind = "read every" if metric_sampling.source(identity) == "research" else "poll every"
                 polling = " | " + kind + " " + metric_sampling.format_interval(seconds, ascii_=g.ascii)
+        if len(extra) > 1 and extra[1]:
+            playback = metric_live.playback_label(app, identity, ascii_=g.ascii,
+                                                   displayed_end=extra[2] if len(extra) > 2 else None)
+            if playback:
+                polling += " | " + playback
     return [(clean(f" Source: {source} | {visible}/{total} samples | {stamp} | gaps {gaps}{cadence}{polling}", g.ascii), "dim")]
 
 
@@ -398,6 +410,44 @@ def _card_value(value):
     # Numeric equality equates signed zero, but the exact summary formatter
     # displays its sign. Keep that distinction in the cache's content key.
     return _NEGATIVE_ZERO if value == 0 and math.copysign(1, value) < 0 else value
+
+
+def _prepared_card_source(app, content):
+    """Reuse normalized observations after an exact bounded mutation scan.
+
+    The signature is rebuilt from every retained timestamp/value before this
+    lookup. Corrections within an existing list therefore invalidate it. Only
+    immutable scalar records are retained; interactive step metadata keeps its
+    original path and cannot be mistaken for a card's reduced observations.
+    """
+    cache = initialize(app).setdefault("chart_source_cache", OrderedDict())
+    source = cache.get(content)
+    if source is None:
+        points = sorted(({"t": timestamp, "value": -0.0 if value is _NEGATIVE_ZERO else value, "step": None}
+                         for timestamp, value in content), key=lambda point: point["t"])
+        state = initialize(app)
+        state["chart_source_sequence"] = state.get("chart_source_sequence", 0) + 1
+        source = {"points": points, "times": tuple(point["t"] for point in points),
+                  "token": state["chart_source_sequence"]}
+        cache[content] = source
+    cache.move_to_end(content)
+    while len(cache) > MAX_SOURCE_CACHE:
+        cache.popitem(last=False)
+    return source
+
+
+def _source_cadence(app, times, limit):
+    """Cache cadence by exact sorted timestamps and admitted prefix length."""
+    cache = initialize(app).setdefault("chart_cadence_cache", OrderedDict())
+    key = (times, limit)
+    if key not in cache:
+        deltas = [b - a for a, b in zip(times[:max(0, limit - 1)], times[1:limit])
+                  if 0 < b - a < math.inf]
+        cache[key] = statistics.median(deltas) if deltas else None
+    cache.move_to_end(key)
+    while len(cache) > MAX_SOURCE_CACHE:
+        cache.popitem(last=False)
+    return cache[key]
 
 
 def _published_chart_job(app, jid):
@@ -455,6 +505,90 @@ def running_job(snapshot, jid):
         for job in snapshot.get("jobs", ())))
 
 
+def _playback_window(app, identity, timestamps, running):
+    """Advance only from bounded, already published timestamp evidence.
+
+    The source summary ignores duplicate and future timestamps. Values may be
+    unknown: an observed missing value still advances its clock while remaining
+    a gap in the measured curve. No input callback or file reader is involved.
+    """
+    from . import metric_live
+
+    if not running or not metric_live._eligible(app, metric_live.canonical(identity)):
+        return None, None, None, None
+    now = clock.now()
+    if not _finite(now):
+        return None, None, None, None
+    # Both callers supply sorted finite timestamps from their normalized
+    # source. Admission and the latest distinct predecessor are binary reads;
+    # a narrow Live frame never rescans thousands of old records here.
+    limit = bisect_right(timestamps, now)
+    newest = timestamps[limit - 1] if limit else None
+    predecessor = bisect_left(timestamps, newest, 0, limit) - 1 if limit else -1
+    previous = timestamps[predecessor] if predecessor >= 0 else None
+    oldest = timestamps[0] if limit else None
+    end = metric_live.display_end(app, identity, now=now, newest=newest,
+                                  previous=previous, oldest=oldest)
+    return metric_live.window(app, identity, now=now), now, end, newest
+
+
+def _playback_resolution(app, identity, metadata, following):
+    """Refresh long histories only when a timestamp can move a raster cell."""
+    from . import metric_live
+
+    times, rectangle = metadata.get("x_bounds"), metadata.get("plot_rect")
+    if times and rectangle:
+        metric_live.display_resolution(app, identity, times[1] - times[0],
+                                       rectangle[3] - rectangle[1], following=following)
+
+
+def _present_history(app, identity, *, interactive, g, width, height, times, low, high,
+                     axis, cadence, acquired, last, now, source_token, following):
+    """Keep an automatic history frame until its measured geometry can change."""
+    from . import metric_live, metric_playback, metric_sampling
+
+    presentation = ("reported-modal" if interactive else "reported-card", identity)
+    if not following:
+        metric_playback.reset_presentation(app, presentation)
+        return times
+    candidate = metric_live.playback_status(app, identity)
+    if candidate is None or source_token is None:
+        metric_playback.reset_presentation(app, presentation)
+        return times
+    before = acquired[last - 1] if last else None
+    after = acquired[last] if last < len(acquired) else None
+    pairs = [point for point in (before, after) if point is not None]
+    transformed, _, _, _ = chart_tools.axis_values([point["value"] for point in pairs], axis)
+    left = transformed[0] if before is not None and transformed else None
+    right = transformed[-1] if after is not None and transformed else None
+    bridge = (before is not None and after is not None and left is not None and right is not None
+              and cadence is not None and after["t"] - before["t"] <= cadence * 2.5)
+    edge = left if before is not None and before["t"] == times[1] else None
+    if bridge and before["t"] < times[1] < after["t"]:
+        fraction = charts._fraction(times[1], before["t"], after["t"])
+        edge = charts._between(min(left, right), max(left, right), fraction if left <= right else 1 - fraction)
+    low, high = charts._bounds([], low, high)
+    y_pixels = max(1, min(charts.MAX_HEIGHT, height) * (1 if g.ascii else 4))
+    edge_pixel = round(charts._fraction(edge, low, high) * (y_pixels - 1)) if edge is not None else None
+    plot_width = max(1, min(charts.MAX_COLUMNS, width - 10))
+    span = times[1] - times[0]
+    owner = getattr(app, "_chart_owner", app)
+    geometry = (width, height, g.ascii, g.spark, g.box, g.rule,
+                getattr(owner, "theme", ""), axis.get("mode"), low, high, cadence, times[0])
+    signature = (last, before["t"] if before else None, after["t"] if after else None,
+                 left is not None, right is not None, bridge, edge_pixel)
+    entry = metric_live.initialize(app)["entries"].get(metric_live.canonical(identity), {})
+    replay = getattr(getattr(owner, "replay", None), "clock", None)
+    result = metric_playback.present(app, presentation, candidate, now=now, geometry=geometry,
+                                     x_interval=span / (plot_width * (1 if g.ascii else 2)),
+                                     edge_signature=signature, oldest=times[0],
+                                     force_token=(source_token, entry.get("rate"), entry.get("delta"),
+                                                  entry.get("token"), entry.get("generation"),
+                                                  id(replay), getattr(replay, "generation", None),
+                                                  metric_sampling.cadence(app, identity)))
+    return (times[0], result.end) if result is not None else times
+
+
 def chart_rows(g, app, points, width, height, name, source, *, interactive=True, snapshot=None,
                metadata=None, zoom_key=None, running=False):
     """Cache pure dashboard cards while preserving exact interactive charts.
@@ -466,15 +600,29 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
     """
     zoom_key = chart_key(app, name, source, interactive=interactive) if zoom_key is None else zoom_key
     from . import metric_live
-    live_window = metric_live.window(app, zoom_key) if running else None
+    # A card can be narrower than its optional controls. Its running source
+    # still owns a playback clock and remains eligible for timed documents.
+    metric_live.set_running(app, zoom_key, running)
     if interactive:
+        full = _points(points)
+        timestamps = tuple(point["t"] for point in full)
+        live_window, live_now, display_end, _ = _playback_window(
+            app, zoom_key, timestamps, running)
+        source_token = None
+        if live_now is not None and live_window is None:
+            content = tuple((point["t"], _card_value(point["value"])) for point in full)
+            source_token = _prepared_card_source(app, content)["token"]
         return _render_chart_rows(g, app, points, width, height, name, source,
                                   interactive=True, snapshot=snapshot, metadata=metadata, zoom_key=zoom_key,
-                                  live_window=live_window)
+                                  normalized_points=full, source_times=timestamps, live_window=live_window,
+                                  live_now=live_now, display_end=display_end, source_token=source_token)
     state = initialize(app)
     content = tuple((point["t"], _card_value(point.get("value")))
                     for point in points[-MAX_POINTS:]
                     if isinstance(point, dict) and _finite(point.get("t")))
+    prepared = _prepared_card_source(app, content)
+    live_window, live_now, display_end, newest = _playback_window(
+        app, zoom_key, prepared["times"], running)
     label, unit, precision = chart_tools.display(state, name)
     axis = state["axes"].get(name, {"mode": "auto"})
     color = state["colors"].get(name, COLORS[sum(ord(char) for char in name) % len(COLORS)])
@@ -486,60 +634,86 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
     box = chart_interaction.bounds(app, zoom_key, scale=scale)
     auto_fit = chart_interaction.autofit(app, zoom_key, scale=scale)
     captured = chart_interaction.captured_bounds(app, zoom_key, scale=scale)
+    if live_window is not None or box or captured or live_now is None:
+        from .metric_playback import reset_presentation
+        reset_presentation(app, ("reported-card", zoom_key))
     key = (name, width, height, glyphs, label, unit, (type(precision), precision), color,
-           axis.get("mode"), repr(axis.get("low")), repr(axis.get("high")), zone, content,
+           axis.get("mode"), repr(axis.get("low")), repr(axis.get("high")), zone, id(prepared),
            (box["x"], box["y"], auto_fit) if box else None, live_window,
+           (live_now is not None, display_end if not box and not captured else None, newest),
            (captured["x"], captured["y"]) if captured else None)
     cache = state.setdefault("chart_card_cache", OrderedDict())
     entry = cache.get(key)
     if entry is not None:
         cache.move_to_end(key)
+        _playback_resolution(app, zoom_key, entry["plot_metadata"], entry["following"])
         if isinstance(metadata, dict):
             metadata.clear()
             metadata.update(entry["plot_metadata"])
             metadata["key"] = zoom_key
         return [list(row) for row in entry["rows"]] + [_source_row(g, source, entry["metadata"], app=app, identity=zoom_key)]
-    full = sorted(({"t": timestamp, "value": -0.0 if value is _NEGATIVE_ZERO else value, "step": None}
-                   for timestamp, value in content), key=lambda point: point["t"])
     cache_metadata, plot_metadata = {}, {}
     rows = _render_chart_rows(g, app, points, width, height, name, source, interactive=False,
-                              snapshot=snapshot, normalized_points=full, cache_metadata=cache_metadata,
-                              metadata=plot_metadata, zoom_key=zoom_key, live_window=live_window)
+                              snapshot=snapshot, normalized_points=prepared["points"], source_times=prepared["times"],
+                              cache_metadata=cache_metadata,
+                              metadata=plot_metadata, zoom_key=zoom_key, live_window=live_window,
+                              live_now=live_now, display_end=display_end, source_token=prepared["token"])
+    if cache_metadata.get("display_end") is not None:
+        key = (*key[:-2], (live_now is not None, cache_metadata["display_end"], newest), key[-1])
     if isinstance(metadata, dict):
         metadata.clear()
         metadata.update(plot_metadata)
     cache[key] = {"rows": tuple(tuple(row) for row in rows[:-1]),
                   "metadata": cache_metadata["source"], "points": len(content),
+                  "following": cache_metadata["following"],
+                  # Keep the exact source alive while its identity is in a
+                  # raster key; eviction must never permit object-ID reuse.
+                  "source": prepared,
                   "plot_metadata": dict(plot_metadata)}
-    while len(cache) > MAX_CARD_CACHE or sum(value["points"] for value in cache.values()) > MAX_CARD_CACHE_POINTS:
+    # Each source is already capped at MAX_POINTS. Eight entries therefore
+    # meet the point budget without rehashing every large source key on each
+    # moving frame just to recompute an unchanged total.
+    while len(cache) > MAX_CARD_CACHE:
         cache.popitem(last=False)
     return rows
 
 
 def _render_chart_rows(g, app, points, width, height, name, source, *, interactive=True,
                        snapshot=None, normalized_points=None, cache_metadata=None, metadata=None, zoom_key=None,
-                       live_window=None):
+                       live_window=None, live_now=None, display_end=None, source_times=None, source_token=None):
     state = initialize(app)
     full = _points(points) if normalized_points is None else normalized_points
+    source_times = tuple(point["t"] for point in full) if source_times is None else source_times
     axis = state["axes"].get(name, {"mode": "auto"})
     scale = "log" if axis.get("mode") == "log" else "linear"
     box = chart_interaction.bounds(app, zoom_key, scale=scale)
     captured = chart_interaction.captured_bounds(app, zoom_key, scale=scale)
+    # The raster can use the first acquired successor beyond a delayed edge.
+    # Its cutoff is the real clock, never the delayed display endpoint. Future
+    # replay records remain excluded even before a source has enough history.
+    acquired_count = bisect_right(source_times, live_now) if live_now is not None else len(full)
+    acquired = full if acquired_count == len(full) else full[:acquired_count]
+    following = (not interactive or (state.get("zoom", 1) == 1 and not state.get("pan", 0)
+                                     and not state.get("window")))
+    display_window = None
     if captured:
         times = captured["x"]
-        visible = [point for point in full if times[0] <= point["t"] <= times[1]]
     elif box:
         times = box["x"]
-        visible = [point for point in full if times[0] <= point["t"] <= times[1]]
     elif live_window:
         times = live_window
-        visible = [point for point in full if times[0] <= point["t"] <= times[1]]
+    elif display_end is not None and following and acquired:
+        times = display_window = (min(acquired[0]["t"], display_end), display_end)
     else:
-        visible, times = viewport(full, state if interactive else {}, normalized=True)
+        _, times = viewport(acquired, state if interactive else {}, normalized=True)
+    first = bisect_left(source_times, times[0], 0, acquired_count)
+    last = bisect_right(source_times, times[1], first, acquired_count)
+    visible = full[first:last]
     if interactive:
         state["chart_interaction_key"] = zoom_key
         state["chart_box"] = (box["x"], box["y"]) if box else None
         state["chart_live_window"] = live_window
+        state["chart_display_window"] = display_window
         state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
     values = [p["value"] for p in visible]
     color = state["colors"].get(name, COLORS[sum(ord(c) for c in name) % len(COLORS)])
@@ -548,12 +722,28 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
     preference = chart_tools.preference(state, name)
     axis = state["axes"].get(name, {"mode": "auto"})
     visible_plotted, low, high, undefined = chart_tools.axis_values(values, axis)
-    raster_source = [point for point in full if point["t"] <= live_window[1]] if live_window else full
-    raster_points = raster_viewport(raster_source, times)
+    raster_points = full[max(0, first - 1):min(acquired_count, last + 1)]
     if len(raster_points) > len(visible):
         low, high = charts._bounds(visible_plotted, low, high)
     plotted, _, _, _ = chart_tools.axis_values([point["value"] for point in raster_points], axis)
-    cadence = _cadence(full)
+    cadence = _source_cadence(app, source_times, acquired_count)
+    buffered = live_now is not None and not box and not captured and (live_window is not None or following)
+    if buffered:
+        # A one-second window can lie between two five-second observations.
+        # Fit their clipped measured segment rather than scaling empty header
+        # statistics to 0..1 and hiding the only line. Unknown endpoints and
+        # source outages still supply no interpolated vertices.
+        # This normalized source is already sorted. Fit exact clipped vertices
+        # directly: coarse buckets intentionally discard a bucket containing
+        # any missing value, which can hide a valid edge or a large extremum.
+        vertices = charts._iter_time_samples(zip((point["t"] for point in raster_points), plotted),
+                                              times, min(sys.float_info.max, cadence * 2.5) if cadence else 0.)
+        measured = [value for _, value, _ in vertices if value is not None]
+        fitted_low, fitted_high = charts._bounds(measured, min([low] + measured), None)
+        if axis.get("low") is None:
+            low = fitted_low
+        if axis.get("high") is None:
+            high = fitted_high
     auto_fit = chart_interaction.autofit(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
     if box:
         low, high = box["y"]
@@ -562,6 +752,16 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
                                                times, box["y"], cadence)
     if captured:
         low, high = captured["y"]
+    automatic_history = bool(buffered and live_window is None and display_window is not None)
+    times = _present_history(app, zoom_key, interactive=interactive, g=g, width=width, height=height,
+                              times=times, low=low, high=high, axis=axis, cadence=cadence,
+                              acquired=acquired, last=last, now=live_now, source_token=source_token,
+                              following=automatic_history)
+    if automatic_history:
+        display_window = times
+        if interactive:
+            state["chart_display_window"] = display_window
+            state["chart_visible"] = {"key": _viewport_key(state, name, points), "points": visible}
     def axis_label(value):
         if axis["mode"] == "log":
             try:
@@ -572,20 +772,46 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
             return chart_tools.format_axis(value, preference, low, high)
         return chart_tools.format_value(value, preference)
     plot_metadata = metadata if isinstance(metadata, dict) else {}
-    rows = charts.braille_chart(g, plotted, width, height, lo=low, hi=high, title=clean(label, g.ascii),
-                               sample_times=[p["t"] for p in raster_points], times=times,
-                               sample_interval=cadence, color=lambda _: color, axis_formatter=axis_label,
-                               metadata=plot_metadata, fitted=auto_fit, time_units=bool(box))
+    # Axis/color callbacks are exact local closures, so the generic native
+    # raster cache cannot key them. Keep this small pure-raster cache tied to
+    # their scalar inputs, outside all headers, cursor and statistics work.
+    raster_key = None
+    raster_cache = state.setdefault("chart_history_rasters", OrderedDict())
+    if automatic_history:
+        raster_key = (source_token, times, low, high, scale, cadence, width, height,
+                      g.ascii, g.spark, g.box, g.dot, g.rule, color, label, unit, (type(precision), precision),
+                      getattr(getattr(app, "_chart_owner", app), "theme", ""),
+                      os.environ.get("TZ"), time.tzname, time.timezone, time.daylight)
+    cached_raster = raster_cache.get(raster_key) if raster_key is not None else None
+    if cached_raster is not None:
+        raster_cache.move_to_end(raster_key)
+        rows = [list(row) for row in cached_raster[0]]
+        plot_metadata.clear()
+        plot_metadata.update(cached_raster[1])
+    else:
+        rows = charts.braille_chart(g, plotted, width, height, lo=low, hi=high, title=clean(label, g.ascii),
+                                   sample_times=[p["t"] for p in raster_points], times=times,
+                                   sample_interval=cadence, color=lambda _: color, axis_formatter=axis_label,
+                                   metadata=plot_metadata, fitted=auto_fit, time_units=bool(box))
+        if raster_key is not None and sum(L.vlen(L.row_text(row)) for row in rows) <= 65536:
+            raster_cache[raster_key] = (tuple(tuple(row) for row in rows), dict(plot_metadata))
+            while len(raster_cache) > MAX_CARD_CACHE:
+                raster_cache.popitem(last=False)
     plot_metadata["scale"] = "log" if axis.get("mode") == "log" else "linear"
     plot_metadata["key"] = zoom_key
+    _playback_resolution(app, zoom_key, plot_metadata, buffered)
     selected_points = chart_tools.interval(full, state, name) if interactive else []
     rows = _highlight_interval(rows, width, height, selected_points, times, g.ascii, plot_metadata["plot_rect"])
     # Summary and exact inspection always describe the original measurements,
     # including values undefined on a logarithmic axis.
     if rows:
-        rows[0] = charts._header(g, values, width, clean(label, g.ascii), unit, "   ")
+        plot_label = charts.chart_model_title(clean(label, g.ascii), plot_metadata)
+        rows[0] = charts._header(g, values, width, plot_label, unit, "   ")
+        if buffered and plot_metadata.get("has_data") and not known:
+            rows[0] = L.clip_row([("   " + plot_label, "cyan+bold"),
+                                  ("  between acquired samples", "dim")], width)
         if precision is not None and known:
-            summary = f" {label}  last {chart_tools.format_value(values[-1], preference)}  mean {chart_tools.format_value(charts._mean(known), preference)}  max {chart_tools.format_value(max(known), preference)}"
+            summary = f" {plot_label}  last {chart_tools.format_value(values[-1], preference)}  mean {chart_tools.format_value(charts._mean(known), preference)}  max {chart_tools.format_value(max(known), preference)}"
             rows[0] = L.clip_row([(clean(summary, g.ascii), "cyan+bold")], width)
     if interactive and visible and rows_selected(app, "chart"):
         state["cursor"] = max(0, min(len(visible) - 1, int(state.get("cursor", 0))))
@@ -596,6 +822,9 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
         exact = repr(selected["value"]) if selected["value"] is not None else "unavailable"
         rows.append([(clean(f" {_time(selected['t'])}  t={selected['t']!r}  value {exact}{step}", g.ascii), "yellow+bold")])
     description = f" Axis {axis['mode']}"
+    layers = [plot_metadata[field] for field in ("trend_label", "band_label") if plot_metadata.get(field)]
+    if layers:
+        description += " | Draw: " + "; ".join(layers)
     if live_window:
         from .metric_live import format_delta
         description += f" | Live {format_delta(live_window[1] - live_window[0])}; no gap filling"
@@ -619,12 +848,14 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
         rows.append([(clean(f" Coverage: samples {stats['sample_coverage']:.1%} | observed time {coverage} | missing {stats['missing']}; no gap filling", g.ascii), "dim")])
     gaps = sum(1 for p in visible if p["value"] is None)
     outages = sum(b["t"] - a["t"] > cadence * 2.5 for a, b in zip(visible, visible[1:])) if cadence else 0
-    metadata = (full[-1]["t"] if full else None, len(visible), len(full), gaps + outages)
-    if live_window:
-        metadata += (cadence,)
+    metadata = (acquired[-1]["t"] if acquired else None, len(visible), len(full), gaps + outages)
+    if live_now is not None:
+        metadata += (cadence, buffered, times[1] if automatic_history else None)
     rows.append(_source_row(g, source, metadata, app=app, identity=zoom_key))
     if cache_metadata is not None:
         cache_metadata["source"] = metadata
+        cache_metadata["following"] = buffered
+        cache_metadata["display_end"] = times[1] if automatic_history else None
     if interactive and state.get("chart_events") and getattr(app, "store", None):
         events = chart_events(app, snapshot if snapshot is not None else app.store.snapshot(), times)
         state["chart_event_items"] = events

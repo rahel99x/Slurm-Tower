@@ -286,6 +286,21 @@ and runtime summaries. Compressed ranges are counted arithmetically instead of
 expanding millions of indices into Python objects. An observed subset is not
 reported as the complete array; missing size information stays unknown.
 
+Click a cohort's down-pointing `▾` chevron to select it and open its task page.
+Click its right-pointing `▸` chevron to close that page. ASCII mode uses `v` and `>` respectively.
+The cohort's summary, state counts, and mosaic remain visible.
+This task-page state is separate from the shared automatic job-group folds.
+Jobs and History Details retain their own Arrays task-page state.
+
+In the full Research Arrays view, Enter toggles the selected task page.
+Page Up and Page Down move through its tasks in pages of 24 while it is open.
+Inside Jobs or History Details, use the cohort arrows and the pane's existing scroll controls.
+Use `:array open ARRAYID [CLUSTER]` or `:array close ARRAYID [CLUSTER]` for an explicit action on a published cohort.
+Supply its cluster when the same array ID occurs in more than one cluster.
+These actions read the published document; they do not request a retry or submit a job.
+Repeated open requests retain the current task offset.
+A refreshed cohort order retains the exact cluster and array ID; removal closes its task page.
+
 Select an array and prepare a failed-task retry:
 
 ```text

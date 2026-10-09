@@ -4,6 +4,17 @@ from __future__ import annotations
 from . import job_groups, layout as L
 
 
+def fold_icon(collapsed, *, ascii_=False):
+    """Show the action: right folds an open batch; down reopens its summary."""
+    return ("v" if collapsed else ">") if ascii_ else ("▾" if collapsed else "▸")
+
+
+def fold_command(group_id, collapsed):
+    """Use the painted state so a repeated click before repaint is idempotent."""
+    import shlex
+    return "jobgroup " + ("open " if collapsed else "close ") + shlex.quote(group_id)
+
+
 def has_collapsed(app, context):
     if not getattr(app, "table_state", {}).get("collapsed"):
         return False

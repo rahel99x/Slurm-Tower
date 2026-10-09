@@ -46,6 +46,25 @@ def configure_live(app, metric_live, delta):
     return enabled_deltas
 
 
+def prepare_fixture_job(app, snapshot, compose):
+    """Resolve the Jobs cursor before attaching measured histories to its row.
+
+    Setting selected_id alone is insufficient: the first Jobs composition can
+    normalize it to the current sorted row. Seed that actual displayed job so
+    a nominal 4,000-point benchmark cannot silently measure an empty neighbour.
+    """
+    app.job_panel_state.update(mode="analytics", analytics_view="job")
+    app.tab = "jobs"
+    compose()
+    selected = next((job for job in snapshot["jobs"]
+                     if job.id == app.selected_id and not job.pending), None)
+    if selected is None:
+        raise ValueError("fixture requires an actually selected running Jobs row")
+    app.analytics_job = selected.id
+    selected.gpus = 4
+    return selected
+
+
 def input_state(app, reader):
     """Report framing state without recording terminal bytes or pasted text."""
     return {"mode": getattr(app, "mode", None), "tab": getattr(app, "tab", None),
@@ -138,6 +157,7 @@ def worker(args):
     pending_event = None
     rebuilt = False
     observed_deltas = []
+    fixture_job = None
     worker_states = []
     control_written = False
     def observe_workers():
@@ -193,15 +213,13 @@ def worker(args):
     Slurm.jobs = lambda self: original_jobs(self)[:args.jobs]
 
     def compose(self, snap, app, *positional, **kwargs):
-        nonlocal initialized, producer, app_ref, observed_deltas
+        nonlocal initialized, producer, app_ref, observed_deltas, fixture_job
         app_ref = app
         if not initialized and snap.get("jobs"):
             initialized = True
-            selected = next(job for job in snap["jobs"] if not job.pending)
-            selected.gpus = 4
-            app.selected_id = app.analytics_job = selected.id
-            app.job_panel_state.update(mode="analytics", analytics_view="job")
-            app.tab = "jobs"
+            selected = prepare_fixture_job(
+                app, snap, lambda: original_compose(self, snap, app, *positional, **kwargs))
+            fixture_job = selected.id
             store = app.store
             for index in range(args.points):
                 stamp = clock.now() - (args.points-index-1)*.5
@@ -333,6 +351,13 @@ def worker(args):
                   "observed_live_deltas": sorted(set(observed_deltas)),
                   "visible_plots": len(chart_interaction.initialize(app_ref)["plots"]) if app_ref else 0}
         report["input_state"] = input_state(app_ref, screen._INPUT_READERS.get(id(window_ref)))
+        records = getattr(getattr(app_ref, "store", None), "series", {}).get(fixture_job, ())
+        report["fixture"] = {
+            "selected": bool(app_ref is not None and app_ref.selected_id == fixture_job),
+            "records": dict(Counter(record.get("k") for record in records)),
+            "visible_plots": sum(plot.key[1] == fixture_job for plot in
+                                 chart_interaction.initialize(app_ref)["plots"]) if app_ref else 0,
+        }
         observe_workers()
         report["worker_states"] = worker_states
         args.report.write_text(json.dumps(report))
@@ -423,6 +448,10 @@ def run(args, rate):
             raise RuntimeError("PTY fixture exited " + str(process.returncode)
                                + (" (" + error_type + ")" if error_type else ""))
         data = json.loads(report.read_text())
+        fixture = data.get("fixture", {})
+        if (not fixture.get("selected") or not fixture.get("visible_plots")
+                or any(fixture.get("records", {}).get(kind, 0) < args.points for kind in ("live", "gpu"))):
+            raise RuntimeError("fixture did not retain the requested source history in its visible selected job")
         if args.switch_workers:
             modes = {state["mode"] for state in data["worker_states"]}
             final = data["worker_states"][-1] if data["worker_states"] else {}
@@ -477,6 +506,7 @@ def run(args, rate):
                 "counts": data["counts"], "cpu_total_ms": data["cpu_total_ms"],
                 "timing_events_truncated": bool(data["counts"].get("timing_events_dropped")),
                 "input_state": data["input_state"],
+                "fixture": data["fixture"],
                 "visible_plots": data["visible_plots"],
                 "unexpected_tabs": sorted({item["tab"] for item in data["inputs"] if item["tab"] != "jobs"}),
                 "terminal_bytes_discarded": discarded, "exit_code": process.returncode}

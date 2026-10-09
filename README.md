@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.10.0 |
+| Release | Tower 4.11.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -31,6 +31,14 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.11.0
+
+- Running metric graphs use a short adaptive display delay. The visible edge advances through measurements already received, which reduces the new-segment jump at each source update.
+- Full-history and Live views follow the delayed display time, including the full-screen chart while it follows its running source. Duration controls and source polling remain independent. Graph labels identify the display lag and any wait for more data.
+- Completed jobs, comparison plots, and explicit zoom selections retain their existing time bounds. Missing measurements remain gaps. See [Buffered graph playback](docs/guides/charts.md#read-buffered-running-graphs).
+- Line plots add a labeled local polynomial trend when enough continuous data is available. Dense oscillations use thin observed low/high borders and a faint interior. Original values, spikes, and missing intervals remain distinct. See [Trend and range layers](docs/guides/charts.md#read-the-trend-and-range-layers).
+- Expanded job groups show a right-pointing chevron on their first visible row. Click it to close the group, then click the down-pointing chevron on its summary to reopen it. Existing batch counts and shared fold preferences remain available.
 
 ## Changes in Tower 4.10.0
 
@@ -381,7 +389,10 @@ See [Live workbench](docs/guides/live-workbench.md) for panel navigation and liv
 For a running job, each metric has a Live button and two adjacent sliders.
 Use these controls on Analytics → Job series or Jobs → Details → Analytics → Job series.
 Set the first slider's window from 30 seconds to one second.
-Live follows the current time and displays recorded observations within that window.
+Live follows a buffered display time and shows measured history within that window.
+Running graphs also use that delayed edge when Live is off.
+The status reports actual display lag; polling and current resource readouts remain current.
+See [Buffered running graphs](docs/guides/charts.md#read-buffered-running-graphs) for startup and outage behavior.
 Drag the second slider from five seconds to 500 milliseconds to request reads for that exact job and source, subject to source limits.
 **Set** shows that slider's requested interval; **Poll** shows the shared effective interval.
 Compact rows show the effective value before the polling track and `S` plus the request after it.
@@ -416,7 +427,9 @@ The history choices update from published job records during the session.
 
 Tower recognizes scheduler arrays, explicit launch markers, and ordinary launch bursts with matching provenance.
 The same detection applies to available historical records and new queue publications.
-Click a group's fold symbol to hide or show its jobs across the job pages.
+Click the right-pointing chevron on the first visible expanded group row to close it.
+Click the down-pointing chevron on the summary row to show its jobs again.
+The fold preference remains shared across the job pages and their history browsers.
 Use `:jobgroups off` when you need individual rows.
 Collapsed groups retain a real representative job ID; hidden members do not become action targets automatically.
 See [Automatic launch groups](docs/guides/batch-launches.md) to identify a batch, read its state counts, and load older records.

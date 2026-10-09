@@ -246,6 +246,15 @@ def offline(line, *, host="", replay=False):
 
 def execute(app, cmd, args, *, ready=None):
     """Return True when handled. Job actions always enter the existing confirmation flow."""
+    if cmd == "array" and args and args[0] in ("open", "close"):
+        # Published task-page disclosure is immediate UI state. It must not
+        # enter the array-retry background operation or submission workflow.
+        from .array_disclosure import command
+        try:
+            command(app, args)
+        except ValueError as exc:
+            app.fail(str(exc))
+        return True
     from .planning_commands import execute as planning_execute
     if planning_execute(app, cmd, args, ready=ready):
         return True

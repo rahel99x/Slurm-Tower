@@ -9,19 +9,30 @@ It changes the displayed rows. Each member keeps its actual Slurm job ID, logs, 
 ## Fold and open a batch
 
 1. Open a list of jobs.
-2. Find a row with a group-fold symbol.
-3. Click that symbol to hide the other matching members.
-4. Read the representative job ID and the group summary.
-5. Click the symbol again to show the members.
+2. Find the right-pointing chevron on the first visible row of an expanded group.
+3. Click that chevron to close the group.
+4. Read the representative job ID and the existing state summary.
+5. Click the down-pointing chevron on the closed summary row to show the members again.
 
 **Expected result:** One row represents the closed group.
 Opening it restores the matching members under the current filters and sort order.
 The fold preference applies across job lists and their history browsers.
 New groups start open.
+The chevron indicates the available action: `▸` closes an expanded group; `▾` opens a closed group.
+ASCII mode uses `>` to close and `v` to open.
+The first row follows the current grouping, filters, and sort order.
+If that row scrolls above the pane, the first visible member receives the disclosure control.
+You can therefore close the group without scrolling back to its original header.
+A click applies the action shown on that frame. Duplicate events for the same painted control do not reverse its action.
+The disclosure control does not select or mark every member.
 
 The same controls apply to Jobs, Recents, History, account Group rows, and job-history browsers in Analytics, Dependencies, Logs, and Research.
 Advisor's running-job list and independent dependency roots also support folding.
 Dependency trees retain their relationship structure.
+Research → Arrays also has cohort disclosure arrows with the same orientation.
+They open or close that cohort's task page while keeping its summary and mosaic visible.
+Array task-page state is separate from shared launch-group folds.
+See [Array operations](../RESEARCH.md#array-operations) for full-page and inline controls.
 Aggregate charts, timelines, explicit comparison traces, and node ownership displays retain their full measurement context; their job-history browser supplies grouped job selection.
 
 During ordinary job-row navigation, Left closes the selected job's group and Right opens it.

@@ -141,10 +141,10 @@ Tower groups jobs when the published evidence supports a shared launch.
 Grouping is enabled by default, and new groups start open.
 The fold setting is shared by Jobs, Recents, History, Group, Dependencies, and the job-history browsers.
 
-1. Find a job row with a launch-group fold symbol.
-2. Click the symbol to hide or show its other matching members.
+1. Find the right-pointing chevron on the first visible row of an expanded launch group.
+2. Click it to close the group. Click the down-pointing chevron on its summary row to open it again.
 3. Select a member and press Left to close the group or Right to open it when ordinary job-row navigation owns the keys.
-4. Open another job page and check the same group's fold setting.
+4. Open another job page and check the same group's shared fold setting.
 
 **Expected result:** Closing a group leaves one real representative job row.
 Opening it restores its matching jobs in the current sort and filter order.

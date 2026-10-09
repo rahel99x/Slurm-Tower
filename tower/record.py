@@ -106,6 +106,7 @@ class ReplayClock:
         self.paused = paused
         self.base_t, self.base_wall = t0, time.monotonic()
         self.loops = 0
+        self.generation = 0
 
     def now(self) -> float:
         if self.paused:
@@ -114,17 +115,21 @@ class ReplayClock:
         return min(max(t, self.t0), self.t1)
 
     def seek(self, t: float):
+        self.generation += 1
+        self._anchor(t)
+
+    def _anchor(self, t: float):
         self.base_t, self.base_wall = min(max(t, self.t0), self.t1), time.monotonic()
 
     def skip(self, seconds: float):
         self.seek(self.now() + seconds)
 
     def set_speed(self, speed: float):
-        self.seek(self.now())
+        self._anchor(self.now())
         self.speed = max(0.0, speed)
 
     def toggle_pause(self) -> bool:
-        self.seek(self.now())
+        self._anchor(self.now())
         self.paused = not self.paused
         return self.paused
 

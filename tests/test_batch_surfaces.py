@@ -75,7 +75,7 @@ def test_all_job_docks_share_folds_and_current_state_counts(batch, tab):
     items = history_browser.initialize(app)["items"]
     assert len([item for item in items if item.meta and item.meta.group.id == "array:600"]) == 1
     hit = next(hit for hit in hits if hit[1] == "control" and hit[2]["id"].endswith("group:array:600"))
-    assert hit[2]["action"] == ("command", "jobgroup toggle array:600")
+    assert hit[2]["action"] == ("command", "jobgroup open array:600")
     before = job_groups.registry(app).inference_count
     state_before = L.row_text(rows[hit[0]])
     for reason in ("Dependency", "DependencyNeverSatisfied"):

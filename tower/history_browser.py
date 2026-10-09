@@ -295,14 +295,19 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
     logical_top, top = top, painted
     content_width = max(1, width - 1)
     cell_width = max(1, content_width // columns)
+    seen_groups = set()
     for position, item in enumerate(items[top:top + page]):
         y, column = 1 + position // columns, position % columns
         x = column * cell_width
         size = content_width - x if column == columns - 1 else cell_width
         group = _header(item)
+        meta = item.meta
+        disclosure = meta is not None and meta.group.id not in seen_groups
+        if meta is not None:
+            seen_groups.add(meta.group.id)
         if group is not None:
-            expanded = not getattr(item, "collapsed", False)
-            icon = ("-" if expanded else "+") if ascii_ else ("▾" if expanded else "▸")
+            from .job_group_ui import fold_icon, fold_command
+            icon = fold_icon(item.collapsed, ascii_=ascii_)
             contains_selected = item.collapsed and selected in group.members
             selected_note = f" [>{_text(selected, ascii_)}]" if contains_selected and selected != item.record.id else ""
             label = f"{icon} {_text(item.record.id, ascii_)}{selected_note} {_text(group.label, ascii_)} ({len(item.records)})"
@@ -321,17 +326,30 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
             from .job_groups import summary
             states = summary(item.meta.stats or item.records)
             label += "; " + states + "; representative job " + item.record.id
-            hits.append(_control(tab, "group:" + group.id, "Expand or collapse " + group.label + "; " + states,
-                                 y, x, min(x + size, x + 2), "jobgroup toggle " + shlex.quote(group.id)))
         else:
             record = item.record
-            icon = ">" if record.id == selected else " "
+            if disclosure:
+                from .job_group_ui import fold_icon
+                icon = fold_icon(meta.collapsed, ascii_=ascii_) + " "
+            else:
+                icon = ">" if record.id == selected else " "
             label = f"{icon}{_text(record.id, ascii_)} {_text(record.state, ascii_)} {_text(record.name, ascii_)}"
             text = L.pad(L.cut(label, size, ascii_), size)
             style = "sel+bold" if record.id == selected else _STYLES.get(record.state, "dim")
             segments = [(text, style)]
             command = "history-job " + shlex.quote(record.id)
             ident = "job:" + record.id
+        if disclosure:
+            from .job_group_ui import fold_icon, fold_command
+            from .pane_drag import _replace
+            from .job_groups import summary
+            # A scrolled continuation keeps the actual member's ID and row
+            # action. Only its reserved leading cell gains the group button.
+            arrow_style = "accent+bold+sel" if "sel" in style.split("+") else "accent+bold"
+            segments = _replace(segments, 0, fold_icon(meta.collapsed, ascii_=ascii_), arrow_style, size)
+            hits.append(_control(tab, "group:" + meta.group.id,
+                                 ("Expand " if meta.collapsed else "Collapse ") + meta.group.label + "; " + summary(meta.stats or meta.records),
+                                 y, x, min(x + size, x + 2), fold_command(meta.group.id, meta.collapsed)))
         rows[y].extend(segments)
         hits.append(_control(tab, ident, label, y, x, x + size, command))
     if not items and data_height:

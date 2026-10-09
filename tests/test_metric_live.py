@@ -550,7 +550,11 @@ def test_actual_graph_windows_cover_both_delta_endpoints_and_right_reset(
         control = current(app)
     retained_samples = tuple(dict(sample) for sample in dashboard.store.series["7"])
     assert M.set_enabled(app, control.key, True)
-    for delta, expected in ((30.0, (170.0, 200.0)), (1.0, (199.0, 200.0))):
+    # Native resource sampling retains two five-second intervals. The report
+    # fixture has only two acquired records and initially holds at its oldest.
+    end = 196.0 if surface == "reported-modal" else 190.0
+    for delta in (30.0, 1.0):
+        expected = (end - delta, end)
         assert M.set_delta(app, control.key, delta)
         palette_frame(dashboard)
         plot = next(
@@ -569,7 +573,7 @@ def test_actual_graph_windows_cover_both_delta_endpoints_and_right_reset(
         plot for plot in C.initialize(app)["plots"]
         if M.canonical(plot.key) == control.key
     )
-    assert restored.x_bounds == (170.0, 200.0)
+    assert restored.x_bounds == (end - 30.0, end)
     assert M.enabled(app, control.key)
     assert tuple(dashboard.store.series["7"]) == retained_samples
 

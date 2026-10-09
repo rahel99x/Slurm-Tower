@@ -189,6 +189,7 @@ def test_retained_native_samples_can_leave_frozen_window_without_cancelling_capt
     # initial interval. The display must remain honest and recoverable without
     # giving the eventual release the new job/time coordinate system.
     d.store.series["7"].clear()
+    d.now["value"] = 420.0
     for index in range(20):
         d.store.record("7", {"k": "live", "t": 400.0 + index, "cpu": .9,
                              "rss": 50 * 1024**3})
@@ -204,4 +205,4 @@ def test_retained_native_samples_can_leave_frozen_window_without_cancelling_capt
     app.click(current.visible.top + 1, current.visible.left + 4, app.last_hits, button="right")
     d.draw(tab)
     assert _metric(d, metric).kind == "metric"
-    assert _metric(d, metric).x_bounds == (400.0, 419.0)
+    assert _metric(d, metric).x_bounds == (400.0, 410.0)

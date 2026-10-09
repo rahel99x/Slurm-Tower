@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 import re
 import time
+import math
+import sys
 from collections import OrderedDict
+from bisect import bisect_left, bisect_right
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import clock
@@ -144,6 +147,91 @@ def _metric_observations(values, timestamps, bounds, *, latest=None):
     selected.sort(key=lambda item: item[0])
     return ([value for _, value, _ in selected], [timestamp for _, _, timestamp in selected],
             visible, newest)
+
+
+def _metric_source_times(timestamps, now, observation_index=None):
+    """Find acquired time limits without reading every metric counter.
+
+    Native sources retain a chronological index for moving frames. A generic
+    source can arrive unsorted and include duplicate or replayed future times.
+    Neither path treats a future observation as available telemetry.
+    """
+    if charts._finite(now) is None:
+        return None, None, None
+    if observation_index is not None:
+        times = observation_index.sorted_times
+        end = bisect_right(times, now)
+        if not end:
+            return None, None, None
+        newest = times[end - 1]
+        previous = bisect_left(times, newest, 0, end)
+        return times[0], newest, times[previous - 1] if previous else None
+    oldest, newest, previous = None, None, None
+    for timestamp in timestamps or ():
+        if charts._finite(timestamp) is None or timestamp > now:
+            continue
+        oldest = timestamp if oldest is None else min(oldest, timestamp)
+        if newest is None or timestamp > newest:
+            previous, newest = newest, timestamp
+        elif timestamp < newest and (previous is None or timestamp > previous):
+            previous = timestamp
+    return oldest, newest, previous
+
+
+def _metric_edge_values(values, timestamps, bounds, interval):
+    """Actual clipped edge values, without letting bucketed gaps hide them."""
+    samples = [(timestamp, charts._finite(value)) for value, timestamp in zip(values, timestamps)
+               if charts._finite(timestamp) is not None]
+    # Preserve source order at duplicate timestamps, including unknown values.
+    samples.sort(key=lambda item: item[0])
+    if interval is None or interval <= 0:
+        deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:])
+                        if b[0] > a[0] and math.isfinite(b[0] - a[0]))
+        interval = deltas[(len(deltas) - 1) // 2] if deltas else 0.
+    return [value for timestamp, value, _ in charts._iter_time_samples(
+        samples, bounds, min(sys.float_info.max, interval * 2.5))
+        if value is not None and (timestamp == bounds[0] or timestamp == bounds[1])]
+
+
+def _metric_edge_signature(values, timestamps, end, now, interval, lo, hi, pixels,
+                           observation_index=None):
+    """Describe acquired edge brackets and their actual vertical raster cell.
+
+    A new measured vertex, missing endpoint, or changed bracket is published
+    immediately. Between them, a nearly level subpixel edge can reuse its
+    painted domain. Indexed native sources read only the two edge counters.
+    """
+    before = after = None
+    if observation_index is not None:
+        index = observation_index
+        available = bisect_right(index.sorted_times, now)
+        right = min(available, bisect_right(index.sorted_times, end))
+        if right:
+            position = index.order[right - 1]
+            before = (index.sorted_times[right - 1], position, charts._finite(values[position]))
+        if right < available:
+            position = index.order[right]
+            after = (index.sorted_times[right], position, charts._finite(values[position]))
+    else:
+        for position, (value, timestamp) in enumerate(zip(values, timestamps)):
+            if charts._finite(timestamp) is None or timestamp > now:
+                continue
+            if timestamp <= end and (before is None or timestamp >= before[0]):
+                before = (timestamp, position, charts._finite(value))
+            elif timestamp > end and (after is None or timestamp < after[0]):
+                after = (timestamp, position, charts._finite(value))
+    value, kind = None, "gap"
+    if before is not None and before[0] == end:
+        value, kind = before[2], "point"
+    elif before is not None and after is not None and before[2] is not None and after[2] is not None:
+        if after[0] - before[0] <= min(sys.float_info.max, interval * 2.5):
+            fraction = charts._fraction(end, before[0], after[0])
+            value = charts._between(min(before[2], after[2]), max(before[2], after[2]),
+                                    fraction if before[2] <= after[2] else 1. - fraction)
+            kind = "segment"
+    pixel = (None if value is None else "below" if value < lo else "above" if value > hi else
+             round((1. - charts._fraction(value, lo, hi)) * max(0, pixels - 1)))
+    return before, after, kind, pixel
 
 
 def _gpu_value(value, *, percentage=True):
@@ -491,21 +579,37 @@ class Views:
             controls, _ = metric_live.controls(self.g, app, plot_key, width, running=running,
                                                row=row, column=column)
         from .metric_sampling import cadence as polling_cadence, format_interval, source as polling_source
-        polling = polling_cadence(app, plot_key) if running else None
+        companion = filled and isinstance(plot_key, tuple) and plot_key[0] == "resource-area"
+        polling = polling_cadence(app, plot_key) if running or companion and metric_live.buffered(app, plot_key) else None
         if polling is not None and polling_source(plot_key) != "trace":
             options["sample_interval"] = polling
-        live_window = metric_live.window(app, plot_key, now=clock.now())
-        if live_window:
-            options["times"] = live_window
+        wall = clock.now()
+        oldest, newest, previous = _metric_source_times(options.get("sample_times"), wall, observation_index)
+        display_end = metric_live.display_end(app, plot_key, now=wall, oldest=oldest,
+                                              newest=newest, previous=previous,
+                                              poll_interval=polling or options.get("sample_interval"))
+        buffered_source = metric_live.buffered(app, plot_key)
+        live_window = metric_live.window(app, plot_key, now=wall)
         captured = chart_interaction.captured_bounds(app, plot_key, scale="linear")
         zoom = chart_interaction.bounds(app, plot_key, scale="linear")
+        display_window = live_window
+        if display_window is None and buffered_source and charts._finite(wall) is not None and not captured and not zoom:
+            end = wall if display_end is None else display_end
+            original = options.get("times")
+            start = original[0] if oldest is not None and original and charts._finite(original[0]) is not None else oldest
+            # One known point gets a real one-second coordinate domain. It is
+            # still labelled buffering, and no left-hand sample is invented.
+            display_window = (start if start is not None and start < end else end - 1., end)
+        if display_window:
+            options["times"] = display_window
         interval = charts._finite(options.get("sample_interval"))
         indexed = observation_index is not None and interval is not None and interval > 0
-        if live_window and (zoom or captured) and options.get("sample_times") is not None and not indexed:
+        source_values, source_times = values, options.get("sample_times")
+        if buffered_source and (zoom or captured) and options.get("sample_times") is not None and not indexed:
             # A captured coordinate system remains fixed while Live advances.
             # Future replay records cannot enter its fitted bounds or source age.
             observations = [(value, timestamp) for value, timestamp in zip(values, options["sample_times"])
-                            if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
+                            if charts._finite(timestamp) is not None and timestamp <= wall]
             values = [value for value, _ in observations]
             options["sample_times"] = [timestamp for _, timestamp in observations]
             observation_index = None
@@ -517,7 +621,7 @@ class Views:
                     fit_values, fit_times = values, options["sample_times"]
                     if indexed:
                         fit_values, fit_times, _, _ = observation_index.window(
-                            values, zoom["x"], latest=live_window[1] if live_window else None)
+                            values, zoom["x"], latest=wall if buffered_source else None)
                     options["lo"], options["hi"] = charts.fit_time_bounds(
                         fit_values, fit_times, zoom["x"], zoom["y"], options.get("sample_interval"))
                 options["fitted"] = True
@@ -530,44 +634,99 @@ class Views:
         newest, newest_known = None, False
         bounds = options.get("times")
         sample_times = options.get("sample_times")
-        if bounds and sample_times is not None and (live_window or zoom or captured):
+        if bounds and sample_times is not None and (display_window or zoom or captured):
             if interval is not None and interval > 0:
                 if indexed:
                     values, sample_times, visible_values, newest = observation_index.window(
-                        values, bounds, latest=live_window[1] if live_window else None)
+                        values, bounds, latest=wall if buffered_source else None)
                 else:
                     values, sample_times, visible_values, newest = _metric_observations(
-                        values, sample_times, bounds, latest=live_window[1] if live_window else None)
+                        values, sample_times, bounds, latest=wall if buffered_source else None)
                 options["sample_times"] = sample_times
                 newest_known = True
             else:
-                if live_window:
+                if buffered_source:
                     observations = [(value, timestamp) for value, timestamp in zip(values, sample_times)
-                                    if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
+                                    if charts._finite(timestamp) is not None and timestamp <= wall]
                     values = [value for value, _ in observations]
                     sample_times = options["sample_times"] = [timestamp for _, timestamp in observations]
                 visible_values = [charts._finite(value) for value, timestamp in zip(values, sample_times)
                                   if charts._finite(timestamp) is not None and bounds[0] <= timestamp <= bounds[1]]
             if not zoom and not captured and options.get("hi") is None:
-                options["lo"], options["hi"] = charts._bounds(visible_values, options.get("lo", 0.0), None)
+                display_values = visible_values
+                if display_window:
+                    # A short delayed window can lie entirely between two
+                    # acquired samples. Their clipped intersections determine
+                    # the visible height, without adding synthetic readings to
+                    # the header statistics or joining an actual source gap.
+                    display_values = list(visible_values) + _metric_edge_values(values, sample_times, bounds, interval)
+                options["lo"], options["hi"] = charts._bounds(display_values, options.get("lo", 0.0), None)
+        from . import metric_playback
+        presented_end = None
+        playback = metric_live.playback_status(app, plot_key)
+        theme = getattr(getattr(app, "_chart_owner", app), "theme", "")
+        if (buffered_source and not live_window and not zoom and not captured and playback is not None
+                and display_window and sample_times is not None and interval is not None and interval > 0):
+            lo, hi = charts._bounds(visible_values or (), options.get("lo", 0.), options.get("hi"))
+            chart_width = max(1, min(charts.MAX_COLUMNS, width - L.vlen(options.get("indent", "   "))
+                                     - max(1, options.get("axis_w", 7))))
+            raster_x = 1 if self.g.ascii or filled else 2
+            raster_y = ((len(charts.LEVELS_ASCII[1:]) if self.g.ascii else len(self.g.spark)) if filled else
+                        1 if self.g.ascii else 2 if options.get("curve_style") == "blocks" else 4)
+            edge = _metric_edge_signature(source_values, source_times, display_window[1], wall,
+                                          interval, lo, hi, min(charts.MAX_HEIGHT, max(0, height)) * raster_y,
+                                          observation_index if indexed else None)
+            geometry = (width, height, filled, self.g.ascii, theme, lo, hi, display_window[0], interval,
+                        options.get("axis_w", 7), options.get("indent", "   "), options.get("title", ""),
+                        options.get("unit", ""), options.get("curve_style", "fine"), options.get("envelope", True),
+                        playback.delay, playback.interval)
+            entry = metric_live.initialize(app)["entries"].get(metric_live.canonical(plot_key), {})
+            owner = getattr(app, "_chart_owner", app)
+            replay_clock = getattr(getattr(owner, "replay", None), "clock", None)
+            force_token = (entry.get("token"), entry.get("generation"), entry.get("rate"),
+                           id(replay_clock), getattr(replay_clock, "generation", None))
+            presented = metric_playback.present(app, plot_key, playback, now=wall, geometry=geometry,
+                x_interval=(display_window[1] - display_window[0]) / (chart_width * raster_x),
+                edge_signature=edge, force_token=force_token, oldest=oldest)
+            if presented is not None:
+                presented_end = presented.end
+                # The gate holds only within an unchanged acquired bracket.
+                # Source arrays/statistics stay exact; the axis is the domain
+                # actually drawn, rather than the later candidate playhead.
+                options["times"] = (display_window[0], presented_end)
+        else:
+            metric_playback.reset_presentation(app, plot_key)
         rows, metadata = self._metric_rasters.render(
             self.g, values, width, height, filled=filled, compact_rows=True,
-            theme=getattr(getattr(app, "_chart_owner", app), "theme", ""), **options)
+            theme=theme, **options)
+        if buffered_source:
+            plotted = metadata.get("x_bounds")
+            rect = metadata.get("plot_rect")
+            if plotted and rect:
+                metric_live.display_resolution(app, plot_key, plotted[1] - plotted[0],
+                                               rect[3] - rect[1], following=not (zoom or captured))
         if options.get("title") and visible_values is not None and rows:
-            rows[0] = charts._header(self.g, visible_values, width, options["title"],
+            title = charts.chart_model_title(options["title"], metadata)
+            rows[0] = charts._header(self.g, visible_values, width, title,
                                      options.get("unit", ""), options.get("indent", "   "))
+            if display_window and metadata.get("has_data") and not any(value is not None for value in visible_values):
+                rows[0] = L.clip_row([(options.get("indent", "   ") + title, "cyan+bold"),
+                                     ("  between acquired samples", "dim")], width)
         chart_interaction.record(app, plot_key, metadata, row=row + len(controls), column=column)
         if controls:
             if not newest_known:
                 newest = max((timestamp for timestamp in sample_times or ()
                               if charts._finite(timestamp) is not None), default=None)
-            age = compact(max(0.0, clock.now() - newest)) if newest is not None else "unavailable"
+            age = compact(max(0.0, wall - newest)) if newest is not None else "unavailable"
             cadence = options.get("sample_interval")
             note = f" Source age {age}; sampling {format_interval(cadence, ascii_=self.g.ascii)}" if cadence else f" Source age {age}"
             if polling is not None and polling_source(plot_key) == "trace":
                 note += f"; read every {format_interval(polling, ascii_=self.g.ascii)}"
-            if live_window and visible_values is not None and not any(value is not None for value in visible_values):
-                note += "; no observations in live window"
+            if live_window and not metadata.get("has_data"):
+                note = " no observations in live window;" + note
+            playback = metric_live.playback_label(app, plot_key, ascii_=self.g.ascii, displayed_end=presented_end)
+            if playback:
+                note = " " + playback + ";" + note
             rows.append(L.clip_row([(note, "dim")], width))
         return controls + rows
 
@@ -1286,7 +1445,7 @@ class Views:
         out = [_scroll_rule(self.g, width, title)] + trows if show_queue else []
         hits = header_hits("jobs", cells, 1) + [(2 + i, "job", r["id"]) for i, r in enumerate(shown)] if show_queue else []
         if show_queue:
-            self.group_controls(app, out, hits, [r["job"] for r in shown], 2, "jobs", width)
+            self.group_controls(app, out, hits, [r["job"] for r in shown], 2, "jobs", width, first_visible=True)
             _table_scrollbar(app, "jobs", width, 2, max(1, vis), n, top)
             if native:
                 while len(out) < queue_capacity + 2:
@@ -1309,7 +1468,7 @@ class Views:
             recent_rows[0] = _scroll_rule(self.g, width, "recent")
             hits += header_hits("recent", recent_cells, base + 1) + [(base + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
             out += recent_rows
-            self.group_controls(app, out, hits, recent_shown, base + 2, "recent", width)
+            self.group_controls(app, out, hits, recent_shown, base + 2, "recent", width, first_visible=True)
             recent_history.register_scrollbar(app, width, base + 2, fin_vis, fin_top, header=base)
             hits.append((base, "control", {"id": "recent-divider", "label": "Resize Queue and Recents",
                 "left": 0, "right": width, "action": ("command", "pane-focus recent:jobs"), "group": "pane-dividers"}))
@@ -1323,25 +1482,30 @@ class Views:
         record_page(app, "jobs", len(shown) + (len(recent_shown) if fin_vis else 0))
         return out, hits
 
-    def group_controls(self, app, rows, hits, records, base, tab, width):
-        """Attach fold buttons to real representative rows, preserving job IDs."""
+    def group_controls(self, app, rows, hits, records, base, tab, width, *, first_visible=False):
+        """Attach fold buttons to painted members, preserving representative IDs."""
         from .job_groups import metadata_for_record, summary
-        from .job_group_ui import paint_info
+        from .job_group_ui import paint_info, fold_icon, fold_command
         from .pane_drag import _replace
         info = next(((value[2], value[3]) for y, kind, value in hits
                      if y == base - 1 and kind == "sort_header" and value[:2] == (tab, "info")), None)
+        seen = {value.get("id") for _, kind, value in hits if kind == "control" and isinstance(value, dict)} if first_visible else set()
         for offset, record in enumerate(records):
             meta = metadata_for_record(app, tab, record.id)
             y = base + offset
-            if meta is None or not meta.header or y >= len(rows) or width < 2:
+            if meta is None or not (meta.header or first_visible) or y >= len(rows) or width < 2:
                 continue
-            glyph = (">" if meta.collapsed else "v") if self.g.ascii else ("▸" if meta.collapsed else "▾")
+            identity = "jobgroup:" + tab + ":" + meta.group.id + (":row:" + str(y) if tab == "deps" else "")
+            if identity in seen:
+                continue
+            seen.add(identity)
+            glyph = fold_icon(meta.collapsed, ascii_=self.g.ascii)
             rows[y] = _replace(rows[y], 0, glyph, "cyan+bold", width)
             if info is not None:
                 rows[y] = paint_info(rows[y], meta, info, width, ascii_=self.g.ascii)
-            hits.append((y, "control", {"id": "jobgroup:" + tab + ":" + meta.group.id + (":row:" + str(y) if tab == "deps" else ""),
-                "label": meta.group.label + f" / {meta.visible_count} visible / {meta.total_count} observed; representative job " + record.id + "; " + summary(meta.stats or meta.records) + "; " + meta.group.reason,
-                "left": 0, "right": 1, "action": ("command", "jobgroup toggle " + meta.group.id), "group": "job-groups"}))
+            hits.append((y, "control", {"id": identity,
+                "label": ("Expand " if meta.collapsed else "Collapse ") + meta.group.label + f" / {meta.visible_count} visible / {meta.total_count} observed; representative job " + meta.representative_id + "; " + summary(meta.stats or meta.records) + "; " + meta.group.reason,
+                "left": 0, "right": 1, "action": ("command", fold_command(meta.group.id, meta.collapsed)), "group": "job-groups"}))
 
     # ---- history tab ------------------------------------------------------------------------------
     FIN_COLS = [Column("id", "JOBID", 5, 16), Column("name", "NAME", 8, 30, flex=True), Column("state", "STATE", 5, 14), Column("part", "PART", 4, 9),
@@ -1476,7 +1640,7 @@ class Views:
         if not fin:
             out.append([("   nothing matches the filter; Esc clears it" if app.filter else "   No completed runs yet. Finished jobs and efficiency appear here.", "dim")])
         hits = header_hits("history", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
-        self.group_controls(app, out, hits, shown, len(prefix) + 2, "history", width)
+        self.group_controls(app, out, hits, shown, len(prefix) + 2, "history", width, first_visible=True)
         _table_scrollbar(app, "history", width, len(prefix) + 2, vis, n, top, header=len(prefix))
         if fin and app.selected_id and not getattr(app, "job_panel_defer_content", False):
             out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
@@ -1852,7 +2016,7 @@ class Views:
         sort_label = describe(app, "group") if chain(app, "group") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
         out += [_scroll_rule(g, width, title + f", {sort_label}")] + trows
         hits = user_hits + header_hits("group", cells, base) + [(base + 1 + i, "group", r["id"]) for i, r in enumerate(shown)]
-        self.group_controls(app, out, hits, [r["job"] for r in shown], base + 1, "group", width)
+        self.group_controls(app, out, hits, [r["job"] for r in shown], base + 1, "group", width, first_visible=True)
         _table_scrollbar(app, "group", width, base + 1, vis, n, top, header=base - 1)
         record_page(app, "group", len(shown))
         return out, hits
@@ -2399,6 +2563,7 @@ class Views:
         body_avail = None if document else avail
         previous_window = getattr(app, "analytics_render_window", None)
         app.analytics_group_hits = []
+        app.analytics_group_records = []
         if document:
             offsets = getattr(app, "analytics_scroll_offsets", None)
             if not isinstance(offsets, dict):
@@ -2423,6 +2588,7 @@ class Views:
         finally:
             app.analytics_render_window = previous_window
         group_hits = getattr(app, "analytics_group_hits", [])
+        group_records = getattr(app, "analytics_group_records", [])
         if document:
             from .scrolling import viewport
             page, count = max(0, (avail or 0) - 1), max(0, len(body) - 1)
@@ -2435,12 +2601,22 @@ class Views:
             body = body[:1] + body[1 + painted:1 + painted + page]
             group_hits = [(y - painted, kind, value) for y, kind, value in group_hits
                           if 1 + painted <= y < 1 + painted + page]
+            group_records = [(y - painted, record) for y, record in group_records
+                             if 1 + painted <= y < 1 + painted + page]
             if body and width >= 6:
                 body[0] = L.clip_row([("    ", "")] + body[0], width)
             if page and width >= 2:
                 SB.register(app, key, (1, 0, 1 + page, width), count, page, state["top"], painted,
                     lambda value: state.__setitem__("top", value), context=context,
                     header=(0, 0, width) if width >= 6 else None)
+        if view == "advisor":
+            # Apply continuation controls after the actual smooth-scroll
+            # viewport is known. Overscan rows must not claim the only button
+            # for a group whose first painted member appears below them.
+            for y, record in group_records:
+                if 0 <= y < len(body):
+                    self.group_controls(app, body, group_hits, [record], y,
+                                        "analytics:advisor", body_width, first_visible=True)
         chart_interaction.place_since(app, chart_mark, dy=len(out),
             clip=(len(out), 0, len(out) + len(body), width))
         SB.place_since(app, scroll_mark, dy=len(out),
@@ -2451,6 +2627,7 @@ class Views:
     def analytics_advisor(self, snap: dict, app, width: int, avail: Optional[int], days: float) -> List[Row]:
         """What each job name should ask for, from its completed runs in the window; the running jobs so far."""
         app.analytics_group_hits = []
+        app.analytics_group_records = []
         g = self.g
         now = clock.now()
         t_lo = now - days * 86400
@@ -2494,6 +2671,8 @@ class Views:
                     out.append([])
                     continue
                 meta = metadata_for_record(app, "analytics:advisor", j.id)
+                if meta is not None:
+                    app.analytics_group_records.append((len(out), j))
                 if meta is not None and meta.header and meta.collapsed:
                     from .job_group_ui import summary_row
                     label = f"   {j.id} {meta.group.label} / {meta.visible_count} records "

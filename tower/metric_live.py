@@ -24,6 +24,7 @@ CAPTURE_TIMEOUT = 15.0
 MIN_RATE = 1
 MAX_RATE = 100
 _UNSET_INTERVAL = object()
+_UNSET_OBSERVATION = object()
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,8 @@ def _invalidate(app, entry, *, reset_window=False, rotate_token=False):
     changed_sampling = entry.get("rate", MIN_RATE) != MIN_RATE
     changed = changed_sampling or entry["enabled"]
     entry.update(running=False, enabled=False, rate=MIN_RATE)
+    entry.pop("playback", None)
+    entry.pop("buffered", None)
     if reset_window:
         changed |= entry["delta"] != MAX_DELTA
         entry["delta"] = MAX_DELTA
@@ -336,11 +339,110 @@ def _eligible(app, identity):
     return valid
 
 
-def window(app, identity, now=None):
-    """Use the dashboard clock, with no extrapolated endpoint or source read."""
+def _playback_key(identity):
+    """Share native CPU/memory clocks with their modal and area presentations."""
+    if len(identity) < 5:
+        return identity
+    scope, jid, metric, source, attempt = identity[:5]
+    if scope == "reported-metric" and source == "Tower session resource samples":
+        metric = {"CPU per core (%)": "cpu-rate", "Memory (GB)": "resident-memory"}.get(metric)
+        if metric is None:
+            return identity
+        scope = "resource-series"
+    if scope == "resource-series":
+        if isinstance(attempt, str) and attempt.startswith("scheduler:"):
+            attempt = attempt[len("scheduler:"):]
+        return ("native-playback", jid, metric, attempt)
+    return identity
+
+
+def buffered(app, identity):
+    """Whether this running source has entered automatic buffered playback."""
+    identity = canonical(identity)
+    if identity is None or not _eligible(app, identity):
+        return False
+    return bool(initialize(app)["entries"][identity].get("buffered"))
+
+
+def display_end(app, identity, now=None, *, newest=None, previous=None,
+                oldest=None, poll_interval=None):
+    """Advance the buffered source clock from received timestamps.
+
+    Full-history renderers may pace the published endpoint separately. No sampler demand,
+    source read or graph render is performed here. Pointer input uses the
+    published playback result instead of advancing it.
+    """
     identity = canonical(identity)
     if identity is None or not _eligible(app, identity):
         return None
+    entry = initialize(app)["entries"][identity]
+    entry["buffered"] = True
+    from . import metric_playback
+    if poll_interval is None:
+        from .metric_sampling import cadence
+        poll_interval = cadence(app, identity)
+    owner = getattr(app, "_chart_owner", app)
+    replay = getattr(getattr(owner, "replay", None), "clock", None)
+    generation = (entry.get("generation"), id(replay), getattr(replay, "generation", None))
+    result = metric_playback.advance(
+        app, _playback_key(identity), now=clock.now() if now is None else now,
+        newest=newest, previous=previous, oldest=oldest, poll_interval=poll_interval,
+        generation=generation)
+    entry["playback"] = result
+    return result.end if result is not None else None
+
+
+def playback_status(app, identity):
+    """Return the last buffered source clock without moving it."""
+    identity = canonical(identity)
+    if identity is None or not buffered(app, identity):
+        return None
+    return initialize(app)["entries"][identity].get("playback")
+
+
+def playback_label(app, identity, *, ascii_=False, displayed_end=None):
+    if not buffered(app, identity):
+        return ""
+    result = playback_status(app, identity)
+    if result is None:
+        return "buffering"
+    from .metric_sampling import format_interval
+    label = {"buffering": "buffering", "held": "held"}.get(result.status, "buffered")
+    lag = result.lag
+    if _finite(displayed_end):
+        now = clock.now()
+        if _finite(now) and now >= displayed_end:
+            lag = now - displayed_end
+    return label + " " + format_interval(lag, ascii_=ascii_) + " behind"
+
+
+def display_resolution(app, identity, span, width, *, following=True):
+    """Schedule work when the displayed edge can move a Braille subcolumn.
+
+    A long full-history plot does not need ten full document preparations per
+    second. Source publications and ordinary maintenance still refresh current
+    values; this deadline only adds movement between those publications.
+    """
+    identity = canonical(identity)
+    entry = initialize(app)["entries"].get(identity)
+    if entry is None:
+        return
+    entry["following"] = bool(following)
+    if _finite(span) and span > 0 and _finite(width) and width > 0:
+        entry["display_interval"] = max(DOCUMENT_INTERVAL, span / (2 * width))
+    else:
+        entry["display_interval"] = DOCUMENT_INTERVAL
+
+
+def window(app, identity, now=None, *, newest=_UNSET_OBSERVATION,
+           previous=None, oldest=None, poll_interval=None):
+    """Read the displayed Live window; observations opt into clock advancement."""
+    identity = canonical(identity)
+    if identity is None or not _eligible(app, identity):
+        return None
+    if newest is not _UNSET_OBSERVATION:
+        display_end(app, identity, now, newest=newest, previous=previous,
+                    oldest=oldest, poll_interval=poll_interval)
     entry = initialize(app)["entries"][identity]
     if not entry["enabled"]:
         return None
@@ -352,8 +454,10 @@ def window(app, identity, now=None):
     now = clock.now() if now is None else now
     if not _finite(now):
         return None
-    first = now - entry["delta"]
-    return (first, now) if _finite(first) and first < now else None
+    playback = entry.get("playback")
+    end = playback.end if playback is not None else now
+    first = end - entry["delta"]
+    return (first, end) if _finite(first) and first < end else None
 
 
 def enabled(app, identity):
@@ -412,7 +516,10 @@ def set_delta(app, identity, value):
     entry = state["entries"][identity]
     if entry["delta"] != value:
         entry["delta"] = float(value)
-        state["revision"] += 1
+        # An inactive Live window is only a preference for the next toggle.
+        # The feedback layer paints its slider without rerasterizing history.
+        if entry["enabled"]:
+            state["revision"] += 1
     return True
 
 
@@ -830,7 +937,8 @@ def cancel(app):
             and entry[field] != capture["original"]
         ):
             entry[field] = capture["original"]
-            state["revision"] += 1
+            if field == "rate" or entry["enabled"]:
+                state["revision"] += 1
             if field == "rate":
                 _sync_sampling(app)
     if capture:
@@ -1136,21 +1244,26 @@ def document_revision(app):
 
 
 def document_interval(app):
-    """At most ten document refreshes/second while a Live plot is visible."""
+    """At most ten refreshes/second while a following metric plot is visible."""
     if _blocked(app):
         return None
     chart = getattr(app, "chart_interaction_state", {})
     capture = chart.get("capture")
     captured = canonical(capture["plot"].key) if capture else None
     state = initialize(app)
-    return (
-        DOCUMENT_INTERVAL
-        if any(
-            enabled(app, record.key) and record.key != captured
-            for record in state["records"]
-        )
-        else None
-    )
+    identities = {canonical(record.key) for record in state["records"]}
+    # Narrow cards can show a plot without room for its slider row.
+    identities.update(canonical(plot.key) for plot in chart.get("plots", ()))
+    intervals = []
+    for identity in identities:
+        if identity is None or identity == captured:
+            continue
+        entry = state["entries"].get(identity)
+        if not entry or not entry.get("following", True):
+            continue
+        if enabled(app, identity) or buffered(app, identity):
+            intervals.append(entry.get("display_interval", DOCUMENT_INTERVAL))
+    return min(intervals) if intervals else None
 
 
 def feedback(app, g):

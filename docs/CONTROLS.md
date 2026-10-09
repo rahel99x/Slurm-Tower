@@ -471,7 +471,11 @@ The wheel inside Recents scrolls that list.
 Click a recent job, then use arrows, page keys, Home, or End to reach older matching history.
 The initial preview size does not cap that navigation.
 
-Click a launch-group fold symbol to close or open its matching jobs.
+Click the right-pointing chevron on the first visible row of an expanded launch group to close it.
+Click the down-pointing chevron on its closed summary row to open it again.
+When the original first member is above the viewport, the first visible member carries the disclosure control.
+The existing summary formatting and state counts stay available while the group is closed.
+Fold preferences remain shared across the job listings and their history browsers.
 With a grouped job selected and ordinary page focus, Left closes its group and Right opens it.
 Closed groups retain one real representative ID.
 Their INFO badges use `run`, `pend`, `dep`, `never`, `done`, `fail`, `cancel`, and `other` for nonzero counts.
@@ -788,7 +792,15 @@ Each reset preserves the other control, Live state, job selection, and graph zoo
 While the slider has focus, use Left/Right, Page Up/Page Down, Home, and End.
 Home and End select that slider's minimum and maximum endpoint positions.
 Enter or Esc leaves slider focus. Esc during a drag restores that slider's previous value.
-Live displays `[current time - duration, current time]`. Changing the window alone does not change source polling.
+Live displays `[display time - duration, display time]`.
+Running timestamped graphs use an adaptive display delay in both Live and the ordinary retained view.
+The visible edge follows acquired samples; a status label reports the actual display lag or a wait for data.
+Changing the window alone does not change source polling.
+See [Buffered running graphs](guides/charts.md#read-buffered-running-graphs) for delay, startup, and outage behavior.
+Line-plot title labels `fit` and `range` identify the optional data-dependent display layers.
+The local polynomial fit is a visual model; the faint range band shows observed low and high values.
+Sample inspection still returns the original measurements.
+See [Trend and range layers](guides/charts.md#read-the-trend-and-range-layers) for eligibility and limits.
 The sampling slider requests more frequent source reads, even while Live is off.
 The effective interval below the graph accounts for source limits and the fastest global or per-metric request.
 Shared probes use the fastest requested rate: CPU and memory share a resource probe, and GPU curves share a GPU probe.
@@ -798,6 +810,21 @@ A valid rectangular zoom turns Live off. A cancelled rectangle resumes it.
 Completed jobs have no active Live or sampling controls. Metric preferences reset when Tower restarts.
 
 See [Charts](guides/charts.md) for coverage, axis restrictions, and declared units.
+
+## Array task pages
+
+| Control | Function |
+| --- | --- |
+| Click `▾` / ASCII `v` on an array cohort | Select that cohort and open its task page |
+| Click `▸` / ASCII `>` on an open cohort | Close its task page and retain the summary |
+| Enter in full Research → Arrays | Toggle the selected cohort's task page |
+| Page Up / Page Down in full Research → Arrays | Move through an open task page in groups of 24 |
+| `:array open\|close ARRAYID [CLUSTER]` | Apply an explicit action to an exact published cohort; specify the cluster when the ID is ambiguous |
+
+Jobs and History Details use the cohort arrows and their normal pane scrolling.
+Array task pages retain separate state from shared job-group folds.
+Opening tasks does not prepare a retry or submit a job.
+See [Array operations](RESEARCH.md#array-operations) for summary coverage and reviewed retries.
 
 ## Artifact inspection
 

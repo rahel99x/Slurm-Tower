@@ -130,12 +130,22 @@ The first is a logarithmic display-window slider, from 30 seconds at the left to
 The second requests polling from five seconds to 500 milliseconds for that exact job and source.
 Its interval scale is logarithmic. Numeric commands use positions one to 100, rather than frequency multipliers.
 It shows the effective interval in `s`, `ms`, or `µs`; ASCII mode uses `us`.
-Live displays the interval ending at the dashboard's current time, using retained observations.
+Live displays the interval ending at the graph's delayed display time, using retained observations.
+Running timestamped graphs also use that buffered edge in the ordinary retained view.
+The target delay is twice the greater of effective polling and observed sample cadence, up to 30 seconds.
+Actual lag and wait status identify the displayed history; **Poll** and **Set** still identify read intervals.
+Missing observations remain gaps. Alerts, current-value readouts, and stored measurements remain current.
+Completed jobs, comparisons, and explicit time selections retain their existing bounds.
+See [Buffered running graphs](guides/charts.md#read-buffered-running-graphs) for startup and recovery behavior.
+Line plots label their local quadratic trend as `fit` and dense observed low/high bands as `range`.
+The fit models the visible curve; the range represents observed extrema, not statistical confidence.
+Both layers preserve missing intervals and original sample inspection.
+See [Trend and range layers](guides/charts.md#read-the-trend-and-range-layers) for their data and display limits.
 Changing the display window alone does not change Slurm sampling or create new measurements.
 The separate sampling request applies even when Live is off.
 Right-click the first slider to restore 30 seconds, or the second to restore its five-second polling request.
 Each reset preserves the other slider, Live state, and graph selection.
-The Live clock requests at most ten scheduled display refreshes per second; input and animations can request other refreshes.
+The graph display clock requests at most ten scheduled refreshes per second; input and animations can request other refreshes.
 A valid rectangular zoom turns Live off; cancellation resumes it.
 Completed jobs have no active Live or sampling controls.
 See [Live metric windows](guides/charts.md#follow-a-running-metric) for mouse, keyboard, and temporary-token commands.
@@ -432,7 +442,9 @@ Two-job bursts require adjacent IDs, at most ten seconds, and matching nonempty 
 Three or more jobs can use a matching name family within 30 seconds, bounded numeric ID gaps and density, and nonconflicting known script paths.
 Dependency-connected groups require matching ownership and WorkDir within 60 seconds and a numeric ID span of 256.
 Missing provenance and names alone do not establish a group.
-Click a fold symbol or use Left/Right on a selected group during ordinary job-row navigation.
+Click the right-pointing chevron on the first visible expanded group row to close it.
+Click the down-pointing chevron on the closed summary to restore its members.
+During ordinary job-row navigation, Left closes the selected group and Right opens it.
 With directional button focus active, Right from a Jobs row enters Details instead.
 `:jobgroups [on|off]` toggles grouping; `:jobgroup toggle|open|close GROUP_ID` controls one known group.
 Fold preferences span the job views and their history browsers.
@@ -906,6 +918,8 @@ tower/
   charts.py      continuous Braille curves, eight-level area bars, axes, histograms, heatmaps, and Gantt rows
   chart_interaction.py final plot geometry, thin theme-colored crosshairs, buffered exact-source time or XY zoom, cancellation, undo, and reset
   metric_live.py per-running-metric display windows and sampling sliders with independent mouse, keyboard, and reset controls
+  metric_playback.py bounded delayed display clocks for acquired running-metric history
+  metric_envelope.py display-bounded local polynomial models and exact observed range geometry
   metric_sampling.py exact-source requests, shared probe intervals, source limits, and adaptive interval labels
   analytics_document.py bounded native Job Series document scrolling and visible metric cards
   logs.py        bounded incremental log buffers, logical keyboard cursors, raw line ranges, and selection

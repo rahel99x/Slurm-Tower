@@ -24,7 +24,7 @@ from tower.slurm import Backend
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_native_desktop_automatically_links_and_refreshes_actual_project_reports(native_desktop):
+def test_native_desktop_automatically_links_and_refreshes_actual_project_reports(native_desktop, monkeypatch):
     """Local Slurm subprocess metadata finds the copied producer's exact run."""
     fixture = native_desktop
     shutil.copytree(ROOT / 'examples/project-template', fixture.root, dirs_exist_ok=True)
@@ -33,7 +33,9 @@ def test_native_desktop_automatically_links_and_refreshes_actual_project_reports
     spec.loader.exec_module(producer)
     run = producer.begin_run(fixture.root, 'native-desktop-7', name='desktop-cpu',
                              script='experiment.py', job_id='7')
-    producer.write_metric(run, {'native_loss': .75}, step=1)
+    from tower import clock, metric_live
+    origin = clock.now()
+    producer.write_metric(run, {'native_loss': .75}, step=1, t=origin)
     producer.publish_research(run, 'predict', {'kind': 'tower.planning', 'version': 1,
                                               'history': [], 'job_id': '7'})
     output = fixture.run('--once', '--tab', 'research')
@@ -48,18 +50,31 @@ def test_native_desktop_automatically_links_and_refreshes_actual_project_reports
         assert binding['metrics_file'] == str(run / 'metrics.jsonl')
         assert binding['planning_files']['predict'] == str(run / 'reports/predict.json')
         generation = session.app.research.generation
-        producer.write_metric(run, {'native_loss': .25}, step=2)
+        wall = [origin + .5]
+        monkeypatch.setattr(clock, 'now', lambda: wall[0])
+        producer.write_metric(run, {'native_loss': .25}, step=2, t=wall[0])
         producer.publish_research(run, 'workflow', {'kind': 'tower.planning', 'version': 1,
                                                    'jobs': [], 'job_id': '7'})
         project_ui.settle(session.app, session.store.snapshot())
         binding = project_ui.selected_binding(session.app)
         assert binding['planning_files']['workflow'] == str(run / 'reports/workflow.json')
         assert session.app.research.generation > generation
-        session.app.research.request(session.app.research.context(session.store.snapshot(), session.app),
-                                     wait=True, force=True)
+        acquired = session.app.research.request(
+            session.app.research.context(session.store.snapshot(), session.app), wait=True, force=True)
+        # The real file reader publishes the new value immediately. Buffered
+        # presentation must not turn its deliberate delay into collection lag.
+        assert acquired['latest']['native_loss'] == .25
+        assert [point['value'] for point in acquired['series']['native_loss']] == [.75, .25]
+        session.views.compose(session.store.snapshot(), session.app, 160, None)
+        identity = next(key for key, entry in metric_live.initialize(session.app)['entries'].items()
+                        if key[2] == 'native_loss' and entry.get('playback'))
+        playback = metric_live.playback_status(session.app, identity)
+        assert playback.end == origin
+        wall[0] += playback.delay + .5
         text = '\n'.join(''.join(segment for segment, _ in row)
                          for row in session.views.compose(session.store.snapshot(), session.app, 160, None)[0])
         assert 'native_loss' in text and '0.25' in text
+        assert metric_live.playback_status(session.app, identity).end == origin + .5
         assert session.sampler.effective_interval('jobs') == .5
         assert session.app.tab == 'research' and session.app.selected_id == '7'
     finally:

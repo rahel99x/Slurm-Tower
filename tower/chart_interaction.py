@@ -779,6 +779,7 @@ def _painted_cells(app, visible, y, layers):
             if not isinstance(text, str):
                 continue
             style = style if isinstance(style, str) else ""
+            decorative = "chart-fill" in style.split("+")
             if position >= visible.right and (not text or L.vlen(text[0])):
                 break
             if text.isascii():
@@ -787,7 +788,7 @@ def _painted_cells(app, visible, y, layers):
                 for index in range(start, max(start, end)):
                     glyph = text[index]
                     cell = position + index - visible.left
-                    cells[cell] = (glyph, style, not glyph.isspace(), 1)
+                    cells[cell] = (glyph, style, not decorative and not glyph.isspace(), 1)
                     last = cell
                 position += len(text)
                 continue
@@ -802,7 +803,7 @@ def _painted_cells(app, visible, y, layers):
                     break
                 cell = position - visible.left
                 if position + size > visible.left:
-                    protected = size > 1 or (not glyph.isspace() and glyph != "⠀")
+                    protected = size > 1 or (not decorative and not glyph.isspace() and glyph != "⠀")
                     entry = (glyph, style, protected, size)
                     for column in range(max(0, cell), min(width, cell + size)):
                         cells[column] = entry

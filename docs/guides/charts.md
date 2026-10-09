@@ -47,8 +47,9 @@ Unicode selectors use a Braille lattice with two horizontal positions and four v
 Crossing strokes combine their Braille dots in the same cell.
 Their exact appearance depends on the terminal font.
 The guide preserves the graph's background and has no black outline.
-At an intersection, the original curve or annotation glyph and its style remain unchanged.
-The selector draws only in unoccupied cells and does not punch holes in the curve.
+At an intersection, original curve, range-border, fitted-line, and annotation glyphs retain their styles.
+The selector can replace faint range-fill cells, which keeps it visible inside a dense band.
+It otherwise draws in unoccupied cells and does not punch holes in the curve.
 The crosshair stays inside the measured plot, outside its labels and controls.
 It marks the pointer's coordinates and does not turn a missing sample into a measurement.
 
@@ -68,6 +69,56 @@ Easing repaints the cached overlay instead of replaying queued mouse events.
 The terminal must report mouse movement.
 Use `:terminaltest` when movement reports are missing.
 
+## Read buffered running graphs
+
+Timestamped metric graphs for a running job use a short display buffer automatically.
+This applies to native CPU, memory, and GPU series, GPU traces, and reported application metrics.
+The same behavior applies in Analytics, Research, and the corresponding Jobs or History Details views when the exact job is still running.
+A graph's ordinary full-history view and its Live window both use the delayed display time.
+This includes the full-screen chart opened with `:chart METRIC`, while it follows the running source automatically.
+An explicit zoom, pan, or time preset keeps its requested bounds.
+
+The buffer holds the visible edge behind the newest measurements.
+Tower can then advance that edge along a line between two observations it has already received.
+It does not have to reveal a complete new edge segment each time a source publishes data.
+The graph remains a view of measured history. Tower does not predict the next value or fill a measurement outage.
+
+The target delay is twice the greater of the effective polling interval and the observed sample interval, with a maximum target of 30 seconds.
+For a source measured and polled every five seconds, the target is ten seconds.
+For a source measured and polled every 500 milliseconds, the target is one second.
+Faster file polling does not reduce a slower application's measurement interval.
+The displayed lag reports the actual distance from current time to the graph's display time; it can exceed the target when a source stops reporting.
+**Poll** remains the effective read interval. **Set** remains the requested read interval.
+Neither value describes display lag.
+
+| Status | Meaning |
+| --- | --- |
+| `buffered 10s behind` | The display advances through received history, ten seconds behind current time in this example. |
+| `buffering` or `buffering 1s behind` | The source has not supplied enough distinct history for normal playback. Any shown duration is the actual lag. |
+| `held 15s behind` | The display holds while the source catches up or a larger buffer forms. The lag shown is actual. |
+
+During startup, the graph waits for enough observed history to support playback.
+If the source falls behind, the display holds at the last supported time and identifies that state.
+When data resumes, the display catches up at a bounded rate of at most 1.25 times normal time.
+A long outage can therefore take time to recover. Its missing measurements remain visible as a gap.
+The buffer does not delay source collection, alerts, current-value readouts, or saved measurements.
+It has no separate slider or configuration setting.
+
+Automatic full-history graphs match their display updates to the available drawing resolution.
+Between updates, the plot deliberately retains its previous end time.
+A visible edge movement, a changed data boundary, or a changed view can advance the presentation.
+The reported lag includes this extra display hold.
+This also applies to the full-screen chart while it follows full history.
+Live windows and explicit zoom or drag selections keep their own update behavior.
+This is adaptive presentation; it does not claim that every intermediate raster would be identical.
+Original timestamps, measurements, and source corrections remain unchanged.
+
+Completed and historical jobs use their retained measured history without this delay.
+Comparison plots and explicit time selections keep their selected bounds.
+A graph with no valid timestamps cannot use timed playback.
+The display clock does not advance past the latest usable measurement, including during startup or an outage.
+A full measured curve is therefore possible only where the source provides enough valid data.
+
 ## Follow a running metric
 
 A running job can show a Live control and two adjacent sliders above each metric.
@@ -82,7 +133,8 @@ Each metric has its own request. A curve and its filled companion share the same
 6. Read **Set** for this slider's request and **Poll** for the shared effective interval.
 7. Click **Live ON** to return to the ordinary retained view.
 
-**Expected result:** Live displays the interval from the dashboard's current time minus the chosen duration to its current time.
+**Expected result:** Live displays `[display time - duration, display time]`.
+The display time follows the [buffered running graph](#read-buffered-running-graphs), behind current time.
 The window slider uses logarithmic steps between `30s` and `1s`.
 The polling slider uses logarithmic steps between `5s` and `500ms`.
 Subsecond axes show fractional seconds in their timestamp labels.
@@ -99,6 +151,9 @@ In a compact row, the effective value precedes the polling track and `S` precede
 For example, `Poll 500ms Set 2s` means this metric requests two seconds, while a faster shared request keeps its probe at 500 milliseconds.
 Changing **Set** in that case is still accepted even though **Poll** stays unchanged.
 The footer also reports the effective interval.
+Slider values and tracks update immediately during a drag.
+Graph previews are limited to one rebuild per 50 milliseconds while the slider moves; release applies the final position immediately.
+With Live off, changing Delta stores the next Live duration and updates the control without rerasterizing the retained graph.
 These intervals do not establish the spacing of measurements produced by the job or guarantee that every read completes on time.
 
 Select the slider with the mouse or directional button focus.
@@ -135,9 +190,10 @@ Live and sampling preferences do not survive a restart.
 
 Live and the first slider change only the displayed interval.
 The polling slider changes background read requests even when Live is off.
-The Live clock requests at most ten scheduled display refreshes per second while an uncaptured Live plot is visible.
+The graph display clock requests at most ten scheduled refreshes per second while an uncaptured moving plot is visible.
 Input and scrolling animations can request other display refreshes.
-A one-second window can contain no recorded observations when its source reports less often.
+A one-second window can fall between recorded observations when its source reports less often.
+The graph can show the line between its acquired edge observations, but its sample count does not include an invented measurement.
 Valid empty axes retain their Live controls and time labels, but have no crosshair or rectangular selection until recorded data is visible.
 Read the source-age and sampling-cadence note below the graph before interpreting a sparse window.
 Missing observations and sampling outages remain gaps.
@@ -308,6 +364,45 @@ blank instead of appearing as a flat measurement on the scale edge.
 Straight segments join adjacent known observations; they do not create new measurements.
 The same curve renderer serves dashboard, resource, and inspector graphs.
 
+## Read the trend and range layers
+
+Line plots can show `[fit]`, `[range]`, or `[fit + range]` beside their title.
+These layers update with the visible measurements and use the active theme.
+They do not change original values, summary statistics, selected samples, or axis limits.
+Bars, histograms, and heatmaps retain their own display methods.
+
+**Fit** is a local quadratic polynomial model of the displayed curve.
+It uses the centre of each visible drawing column's observed range, with at most seven neighboring columns for each fit.
+A continuous run needs at least five columns before it receives a fit.
+The fit stays within the acquired domain and local observed range.
+At each acquired drawing column, its fitted anchor remains inside that column's actual low and high values.
+A column with one observed value keeps that value as its anchor; modeled curvature joins the acquired anchors.
+It stops at missing data, detected sampling outages, and equal-time jumps.
+A short or unsuitable run retains its measured curve.
+The fitted line uses a separate theme color; original curve and range-border cells keep priority where the lines meet.
+
+The fit is a display aid, not a measurement or a forecast.
+It is recalculated for the visible window and drawing resolution, so zooming can change it.
+On a logarithmic axis, it operates on the displayed logarithmic values.
+Inspect an original sample or its interval statistics when an exact value is required.
+
+**Range** replaces an unreadable dense zigzag with its observed low and high borders.
+A drawing column must contain at least four observations and a range of at least two raster pixels.
+It also needs two direction reversals, either within that column or shared with an adjacent qualifying column.
+An ordinary slope or an equal-time step does not meet this rule.
+Adjacent eligible columns join their lower and upper borders continuously.
+Unknown or broken columns leave a gap.
+The low and high values come from the observed range; the band is not a confidence interval.
+Sparse stipple and a dim theme color make its interior faint.
+The crosshair can draw over that faint fill while preserving the range borders, measured curve, and fitted line.
+Terminals do not provide alpha transparency for these characters.
+Unicode uses subcell Braille strokes; ASCII uses its line and dot characters.
+
+Hover and crosshair movement reuse the published plot.
+They do not refit the model or read the source.
+Fit preparation is bounded by display width, with at most 4,096 drawing columns.
+No additional sampling request or dependency is needed.
+
 <a id="feature-44"></a>
 
 ## Sample interval
@@ -472,7 +567,7 @@ file or process I/O. Use `Glyphs(True)` for ASCII output.
 | `time_selection_note(t0, t1, width, ...)` | Identify the exact selected start timestamp and the displayed span. |
 | `vbar_chart(g, values, width, height, ...)` | Draw a filled area graph with scale labels and optional timestamps. |
 | `hbar_rows(g, items, width, ...)` | Draw horizontal bars with measured values. |
-| `braille_chart(g, values, width, height, ..., curve_style="fine")` | Draw continuous two-by-four Braille curves or equivalent directional ASCII strokes. |
+| `braille_chart(g, values, width, height, ..., curve_style="fine", trend=True, bands=True)` | Draw continuous Braille or directional ASCII curves. Add eligible labeled fit and range layers when enabled. |
 | `heatmap(g, matrix, width, ...)` | Draw a shared-scale measured matrix. Mark unknown cells. |
 | `stacked_bar(g, items, width, ...)` | Draw a composition bar with a numeric legend. |
 | `histogram(g, values, bins, width, ...)` | Count values in specified bins and draw horizontal bars. |
@@ -551,7 +646,12 @@ A filled companion uses the same canonical identity as its resource curve.
 | `format_delta(value)` | Format the duration in seconds or milliseconds. |
 | `rate_fraction(value)`, `rate_at(value)` | Convert between integer polling positions and the logarithmic interval scale. |
 | `set_running(app, identity, running)` | Publish exact source eligibility and stop a finished source. |
-| `window(app, identity, now=None)` | Return the active display interval, or the captured plot's fixed mapping. |
+| `window(app, identity, now=None, *, newest=..., previous=None, oldest=None, poll_interval=None)` | Return the buffered Live interval or the captured plot's fixed mapping. Supplying observations advances its display clock. |
+| `display_end(app, identity, now=None, *, newest=None, previous=None, oldest=None, poll_interval=None)` | Advance an eligible source's display clock from supplied timestamps and return its end time. |
+| `buffered(app, identity)` | Check that the exact running source has entered buffered playback. |
+| `playback_status(app, identity)` | Return the last published source clock without advancing it. |
+| `playback_label(app, identity, *, ascii_=False, displayed_end=None)` | Format playback status and actual lag; supply the presented endpoint when full-history drawing holds an older end time. |
+| `display_resolution(app, identity, span, width, *, following=True)` | Set the movement deadline from the visible span and drawing width. Keep source publication independent. |
 | `enabled(app, identity)` | Check that Live is enabled for the current running source. |
 | `set_enabled(app, identity, value)` | Toggle Live and clear its rectangular zoom when enabling it. |
 | `stop_for_zoom(app, identity)` | Stop Live after a valid rectangular zoom. |
@@ -567,6 +667,41 @@ A filled companion uses the same canonical identity as its resource curve.
 | `document_revision(app)`, `document_interval(app)` | Report changed display state and the active display-refresh deadline. |
 | `feedback(app, g)` | Return the small control-row overlay between document refreshes. |
 | `overlay(views, snap, app, width, height)` | Return no full modal overlay. |
+
+### `tower.metric_envelope`
+
+This module derives display-only trend and range geometry from bounded drawing columns.
+It does not alter or retain the original measurement history.
+Local fits use normalized coordinates and values. Geometry-only projection weights have a 128-entry cache.
+
+| Method or record | Purpose and result |
+| --- | --- |
+| `columns(points, width, details=None)` | Summarize drawing vertices as ordered observed ranges. Preserve continuity, original counts, turns, and equal-time jumps when supplied. |
+| `local_trend(source, width)` | Fit eligible continuous runs with local quadratic polynomials. Return bounded drawing vertices and their continuity flags. |
+| `band_columns(source, low, high, pixels_high)` | Return the columns that contain sufficiently dense observed oscillations for a range band. |
+| `Column` | Hold one drawing column's observed bounds, first and last values, count, and continuity metadata. Its `centre` is the midpoint of its range. |
+| `Polynomial.at(x)` | Evaluate one normalized local model within its stored value limits. Rendering clips and joins it only within the acquired domain. |
+
+### `tower.metric_playback`
+
+This module owns the transient display time for each exact source and job attempt.
+It reads supplied timestamp metadata only. It does not read a source, scan its history, create samples, or schedule collection.
+At most 128 source clocks, 128 presentation gates, and seven observed intervals per source clock are retained.
+The observed cadence uses the median of those intervals.
+A backward clock, older newest timestamp, changed source generation, or return after more than 60 seconds resets the clock.
+If retained history starts after the old display time, the clock resumes at its earliest available observation and buffers again.
+
+| Method or record | Purpose and result |
+| --- | --- |
+| `advance(app, identity, *, now, newest, previous=None, poll_interval=None, generation=None, oldest=None)` | Advance the buffered display time within acquired history. Return `Playback`, or `None` for invalid or future latest timestamps. |
+| `reset(app, identity=None)` | Forget the matching source clock and presentation, or all clocks and presentations when no identity is supplied. |
+| `present(app, identity, playback, *, now, geometry, x_interval, edge_signature, force_token=None, oldest=None, reveal_changed=False)` | Publish or retain an automatic full-history endpoint using bounded edge and view guards. Return its actual displayed lag. |
+| `reset_presentation(app, identity=None)` | Discard one or all presentation gates without restarting the source clock. |
+| `Playback(end, delay, lag, interval, status)` | Report display time, target delay, actual lag, estimated source interval, and playback status. |
+
+The UI owns these clocks. Captured and explicitly selected bounds do not advance with them.
+The delay target is bounded at 30 seconds; actual lag can be longer after an outage.
+Catch-up is bounded at 1.25 times elapsed display-clock time.
 
 ### `tower.metric_sampling`
 

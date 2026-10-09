@@ -117,8 +117,13 @@ def render(views, snap, app, width, height):
             rows.append(row(" Bounded tail: earlier records are outside this inspection window.", "yellow"))
     elif view == "arrays":
         from .job_selection import selected, cleared
+        from .job_group_ui import fold_icon
+        from .array_disclosure import publish
+        from collections import Counter
+        import shlex
         groups = result.get("groups", [])
-        app.research_groups = groups
+        publish(app, groups)
+        id_counts = Counter(group["id"] for group in groups)
         index = app.clamp_cursor("research", len(groups))
         selected_index = selected(app, "research", index)
         rows.append(row(" Array cohorts  |  solid cells are sampled task identities; unseen tasks stay unknown", "dim"))
@@ -126,9 +131,23 @@ def render(views, snap, app, width, height):
             rows.append(row(" No array records in this snapshot.", "dim"))
         for i, group in enumerate(groups):
             selected_ = i == selected_index
-            hits.append((len(rows), "research_array", group["id"]))
+            opened = bool(selected_ and app.research_array_open)
+            icon = fold_icon(not opened, ascii_=g.ascii)
+            target = (group["id"], group.get("cluster", "")) if id_counts[group["id"]] > 1 else group["id"]
+            hits.append((len(rows), "research_array", target))
+            if width > 0:
+                target = str(group["id"])
+                cluster = str(group.get("cluster", ""))
+                action = "close" if opened else "open"
+                hits.append((len(rows), "control", {
+                    "id": "research-array-disclosure:" + str(i) + ":" + target,
+                    "label": action.title() + " tasks for array " + target + (" on " + text(cluster) if cluster else ""),
+                    "left": 0, "right": 1,
+                    "action": ("command", "array " + action + " " + shlex.quote(target) + " " + shlex.quote(cluster)),
+                    "group": "research-arrays"}))
             total = group.get("total") if group.get("total_known") else "?"
-            rows.append(row(f" {'>' if selected_ else ' '} {group['id']}  {group.get('name', '')}  total {total}  observed {group.get('observed', 0)}",
+            rows.append([(icon, "accent+bold+rev" if selected_ else "accent+bold")] +
+                        row(f"{'>' if selected_ else ' '} {group['id']}  {group.get('name', '')}  total {total}  observed {group.get('observed', 0)}",
                             "rev+bold" if selected_ else "bold"))
             rows.extend(charts.stacked_bar(g, [(k, n, STATES.get(k, "magenta")) for k, n in group.get("states", {}).items()], width))
             cells = group.get("cells", [])[:max(0, width - 4)]
@@ -247,7 +266,8 @@ def render(views, snap, app, width, height):
     offset = max(0, min(app.research_scroll, max(0, len(rows) - avail)))
     if (view == "arrays" and hits and height is not None and app.research_array_focus
             and not cleared(app, "research")):
-        selected = hits[app.cursor.get("research", 0)][0]
+        cohorts = [hit for hit in hits if hit[1] == "research_array"]
+        selected = cohorts[min(app.cursor.get("research", 0), len(cohorts) - 1)][0]
         if avail and selected < offset:
             offset = selected
         elif avail and selected >= offset + avail:

@@ -99,6 +99,9 @@ ALIASES = {
     # Pointer and slider glyphs use the same active accent as other controls.
     # This alias also covers cached fg:/bg: styles and future theme palettes.
     "cursor": "accent",
+    # A semantic fill marker lets selectors cross decorative range interiors.
+    # Range borders and fitted/observed strokes remain protected foreground ink.
+    "chart-fill": "chart-1",
 }
 CB_MAP = {"green": "blue", "red": "yellow", "yellow": "magenta"}
 FLAGS = {"bold": "1", "dim": "2", "rev": "7", "under": "4"}

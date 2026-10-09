@@ -84,11 +84,13 @@ def test_reported_context_job_identity_wins_over_other_running_selection(dashboa
 @pytest.mark.parametrize("ascii_", [False, True])
 @pytest.mark.parametrize("delta", [1.0, 30.0])
 def test_live_card_uses_only_observed_values_keeps_gaps_and_rejects_future_raster_endpoint(dashboard, monkeypatch, ascii_, delta):
-    if delta == 1:
-        # Keep a real discontinuity within the smallest permitted window,
-        # rather than passing through an empty raster at this endpoint.
-        for point, timestamp in zip(dashboard.points, [199.1, 199.3, 199.6, 199.9, 203.0]):
-            point["t"] = timestamp
+    # Put the genuine discontinuity inside the delayed window and retain an
+    # already acquired successor beyond its end. The separate future record
+    # must not enter the curve, freshness, or observed cadence.
+    timestamps = [189.1, 189.3, 189.6, 189.9, 203.0] if delta == 1 else [180., 184., 186., 189., 203.]
+    for point, timestamp in zip(dashboard.points, timestamps):
+        point["t"] = timestamp
+    dashboard.points.insert(-1, {"t": 194.9 if delta == 1 else 194., "value": 4., "step": 5})
     dashboard.views.g = L.Glyphs(ascii_)
     research_frame(dashboard)
     identity = M.initialize(dashboard.app)["records"][0].key
@@ -103,13 +105,13 @@ def test_live_card_uses_only_observed_values_keeps_gaps_and_rejects_future_raste
 
     monkeypatch.setattr(A.charts, "braille_chart", chart)
     rows, _ = research_frame(dashboard)
-    assert captured[-1][0] == (1.0, 2.0, None, dashboard.points[3]["value"])
-    assert captured[-1][1] == [point["t"] for point in dashboard.points[:4]]
-    assert captured[-1][2] == (200.0 - delta, 200.0)
+    assert captured[-1][0] == (1.0, 2.0, None, dashboard.points[3]["value"], 4.)
+    assert captured[-1][1] == [point["t"] for point in dashboard.points[:5]]
+    assert captured[-1][2] == (190.0 - delta, 190.0)
     assert captured[-1][3] == pytest.approx(.3 if delta == 1 else 3.5)
     source = next(L.row_text(row) for row in rows if " Source:" in L.row_text(row))
-    assert "4/5 samples" in source and "gaps 1" in source
-    assert "ahead of clock" in source
+    assert "4/6 samples" in source and "gaps 1" in source
+    assert "ahead of clock" not in source
     assert ("observed cadence 300ms" if delta == 1 else "observed cadence 3.5s") in source
     header = next(L.row_text(row) for row in rows if "loss  last" in L.row_text(row))
     assert "999" not in header
@@ -117,33 +119,33 @@ def test_live_card_uses_only_observed_values_keeps_gaps_and_rejects_future_raste
         assert all(L.row_text(row).isascii() for row in rows)
 
 
-def test_moving_window_invalidates_raster_without_new_samples_and_off_restores_cached_inventory(dashboard, monkeypatch):
+def test_moving_window_invalidates_raster_and_off_restores_buffered_full_history(dashboard, monkeypatch):
     research_frame(dashboard)
     identity = M.initialize(dashboard.app)["records"][0].key
     assert M.set_enabled(dashboard.app, identity, True)
     calls, raster = [], A.charts.braille_chart
     monkeypatch.setattr(A.charts, "braille_chart", lambda *args, **kwargs: (calls.append(kwargs["times"]), raster(*args, **kwargs))[1])
     research_frame(dashboard)
-    dashboard.now[0] += 1
+    dashboard.now[0] += 1.5
     research_frame(dashboard)
-    assert calls == [(170.0, 200.0), (171.0, 201.0)]
+    assert calls == [(160.0, 190.0), (161.5, 191.5)]
     assert M.set_delta(dashboard.app, identity, 1.0)
     rows, _ = research_frame(dashboard)
-    assert calls[-1] == (200.0, 201.0)
+    assert calls[-1] == (190.5, 191.5)
     assert any("0/5 samples" in L.row_text(row) for row in rows)
     narrow_calls = len(calls)
     assert M.set_delta(dashboard.app, identity, 30.0)
     rows, _ = research_frame(dashboard)
     assert len(calls) == narrow_calls  # The retained 30-second raster is reused.
-    assert C.initialize(dashboard.app)["plots"][0].x_bounds == (171.0, 201.0)
-    assert any("4/5 samples" in L.row_text(row) for row in rows)
+    assert C.initialize(dashboard.app)["plots"][0].x_bounds == (161.5, 191.5)
+    assert any("1/5 samples" in L.row_text(row) for row in rows)
     assert M.set_enabled(dashboard.app, identity, False)
     research_frame(dashboard)
     off_calls = len(calls)
     dashboard.now[0] += 1
     research_frame(dashboard)
-    assert len(calls) == off_calls
-    assert C.initialize(dashboard.app)["plots"][0].x_bounds == (190.0, 203.0)
+    assert len(calls) == off_calls + 1
+    assert C.initialize(dashboard.app)["plots"][0].x_bounds == (190.0, 192.5)
 
 
 def test_running_to_completed_hides_controls_and_immediately_restores_retained_card(dashboard):
@@ -201,6 +203,7 @@ def test_hidden_or_unidentifiable_controls_do_not_reserve_phantom_document_rows(
 
 @pytest.mark.parametrize("ascii_", [False, True])
 def test_modal_controls_align_with_box_content_and_cursor_keeps_exact_samples(dashboard, monkeypatch, ascii_):
+    dashboard.now[0] = 209.
     dashboard.views.g = L.Glyphs(ascii_)
     research_frame(dashboard)
     A.run_command(dashboard.app, ["chart", "loss"])
@@ -215,7 +218,7 @@ def test_modal_controls_align_with_box_content_and_cursor_keeps_exact_samples(da
     assert line[0] + line[1].index("[Live ON ") == record.toggle.left
     plot = C.initialize(dashboard.app)["plots"][0]
     assert plot.visible.top >= record.visible.bottom + 1
-    assert plot.x_bounds == (170.0, 200.0)
+    assert plot.x_bounds == (169.0, 199.0)
     A.handle_key(dashboard.app, "end")
     rendered = modal_frame(dashboard)
     assert dashboard.app.analysis_state["cursor_t"] == 199.0
@@ -308,4 +311,4 @@ def test_inline_reported_live_has_one_canonical_graph_node_per_button_and_shared
     assert app.research_view == "passport" and app.tab == "jobs" and app.research_job_id == "1"
     dashboard.views.compose(dashboard.store.snapshot(), app, 180, 70)
     plots = C.initialize(app)["plots"]
-    assert any(plot.key == records[0].key and plot.x_bounds == (170.0, 200.0) for plot in plots)
+    assert any(plot.key == records[0].key and plot.x_bounds == (160.0, 190.0) for plot in plots)

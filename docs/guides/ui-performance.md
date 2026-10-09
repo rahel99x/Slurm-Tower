@@ -11,6 +11,9 @@ Tower 4.8.3 restores saved metrics in the background, releases the data lock bef
 and limits inline Job Series raster work to the visible metric bands.
 Tower 4.9.0 adds one byte decoder, reusable native metric preparations, indexed
 Live windows, shorter observer critical sections, and a bounded pointer check before paint.
+Tower 4.11.0 buffers the display time of running metric graphs.
+This reduces visible edge jumps when measurements arrive in batches; it does not increase source sampling or make a delayed measurement current.
+See [Buffered running graphs](charts.md#read-buffered-running-graphs) for delay and outage behavior.
 Theme changes repaint the document with the selected canvas and surfaces.
 Live metric windows use display deadlines while source sampling retains its own limits.
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
@@ -45,16 +48,30 @@ Metric crosshairs read the frozen, final plot geometry.
 Moving a pointer does not recompute a curve or read its source.
 Crosshairs reach the latest reported terminal cell immediately.
 Only the Braille dot phase uses a bounded 24 ms transition inside that cell.
-Curve and annotation glyphs retain their original styles at selector intersections.
+Curve, range-border, fitted-line, and annotation glyphs retain their original styles at selector intersections.
+The faint decorative interior of a range band allows selector strokes, so the crosshair remains visible inside the band.
 Mouse coordinates remain whole terminal cells despite the finer Braille stroke positions.
 ASCII and reader modes keep static feedback. Disabling `animations` also disables selector easing.
 During a graph drag, both painted axis mappings stay fixed while new sampler results remain available.
 Automatic sample updates do not cancel capture.
 A valid rectangular release changes display bounds and requests a fresh document.
 Each zoom belongs to the exact metric, source, job, and attempt.
-Live advances the visible time window at a bounded display rate.
+Running graphs advance their buffered edge at a bounded display rate.
+Live moves a rolling window with that edge; the ordinary view retains the older history.
 Its window spans 30 seconds to one second; the separate polling control spans five seconds to 500 milliseconds.
 Changing the window alone does not change scheduler polling.
+A moving metric slider updates its control immediately while graph previews are limited to 20 rebuilds per second.
+Release applies the final slider position immediately.
+Changing Delta with Live off updates only its saved session preference and control feedback; it does not rerasterize the retained graph.
+
+Automatic full-history plots retain a stable displayed endpoint between meaningful edge changes.
+The presentation advances when the edge crosses a drawing column or vertical pixel, or its acquired bracket or continuity changes.
+Changed scale, geometry, active graph controls, replay position, or job attempt force an updated view.
+This gate also applies to the full-screen following chart; Live, capture, and explicit zoom keep their own bounds.
+It reduces repeated maintenance raster work without changing source timestamps or samples.
+The displayed lag includes the retained endpoint's extra age.
+Interior rounding or a fitted neighborhood can change before an edge threshold is met, so this is an adaptive presentation policy, not a proof of identical skipped pixels.
+Source corrections still invalidate the exact prepared data and raster inputs.
 
 The control graph indexes visible rows and control identities.
 Advisor results and wrapped Details documents reuse their current published inputs.
@@ -470,34 +487,72 @@ does not measure pauses between paints. Idle intervals also reflect the input ra
 This local pseudo-terminal test excludes a physical display, Termius rendering,
 SSH transport, and the latency of a live Slurm or GPU command.
 
-The final quiet comparison used three jobs, 4,000 observations per source, a
-five-second Live window, and a 320-column by 52-row terminal. New samples arrived
-every 500 ms. The two input rates below used identical options for each revision.
+### Sustained-input benchmark correction
 
-| Revision | Input reports per second | Document CPU p95 | Displayed pointer age p99 | Paint interval p99 |
-| --- | ---: | ---: | ---: | ---: |
-| Pre-4.8 (`a8afd6d`) | 250 | 37.15 ms | 31.84 ms | 31.54 ms |
-| 4.8.3 (`c2dc524`) | 250 | 31.18 ms | 25.30 ms | 23.40 ms |
-| 4.9 final build | 250 | 14.97 ms | 4.52 ms | 12.86 ms |
-| Pre-4.8 (`a8afd6d`) | 1,000 | 42.91 ms | 32.52 ms | 31.41 ms |
-| 4.8.3 (`c2dc524`) | 1,000 | 113.83 ms | 21.23 ms | 19.91 ms |
-| 4.9 final build | 1,000 | 11.49 ms | 2.88 ms | 10.30 ms |
+The 4.11 audit found that the earlier sustained-input fixture seeded its requested
+4,000-point history into a different job from the row selected in Jobs.
+The displayed graphs therefore did not carry the stated history load.
+The previously published comparison table for pre-4.8, 4.8.3, and 4.9 has been removed.
+Its timings do not establish the claimed loaded-graph performance comparison.
 
-The final runs retained Jobs and its four graph controls. They decoded and
-dispatched the quit key once. Maximum document CPU time was 22.91 ms and
-11.68 ms, respectively. Maximum paint interval was 29.10 ms and 14.15 ms.
-The runs included the worker-switch integration with Multi selected. These
-measurements establish the local comparison, not a universal frame-time limit.
+The same fixture also supplied the earlier worker-switch timing runs.
+Those timings are withdrawn as evidence of responsiveness with the stated graph load.
+Successful mode transitions and input routing checks remain observations of the
+workload that actually rendered, but they do not establish a large-history latency bound.
 
-One intermediate benchmark timed out during exit. Repeated identical runs and
-the final comparison did not reproduce it. The benchmark now records sanitized
-state and thread stacks on timeout. Earlier intermediate builds also showed
-occasional 123–147 ms CPU outliers. These did not occur in the final two runs;
-garbage-collection timing alone did not explain them.
+The corrected fixture must verify that the selected job owns the seeded measurements
+and that the displayed graph identities and sample counts match that job.
+Use a report from the corrected fixture for new timing comparisons.
+The independent changing-data, source-only rendering, and observer-lock benchmarks
+in this guide used different fixtures and are unaffected by this correction.
+
+### Corrected 4.11 sustained-input measurements
+
+The corrected comparison used a 320-column by 52-row pseudo-terminal, three jobs,
+and the actual selected job's history: at least 4,000 CPU records, 4,000 GPU records
+with four devices, and four 4,000-point GPU traces. Six plots belonged to that job.
+New CPU/GPU publications arrived every 500 ms. Each case sent 1,000 passive SGR
+motion reports per second for four seconds, with Multi selected.
+The fixture verified the selected job, populated records, and visible plots.
+All six cases retained Jobs and decoded and dispatched the quit key once.
+
+The baseline was 4.10.0, commit `03da70b1ec3af4a047f769a1693dbd59c4db85ff`.
+The 4.11 runtime source digest was `90d3d47fa6f89a9046c786d39b2999626cc8a3c20392e895fb05790ddee8d266`;
+the baseline digest was `d9311a063c7268a6b1821948a9047a11cd90b00b0667150dfcb544a7863b5979`.
+These are the benchmark's SHA-256 hashes of sorted runtime filenames and contents.
+
+All times in this table are milliseconds. Document totals cover the four-second
+measurement timeline; they exclude startup and other UI phases.
+
+| Display | Build | Documents | Total document CPU | Document CPU p50 / p95 | Pointer age p99 | Largest paint gap |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Full history | 4.10 | 14 | 1,084.47 | 103.37 / 134.19 | 2.94 | 140.69 |
+| Full history | 4.11 | 14 | 1,099.08 | 93.10 / 160.92 | 3.61 | 175.15 |
+| Live, 1 second | 4.10 | 25 | 1,369.77 | 29.74 / 116.35 | 5.80 | 432.68 |
+| Live, 1 second | 4.11 | 29 | 1,009.91 | 20.57 / 80.07 | 3.22 | 93.76 |
+| Live, 30 seconds | 4.10 | 30 | 961.59 | 20.74 / 77.61 | 4.75 | 83.95 |
+| Live, 30 seconds | 4.11 | 16 | 755.52 | 43.09 / 94.47 | 2.90 | 101.29 |
+
+The one-second and 30-second cases reduced total measured document CPU by 26.3%
+and 21.4%, respectively. The 30-second case prepared fewer documents, but each
+was more expensive at the median and p95. Full-history total document CPU rose
+by 1.3%, with a larger observed p95 and maximum paint gap. These results do not
+establish that every mode is faster or that large-history rendering is seamless.
+They are short runs on a shared cloud host, not terminal-independent latency limits.
+
+A separate unchanged-source check used the same populated history, two initial
+compositions, and 20 maintenance rebuilds spaced 201 ms apart. Before the
+presentation gate, the 4.11 draft rasterized 80 curves with an 87.41 ms median.
+The final gate reduced that to 36 curves and a 28.81 ms median; its maximum was
+138.22 ms. The 4.10 baseline rasterized four curves with a 33.61 ms median and
+115.28 ms maximum. The buffered display still advances through acquired data
+when its edge criteria require it; the older baseline had no such playback.
+The gate reduces repeated work while preserving the exact published domain,
+not every hypothetical intermediate raster. Fresh preparations remain a cost.
 
 ### Remaining large-history costs
 
-A separate source-only fixture used four native GPUs, four traces, 4,000
+The independent 4.9 source-only fixture used four native GPUs, four traces, 4,000
 observations per source, and a wider set of visible charts. Its final Live
 frame p95 values ranged from 49.57 to 62.16 ms. Fresh publications can still
 cost more than ordinary pointer feedback: observed full-history frame maxima
@@ -514,19 +569,11 @@ document work from terminal or input delay.
 
 ### Live worker-switch checks
 
-Real terminal press and release reports activated the toolbar at 1,000 motion
-reports per second. Both Multi → Single → Multi and Single → Multi → Single
-completed, retained Jobs and its four plots, and exited normally. Maximum
-document CPU time was 20.48 and 23.07 ms. Displayed pointer age p99 was 4.58
-and 3.74 ms.
-
-Isolated paint intervals reached 94.41 and 38.84 ms. The larger interval
-contained a 52.71 ms input batch away from the switch click. Its measured
-decode and dispatch calls were each below one millisecond. The saved phases
-did not isolate the remaining cost, and no recorded GC pause explained it.
-This is an unresolved worst-case timing limit, not evidence of a scheduler
-mode-change stall. Separate typed-command tests completed both transitions;
-their command-entry periods temporarily delayed mouse processing.
+Real terminal press and release reports exercise the toolbar during continuous
+motion input. Check that both Multi → Single → Multi and Single → Multi → Single
+complete, retain the selected job and page, and exit normally.
+Also verify the selected job's populated graph workload before interpreting timings;
+the [fixture correction](#sustained-input-benchmark-correction) applies to earlier results.
 
 Use the [worker benchmark procedure](background-workers.md#diagnose-a-pending-change)
 to repeat either control path. These tests improve coverage; they do not prove

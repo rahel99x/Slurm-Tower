@@ -1245,13 +1245,18 @@ class _FrameCache:
         self.next_live = float("inf")
         self.next_selector = float("inf")
         self.live_revision = 0
+        self.preview_ready = 0.0
+        self.next_preview = float("inf")
         self.toolbar_token = None
 
     def due(self, app, width, height, now=None):
         now = time.monotonic() if now is None else now
         from .interaction import needs_frame
         from . import metric_live
-        live_changed = metric_live.document_revision(app) != self.live_revision and not metric_live.active(app)
+        revision_changed = metric_live.document_revision(app) != self.live_revision
+        preview = revision_changed and metric_live.active(app)
+        self.next_preview = self.preview_ready if preview else float("inf")
+        live_changed = revision_changed and (not preview or now >= self.preview_ready)
         return (self.dirty or live_changed or needs_frame(app) or getattr(app, "text_selection_state", {}).get("frame_required") or self.geometry != (width, height) or
                 now >= self.next_maintenance or now >= self.next_animation or now >= self.next_live)
 
@@ -1301,6 +1306,11 @@ class _FrameCache:
         live_interval = metric_live.document_interval(app)
         self.next_live = now + live_interval if live_interval is not None else float("inf")
         self.live_revision = metric_live.document_revision(app)
+        # Slider feedback follows every input, while expensive graph previews
+        # use the latest accepted value at most twenty times per second.
+        # Release commits immediately through the ordinary revision path.
+        self.preview_ready = now + .05
+        self.next_preview = float("inf")
         self.dirty = False
 
     def feedback(self, app, views):
@@ -1346,7 +1356,7 @@ class _FrameCache:
     def wait_ms(self, now=None):
         now = time.monotonic() if now is None else now
         return max(1, min(200, round(1000 * (min(self.next_maintenance, self.next_animation,
-                                              self.next_live, self.next_selector) - now))))
+                                              self.next_live, self.next_selector, self.next_preview) - now))))
 
 
 def _mouse_reporting(enabled):

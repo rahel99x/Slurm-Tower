@@ -29,9 +29,11 @@ def test_changing_fixture_uses_actual_effects_and_new_samples_without_frame_io(b
     frames = result["frames"]
     assert sum(frame["publication"] for frame in frames) == 3
     assert any("maintenance" in frame["reasons"] or "live" in frame["reasons"] for frame in frames)
-    if case == "static":
-        assert any("maintenance" in frame["reasons"] for frame in frames)
-    if case.startswith("live"):
+    # Default running plots now move a buffered full-history endpoint too.
+    # Depending on span/terminal width, its subcolumn deadline or normal
+    # maintenance can win. A one-second Live window still requires faster
+    # movement; neither longer view must manufacture redundant redraws.
+    if case == "live1":
         assert any("live" in frame["reasons"] for frame in frames)
     if case == "switch":
         assert frames[40]["gesture"] == "job_click"

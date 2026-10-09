@@ -620,6 +620,7 @@ def _scoped_app(app, job, state):
     proxy.analysis_state = retained["analysis"]
     proxy.research_scroll, proxy.research_rows = 0, 0
     proxy.research_array_open = retained.get("array_open", False)
+    proxy.research_array_order = retained.get("array_order", ())
     proxy.research_task_offset = retained.get("task_offset", 0)
     proxy.research_array_focus = False
     proxy.research_groups, proxy.research_evidence = [], {}
@@ -668,13 +669,17 @@ def _research(views, snap, app, job, width, height, state, header_rows):
     chart_interaction.place_since(app, chart_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
     scrollbars.place_since(app, scroll_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
     retained.update(cursor=proxy.cursor.get("research", 0), array_open=proxy.research_array_open,
+                    array_order=getattr(proxy, "research_array_order", ()),
                     task_offset=proxy.research_task_offset)
     state["document_headers"][( _view_key(state), width)] = header_rows + 1
     content = [[(clean(f" Job {job.id} / {job.name}", views.g.ascii), "cyan+bold")]] + rows[nav_rows:MAX_ROWS + nav_rows]
+    # Small task-page controls overlap ordinary cohort selection rows. Route
+    # those exact bounded targets before the full-row fallback in Details.
+    ordered_hits = [hit for hit in hits if hit[1] == "control"] + [hit for hit in hits if hit[1] != "control"]
     actions = [(y - nav_rows + 1, "job_panel_action", ((kind, value),
                 value.get("left", 0) if kind == "control" and isinstance(value, dict) else 0,
                 value.get("right", width) if kind == "control" and isinstance(value, dict) else width))
-               for y, kind, value in hits if nav_rows <= y < nav_rows + MAX_ROWS]
+               for y, kind, value in ordered_hits if nav_rows <= y < nav_rows + MAX_ROWS]
     return content[:MAX_ROWS], actions
 
 
@@ -942,11 +947,14 @@ def _content_action(app, target):
             or state.get("job") != getattr(app, "selected_id", None)):
         return False
     if kind == "research_array":
-        ids = [item["id"] for item in proxy.research_groups]
-        if value in ids:
-            retained.update(cursor=ids.index(value), task_offset=0,
-                            array_open=not retained.get("array_open", False))
-            state["focus"] = "content"
+        from .array_disclosure import select
+        try:
+            index = select(proxy, value)
+        except ValueError:
+            return False
+        retained.update(cursor=index, task_offset=0,
+                        array_open=not retained.get("array_open", False))
+        state["focus"] = "content"
         return True
     if kind == "research_evidence":
         citation = proxy.research_evidence.get(value)
@@ -965,6 +973,22 @@ def _content_action(app, target):
         action = value.get("action", ())
         if len(action) != 2 or action[0] != "command":
             return False
+        import shlex
+        try:
+            words = shlex.split(action[1])
+        except (TypeError, ValueError):
+            return False
+        if len(words) >= 2 and words[0] == "array" and words[1] in ("open", "close"):
+            from .array_disclosure import command
+            try:
+                command(proxy, words[1:])
+            except ValueError:
+                return False
+            retained.update(cursor=proxy.cursor.get("research", 0),
+                            array_open=proxy.research_array_open,
+                            task_offset=proxy.research_task_offset)
+            state["focus"] = "content"
+            return True
         proxy.run_command(action[1])
     else:
         return False

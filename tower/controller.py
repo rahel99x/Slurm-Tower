@@ -2079,13 +2079,11 @@ class App:
                         resume(self, "deps")
                         self.cursor["deps"] = self.dep_ids.index(key)
                 elif kind == "research_array":
-                    ids = [g["id"] for g in self.research_groups]
-                    if key in ids:
-                        from .job_selection import resume
-                        resume(self, "research")
-                        self.cursor["research"] = ids.index(key)
-                        self.research_task_offset = 0
-                        self.research_array_focus = True
+                    from .array_disclosure import select
+                    try:
+                        select(self, key)
+                    except ValueError:
+                        pass
                 self.sync_selection()
                 return
 

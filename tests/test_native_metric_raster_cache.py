@@ -55,7 +55,9 @@ def test_maintenance_keeps_native_rasters_and_publishes_fresh_axes_controls_and_
     app.job_panel_state.update(mode='analytics', analytics_view='job')
     views = Views(L.Glyphs(ascii_), cfg)
     app.views_ref = views
-    timer = [1100.0]
+    # A fully revealed, paused source reuses its raster while source age grows.
+    # A flowing source deliberately moves its buffered edge between updates.
+    timer = [1110.0]
     monkeypatch.setattr(clock, 'now', lambda: timer[0])
     calls, original = [], charts.braille_chart
     monkeypatch.setattr(charts, 'braille_chart', lambda *a, **kw: (calls.append(1), original(*a, **kw))[1])
@@ -70,7 +72,7 @@ def test_maintenance_keeps_native_rasters_and_publishes_fresh_axes_controls_and_
         assert not calls
         assert C.initialize(app)['plots'] and M.initialize(app)['records']
         assert L.to_text(first, 180) != L.to_text(second, 180)
-        assert 'Source age 2s' in L.to_text(second, 180)
+        assert 'Source age 12s' in L.to_text(second, 180)
         R.set_multiplier(app, 50)
         third, _ = views.compose(store.snapshot(), app, 180, 60)
         assert calls and '500ms' in L.to_text(third, 180)

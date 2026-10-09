@@ -1,7 +1,8 @@
 """Pure terminal charts: fine continuous curves, measured areas, and timelines.
 
 Every chart returns rows of text/style segments. Telemetry curves keep observed
-extrema and leave unknown intervals empty; the renderer never smooths samples.
+extrema and leave unknown intervals empty. Labelled models remain separate from
+the original records used for statistics, inspection and export.
 """
 from __future__ import annotations
 
@@ -117,6 +118,14 @@ def _header(g: Glyphs, values: Sequence[Optional[float]], width: int, title: str
         row.append((prefix + token, "dim"))
         used += vlen(prefix + token)
     return row
+
+
+def chart_model_title(title: str, metadata: Optional[dict]) -> str:
+    """Keep model/range identification visible when a long title is clipped."""
+    if not metadata:
+        return title
+    labels = " + ".join(label for label, key in (("fit", "trend"), ("range", "band")) if metadata.get(key))
+    return "[" + labels + "] " + title if labels else title
 
 
 def _clip_time_samples(samples: Sequence[Tuple[float, Optional[float]]], times: Tuple[float, float],
@@ -240,14 +249,25 @@ def time_selection_note(t0: float, t1: float, width: int, indent: str = "   ") -
 class _TimeBucket:
     """Four retained observed vertices and an exact bounded-size mean sum."""
     __slots__ = ("count", "first", "last", "minimum", "maximum", "unknown",
-                 "breaks", "numerator", "shift", "envelope")
+                 "breaks", "numerator", "shift", "envelope", "details", "turns", "direction", "step")
 
-    def __init__(self, envelope):
+    def __init__(self, envelope, details=False):
         self.count, self.breaks, self.numerator, self.shift = 0, 0, 0, 0
         self.first = self.last = self.minimum = self.maximum = None
         self.unknown, self.envelope = False, envelope
+        self.details, self.turns, self.direction, self.step = details, 0, 0, False
 
     def add(self, timestamp, value, bridge):
+        if self.details and self.last is not None and value is not None and self.last[2] is not None:
+            previous = self.last[2]
+            if timestamp == self.last[1] and value != previous:
+                self.step = True
+            direction = (value > previous) - (value < previous)
+            if direction and bridge:
+                self.turns = min(2, self.turns + bool(self.direction and self.direction != direction))
+                self.direction = direction
+            elif not bridge:
+                self.direction = 0
         self.breaks += not bridge
         point = (self.count, timestamp, value, self.breaks)
         self.count += 1
@@ -277,10 +297,11 @@ class _TimeBucket:
 
 def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float], width: int,
                  times: Optional[Tuple[float, float]], sample_interval: Optional[float],
-                 envelope: bool = False) -> Tuple[List[Tuple[int, Optional[float], bool]], Tuple[float, float]]:
+                 envelope: bool = False, details: Optional[dict] = None) -> Tuple[List[Tuple[int, Optional[float], bool]], Tuple[float, float]]:
     """Bounded timestamp buckets with enough metadata to break curves across outages."""
     samples = [(timestamp, _finite(value)) for timestamp, value in zip(sample_times, values) if _finite(timestamp) is not None]
-    samples.sort(key=lambda item: item[0])
+    if any(b[0] < a[0] for a, b in zip(samples, samples[1:])):
+        samples.sort(key=lambda item: item[0])
     if times is None or len(times) != 2 or not all(_finite(t) is not None for t in times) or times[1] < times[0]:
         times = (samples[0][0], samples[-1][0]) if samples else (0.0, 0.0)
     if width <= 0:
@@ -298,11 +319,13 @@ def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float
         x = min(width - 1, max(0, round(_fraction(timestamp, t0, t1) * (width - 1)))) if t1 > t0 else width - 1
         bucket = buckets.get(x)
         if bucket is None:
-            bucket = buckets[x] = _TimeBucket(envelope)
+            bucket = buckets[x] = _TimeBucket(envelope, details is not None)
         bucket.add(timestamp, value, bridge)
     points: List[Tuple[int, Optional[float], bool]] = []
     previous_last: Optional[float] = None
     for x, bucket in sorted(buckets.items()):
+        if details is not None:
+            details[x] = {"count": bucket.count, "turns": bucket.turns, "step": bucket.step}
         known = not bucket.unknown
         bridge = (known and bucket.first[3] == 0 and previous_last is not None
                   and bucket.first[1] - previous_last <= gap_limit)
@@ -324,7 +347,8 @@ def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float
     return points, times
 
 
-def envelope_points(values: Sequence[Optional[float]], width: int) -> List[Tuple[int, Optional[float], bool]]:
+def envelope_points(values: Sequence[Optional[float]], width: int,
+                    details: Optional[dict] = None) -> List[Tuple[int, Optional[float], bool]]:
     """Bounded first/minimum/maximum/last buckets for equally spaced samples."""
     vals = [_finite(value) for value in values]
     if width <= 0:
@@ -337,6 +361,17 @@ def envelope_points(values: Sequence[Optional[float]], width: int) -> List[Tuple
         if any(value is None for value in chunk):
             points.append((x, None, False))
             continue
+        if details is not None:
+            previous, direction, turns = chunk[0], 0, 0
+            for value in chunk[1:]:
+                next_direction = (value > previous) - (value < previous)
+                if next_direction:
+                    turns += bool(direction and next_direction != direction)
+                    direction = next_direction
+                previous = value
+                if turns >= 2:
+                    break
+            details[x] = {"count": len(chunk), "turns": turns, "step": False}
         indices = sorted({0, len(chunk) - 1, min(range(len(chunk)), key=chunk.__getitem__),
                           max(range(len(chunk)), key=chunk.__getitem__)})
         points.extend((x, chunk[index], True) for index in indices)
@@ -654,15 +689,16 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
                   sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
                   axis_formatter: Optional[Callable[[float], str]] = None,
                   metadata: Optional[dict] = None, fitted: bool = False, time_units: bool = False,
-                  curve_style: str = "fine") -> List[Row]:
+                  curve_style: str = "fine", trend: bool = True, bands: bool = True) -> List[Row]:
     """Connected telemetry with a fine 2 x 4 Braille raster per Unicode cell.
 
     Eight subcell positions retain small bends and steep transitions while
     leaving the graph readable beneath the pointer. ``curve_style="blocks"``
     retains the earlier opaque 2 x 2 raster. ASCII uses directional line strokes.
-    No curve is smoothed: compression preserves first/minimum/maximum/last points,
-    unknown samples and cadence outages break segments, and clipping intersects
-    the actual observed line instead of fabricating a boundary value.
+    Titled plots add a separately identified local quadratic trend. Dense
+    oscillations use exact low/high ranges with dim fill and bright borders.
+    Compression preserves extrema; unknown samples, cadence outages and steps
+    break models. Source observations and summary statistics remain unchanged.
     """
     axis_w = max(1, axis_w)
     values = [_finite(v) for v in values]
@@ -675,25 +711,42 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
     height = max(0, min(MAX_HEIGHT, height))
     raster_x = 1 if g.ascii else 2
     raster_y = 1 if g.ascii else 2 if curve_style == "blocks" else 4
+    enhanced = bool(title and envelope and chart_w and height and (trend or bands))
+    details = {} if enhanced else None
     if sample_times is None:
-        points = envelope_points(values, chart_w * raster_x) if envelope else [
+        points = envelope_points(values, chart_w * raster_x, details) if envelope else [
             (x, value, True) for x, value in enumerate(resample(values, chart_w * raster_x))]
     else:
-        points, times = _time_points(values, sample_times, chart_w * raster_x, times, sample_interval, envelope)
+        points, times = _time_points(values, sample_times, chart_w * raster_x, times, sample_interval, envelope, details)
     _plot_metadata(metadata, width, chart_w, height, indent, axis_w, title, lo, hi,
                    times, sample_times is not None, any(v is not None for _, v, _ in points),
                    (raster_x, raster_y))
     pixels_h, pixels_w = height * raster_y, chart_w * raster_x
     cells = [[0] * chart_w for _ in range(height)]
+    trend_points, band_points = (), ()
+    if enhanced:
+        from . import metric_envelope as E
+        profile = E.columns(points, pixels_w, details)
+        trend_points = E.local_trend(profile, pixels_w) if trend else ()
+        band_points = E.band_columns(profile, lo, hi, pixels_h) if bands else ()
+    band_x = {point.x for point in band_points}
+    borders = [[0] * chart_w for _ in range(height)] if band_points else []
+    fills = [[0] * chart_w for _ in range(height)] if band_points else []
+    models = [[0] * chart_w for _ in range(height)] if trend_points else []
+    target_cells = cells
+    if metadata is not None:
+        metadata.update(trend=bool(trend_points), band=bool(band_points),
+                        trend_label="local quadratic fit" if trend_points else "",
+                        band_label="observed low-high range" if band_points else "")
 
     def mark(x: int, y: int, direction: int = 16) -> None:
         if 0 <= x < pixels_w and 0 <= y < pixels_h:
             if g.ascii:
-                cells[y][x] |= direction
+                target_cells[y][x] |= direction
             elif raster_y == 4:
-                cells[y // 4][x // 2] |= BRAILLE_BITS[y % 4][x % 2]
+                target_cells[y // 4][x // 2] |= BRAILLE_BITS[y % 4][x % 2]
             else:
-                cells[y // 2][x // 2] |= 1 << ((y % 2) * 2 + x % 2)
+                target_cells[y // 2][x // 2] |= 1 << ((y % 2) * 2 + x % 2)
 
     def stroke(px: int, py: int, ex: int, ey: int) -> None:
         dx, dy = abs(ex - px), abs(ey - py)
@@ -718,7 +771,7 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
     previous: Optional[Tuple[int, float, Optional[int]]] = None
     if pixels_h and pixels_w:
         for x, value, bridge in points:
-            if value is None:
+            if value is None or x in band_x:
                 previous = None
                 continue
             y = round((1 - _fraction(value, lo, hi)) * (pixels_h - 1)) if lo <= value <= hi else None
@@ -728,6 +781,50 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
                 if previous[2] is not None and y is not None:
                     # The usual in-range path reuses integer pixel coordinates.
                     # Only actual clipping needs stable boundary interpolation.
+                    stroke(previous[0], previous[2], x, y)
+                else:
+                    segment = _clip_curve_segment(previous[0], previous[1], x, value, lo, hi)
+                    if segment is not None:
+                        x0, v0, x1, v1 = segment
+                        stroke(round(x0), round((1 - _fraction(v0, lo, hi)) * (pixels_h - 1)),
+                               round(x1), round((1 - _fraction(v1, lo, hi)) * (pixels_h - 1)))
+            previous = (x, value, y)
+
+    if band_points:
+        target_cells = borders
+        previous_band = None
+        for item in band_points:
+            lower = round((1 - _fraction(item.low, lo, hi)) * (pixels_h - 1))
+            upper = round((1 - _fraction(item.high, lo, hi)) * (pixels_h - 1))
+            if lo <= item.low <= hi:
+                mark(item.x, lower, 1)
+            if lo <= item.high <= hi:
+                mark(item.x, upper, 1)
+            if previous_band is not None and item.bridge and item.x == previous_band.x + 1:
+                for start, end in ((previous_band.low, item.low), (previous_band.high, item.high)):
+                    segment = _clip_curve_segment(previous_band.x, start, item.x, end, lo, hi)
+                    if segment is not None:
+                        x0, v0, x1, v1 = segment
+                        stroke(round(x0), round((1 - _fraction(v0, lo, hi)) * (pixels_h - 1)),
+                               round(x1), round((1 - _fraction(v1, lo, hi)) * (pixels_h - 1)))
+            target_cells = fills
+            # Terminals do not support alpha. Sparse subcell stipple with a
+            # themed dim foreground keeps range interiors faint and readable.
+            for y in range(upper + 1, lower):
+                if (item.x + y) % (2 if g.ascii else 4) == 0:
+                    mark(item.x, y)
+            target_cells = borders
+            previous_band = item
+
+    if trend_points:
+        target_cells = models
+        previous = None
+        for x, value, bridge in trend_points:
+            y = round((1 - _fraction(value, lo, hi)) * (pixels_h - 1)) if lo <= value <= hi else None
+            if y is not None:
+                mark(x, y)
+            if previous is not None and bridge:
+                if previous[2] is not None and y is not None:
                     stroke(previous[0], previous[2], x, y)
                 else:
                     segment = _clip_curve_segment(previous[0], previous[1], x, value, lo, hi)
@@ -747,7 +844,8 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
 
     rows: List[Row] = []
     if title:
-        rows.append(_header(g, _window_values(values, sample_times, times), width, title, unit, indent))
+        caption = chart_model_title(title, {"trend": bool(trend_points), "band": bool(band_points)})
+        rows.append(_header(g, _window_values(values, sample_times, times), width, caption, unit, indent))
     for r, masks in enumerate(cells):
         axis_value = hi if r == 0 else lo if r == height - 1 else _mean((lo, hi)) if height >= 5 and r == height // 2 else None
         label = (axis_formatter(axis_value) if axis_formatter else fmt_num(axis_value, unit)) if axis_value is not None else ""
@@ -757,8 +855,15 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
         for x, mask in enumerate(masks):
             # Sparse dim guides remain separate from the measured curve ink.
             guide = "·" if not g.ascii and r in (0, height // 2) and x % 8 == 0 else " "
-            glyph = ascii_stroke(mask) if g.ascii else BRAILLE[mask] if raster_y == 4 else QUADRANTS[mask]
-            row.append((glyph, style) if mask else (guide, "dim"))
+            mask |= borders[r][x] if borders else 0
+            model = models[r][x] if models else 0
+            fill = fills[r][x] if fills else 0
+            visible = mask or model or fill
+            glyph = ascii_stroke(visible) if g.ascii else BRAILLE[visible] if raster_y == 4 else QUADRANTS[visible]
+            # Measured geometry wins a shared terminal cell. Fits never cover
+            # an observed stroke; selector composition likewise preserves ink.
+            ink = style if mask else "chart-2" if model else "chart-fill+" + (color(fraction) if color else "chart-1") + "+dim"
+            row.append((glyph, ink) if visible else (guide, "dim"))
         rows.append(row)
     rows.append([(indent + " " * max(0, axis_w - 1) + ("+" if g.ascii else "└") + g.rule * chart_w, "dim")])
     if times:

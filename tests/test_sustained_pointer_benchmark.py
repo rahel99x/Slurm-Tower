@@ -133,6 +133,40 @@ def test_live_fixture_requires_at_least_one_eligible_control(benchmark):
         benchmark.configure_live(SimpleNamespace(selected_id="7"), metric, 5)
 
 
+def test_fixture_seeds_the_actual_sorted_job_and_renders_its_4000_point_history(benchmark):
+    from tower import chart_interaction as C, layout as L
+    from tower.config import Config
+    from tower.controller import App
+    from tower.model import Job, Store
+    from tower.views import Views
+    cfg = Config({"animations": False, "log_lines": 0, "series_keep": 9000})
+    store = Store(persist=False, series_keep=9000)
+    jobs = [Job("10", "first-source", "cpu", "RUNNING", submit="s", start="r"),
+            Job("20", "displayed-source", "cpu", "RUNNING", submit="s", start="r")]
+    store.apply_jobs(jobs)
+    app = App(store, None, None, cfg, "test", interactive=False)
+    app.selected_id = "10"
+    app.cursor["jobs"] = 1
+    views = Views(L.Glyphs(False), cfg)
+    app.views_ref = views
+    try:
+        selected = benchmark.prepare_fixture_job(
+            app, store.snapshot(), lambda: views.compose(store.snapshot(), app, 320, 52))
+        assert selected.id == app.selected_id == app.analytics_job == "20"
+        for index in range(4000):
+            store.record(selected.id, {"k": "live", "t": float(index), "cpu": .5, "rss": 1000.})
+            store.record(selected.id, {"k": "gpu", "t": float(index), "gpu": {"0": [50.]}})
+        rows, _ = views.compose(store.snapshot(), app, 320, 52)
+        plots = C.initialize(app)["plots"]
+        assert plots and all(plot.key[1] == selected.id for plot in plots)
+        assert len(store.series[selected.id]) == 8000
+        assert not store.series.get("10")
+        assert "4000 cpu samples, 4000 gpu samples" in L.to_text(rows, 320)
+    finally:
+        if app.research:
+            app.research.close()
+
+
 def test_diagnostic_state_does_not_record_terminal_prefix_or_pasted_contents(benchmark):
     import json
     reader = SimpleNamespace(escape="private-terminal-bytes", pasting=True, queue=[("paste", "private-paste")],

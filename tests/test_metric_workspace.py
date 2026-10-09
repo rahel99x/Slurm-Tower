@@ -215,7 +215,8 @@ def test_live_controls_follow_exact_job_in_native_and_inline_series(dashboard, m
     rows, hits = draw(dashboard, 180, 70)
     assert metric_live.enabled(app, target.key)
     plot = next(plot for plot in C.initialize(app)["plots"] if plot.key == target.key)
-    assert plot.x_bounds == (1161.0, 1191.0)
+    # Ten-second observations retain two producer intervals for presentation.
+    assert plot.x_bounds == (1141.0, 1171.0)
     assert "Source age" in "\n".join(map(L.row_text, rows))
     assert all(control.key[1] == "7" for control in metric_live.initialize(app)["records"])
     # A window is source scoped. Turning CPU Live on leaves memory unchanged.
@@ -228,6 +229,9 @@ def test_one_second_live_window_stays_active_when_samples_are_absent(dashboard, 
     app.tab = tab
     app.job_panel_state["mode"] = "analytics"
     monkeypatch.setattr(clock, "now", lambda: 1192.0)
+    # A genuine unknown measurement keeps this buffered interval empty. A
+    # simple interval between two valid samples now shows the acquired line.
+    store.series["7"][17]["cpu"] = None
     draw(dashboard, 180, 70)
     control = next(c for c in metric_live.initialize(app)["records"] if c.key[2] == "cpu-rate")
     full = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
@@ -235,12 +239,12 @@ def test_one_second_live_window_stays_active_when_samples_are_absent(dashboard, 
     assert metric_live.set_delta(app, control.key, 1.0)
     original = list(store.series_of("7"))
     rows, hits = draw(dashboard, 180, 70)
-    assert metric_live.window(app, control.key) == (1191.0, 1192.0)
+    assert metric_live.window(app, control.key) == (1171.0, 1172.0)
     assert metric_live.document_interval(app) == .1
     text = "\n".join(map(L.row_text, rows))
     assert "1s" in text and "no observations in live window" in text
     empty = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
-    assert empty.kind == "metric-empty" and empty.x_bounds == (1191.0, 1192.0)
+    assert empty.kind == "metric-empty" and empty.x_bounds == (1171.0, 1172.0)
     y, x = empty.visible.top, empty.visible.left
     assert not C.hover(app, y, x) and C.feedback(app) == []
     assert not C.handle_mouse(app, y, x, button="press") and not C.active(app)
@@ -269,7 +273,7 @@ def test_one_second_live_window_renders_a_genuine_recent_sample(dashboard, monke
     original = list(dashboard.store.series_of("7"))
     rows, _ = draw(dashboard, 180, 70)
     plot = next(plot for plot in C.initialize(app)["plots"] if plot.key == control.key)
-    assert plot.kind == "metric" and plot.x_bounds == (1189.5, 1190.5)
+    assert plot.kind == "metric" and plot.x_bounds == (1169.5, 1170.5)
     assert "no observations in live window" not in "\n".join(map(L.row_text, rows))
     assert list(dashboard.store.series_of("7")) == original
 
@@ -278,6 +282,10 @@ def test_live_slider_motion_is_cosmetic_and_redraw_deadline_is_bounded(dashboard
     app, views, store = dashboard.app, dashboard.views, dashboard.store
     app.tab = "analytics"
     monkeypatch.setattr(clock, "now", lambda: 1191.0)
+    # Input handling never paints a document. A separate scheduler may preview
+    # the latest accepted slider value after 50 ms, independent of the source
+    # publication deadline. Freeze time to inspect both sides of that deadline.
+    monkeypatch.setattr(screen.time, "monotonic", lambda: 1000.0)
     cache = screen._FrameCache()
     cache.rebuild(app, views, store, None, 180, 70)
     control = next(c for c in metric_live.initialize(app)["records"] if c.key[2] == "cpu-rate")
@@ -300,7 +308,11 @@ def test_live_slider_motion_is_cosmetic_and_redraw_deadline_is_bounded(dashboard
         _, overlays, _ = cache.feedback(app, views)
         assert overlays
     assert cache.next_live != float("inf")
-    assert not cache.due(app, 180, 70, now=cache.next_live - .01)
+    assert cache.preview_ready == pytest.approx(1000.05)
+    assert cache.preview_ready < cache.next_live
+    assert not cache.due(app, 180, 70, now=cache.preview_ready - .001)
+    assert cache.next_preview == cache.preview_ready
+    assert cache.due(app, 180, 70, now=cache.preview_ready)
     assert cache.due(app, 180, 70, now=cache.next_live)
     painter.assert_not_called()
 
@@ -344,14 +356,14 @@ def test_native_live_curve_cannot_use_future_observations_to_fill_current_window
     C.publish(app, 80, 30)
     assert observed == [([10], [1180])]
     plot, = C.initialize(app)["plots"]
-    assert plot.kind == ("metric-empty" if delta == 1 else "metric") and plot.key == identity
-    assert plot.x_bounds == (1191.0 - delta, 1191.0)
+    # Startup holds at the sole acquired observation; the future endpoint
+    # cannot provide a fabricated slope or advance the buffered display.
+    assert plot.kind == "metric" and plot.key == identity
+    assert plot.x_bounds == (1180.0 - delta, 1180.0)
     y, x = plot.visible.top, plot.visible.left
-    if delta == 1:
-        assert not C.hover(app, y, x) and C.feedback(app) == []
-        assert not C.handle_mouse(app, y, x, button="press") and not C.active(app)
     text = "\n".join(map(L.row_text, rows))
     assert "Source age 11s" in text
-    assert ("no observations in live window" in text) == (delta == 1)
+    assert "no observations in live window" not in text
+    assert "buffering" in text
     assert C.handle_mouse(app, y, x, button="right")
     assert not metric_live.enabled(app, identity) and C.bounds(app, identity) is None
