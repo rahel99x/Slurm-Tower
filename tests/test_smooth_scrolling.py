@@ -235,6 +235,9 @@ def test_mouse_protocol_enables_hover_and_disables_all_modes_even_after_failure(
     with pytest.raises(RuntimeError, match="paint failed"):
         screen.run_curses(None, None, None, None, None, {})
     text = terminal.getvalue()
+    formats_off = "\x1b[?1005l\x1b[?1015l\x1b[?1016l"
+    assert text.startswith(formats_off)
+    assert text.count(formats_off) == 2  # Start and exceptional shutdown.
     assert "\x1b[?1002h\x1b[?1003h\x1b[?1006h" in text
     assert "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l" in text
     assert text.endswith("\x1b[?2004l")

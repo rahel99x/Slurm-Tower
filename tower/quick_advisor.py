@@ -184,9 +184,9 @@ def _sample(item):
 def _recorded_series(store, jid, event):
     """Read a bounded persistent tail outside the Store lock.
 
-    Store.series_of lazily reads its entire file while holding the Store lock.
-    An on-demand diagnosis must not block input or scheduler publications on
-    that I/O. This private reader leaves the ordinary series cache untouched.
+    Headless Store.series_of restores retained history synchronously. This
+    cancellable diagnosis keeps its own read budget and leaves the ordinary
+    interactive series cache untouched.
     """
     with store.lock:
         source = store.series.get(jid, ())

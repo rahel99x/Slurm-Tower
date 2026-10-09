@@ -103,6 +103,9 @@ class App:
         workbench.initialize(self)
         self.restore(store.load_ui())
         self.labels = KEY_LABELS_ASCII if self.theme == "reader" or ascii_ else KEY_LABELS
+        enable_series_background = getattr(sampler, "enable_series_background", None)
+        if interactive and callable(enable_series_background):
+            enable_series_background()
 
     # ---- persistence -------------------------------------------------------------------------------
     def restore(self, ui: dict):
@@ -1089,9 +1092,12 @@ class App:
                 return
             if self.analytics_view == "job":
                 ids = [j.id for j in self.store.jobs if not j.pending]
-                for i in self.store.series_jobs():
-                    if i not in ids:
+                seen = set(ids)
+                series_jobs = self.store.series_jobs_view if self.interactive else self.store.series_jobs
+                for i in series_jobs():
+                    if i not in seen:
                         ids.append(i)
+                        seen.add(i)
                 if ids:
                     resume(self)
                     cur = ids.index(self.analytics_job) if self.analytics_job in ids else 0
@@ -1816,7 +1822,8 @@ class App:
             return "advise <id | name>"
         j = self.store.job(what)
         if j and not j.pending:
-            a = advisor.advise_running(j, snap["live"].get(j.id), self.store.series_of(j.id), snap["finished"])
+            from .views import _native_series
+            a = advisor.advise_running(j, snap["live"].get(j.id), _native_series(self.store.series_of(j.id)), snap["finished"])
             return f"{j.id} {j.name} so far: " + (a.summary(self.views_ref.g.dot if self.views_ref else "|") or "nothing to change yet")
         f = next((f for f in snap["finished"] if f.id == what), None)
         if f:
@@ -2126,7 +2133,8 @@ class App:
             self.fail(f"resubmit: no job {jid} in the queue or the history")
             return
         if "advised" in switches:
-            adv = advisor.advise_running(job, snap["live"].get(jid), self.store.series_of(jid), snap["finished"]) if job and not job.pending else \
+            from .views import _native_series
+            adv = advisor.advise_running(job, snap["live"].get(jid), _native_series(self.store.series_of(jid)), snap["finished"]) if job and not job.pending else \
                 (advisor.advise_finished(fin, snap["finished"]) if fin else None)
             if adv:
                 if adv.mem_suggest:

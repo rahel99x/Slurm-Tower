@@ -264,3 +264,13 @@ def test_curses_loop_repaints_before_queued_click_and_following_action(dashboard
     assert app.marks == set(clicks) and len(clicks) == 1
     assert len(frames) == 4  # initial, scrolled, clicked, marked
     assert window.timeouts[0] == 200 and window.timeouts[-1] == 200
+
+
+def test_discarded_mouse_report_keeps_the_published_document(dashboard):
+    app, _, _ = dashboard
+    before = app.tab, app.selected_id, set(app.marks)
+    effects = screen._InputEffects()
+    screen._consume_input_batch(app, InputWindow(), curses, app.last_hits,
+                                ("mouse", None), effects=effects)
+    assert not effects.document
+    assert (app.tab, app.selected_id, set(app.marks)) == before

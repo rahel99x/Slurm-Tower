@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.8.2 |
+| Release | Tower 4.8.3 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -30,9 +30,18 @@ It also provides an ASCII display mode and plain-text reports.
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
 
+## Changes in Tower 4.8.3
+
+- Delayed mouse reports remain pointer input even when their first Escape byte arrives separately. Active drags allow a short prefix grace period.
+- Metric archive reads and sampler file writes run outside the shared data lock. Interactive views use published samples while saved history loads in the background.
+- Jobs Details renders the visible metric bands. Off-screen graphs retain their place in the scrollable document without repeating raster work.
+- Pointer feedback validates visible Live controls. Background maintenance still checks all retained sampling requests.
+- Completed background Research commands preserve the current page, selection, and source when the user leaves their workflow.
+- Use `tower --ui-trace ui-trace.json` to record bounded UI timings and page transitions. Quit normally to save the report. See [the timing guide](docs/guides/ui-performance.md#record-a-desktop-latency-report).
+
 ## Changes in Tower 4.8.2
 
-- Terminal mouse reports remain mouse input. Legacy X10 coordinates and fragmented control sequences cannot activate page shortcuts.
+- The decoder recognizes legacy X10, SGR, and urxvt mouse reports. Version 4.8.3 also covers a delay immediately after the initial Escape byte.
 - Clicks use the current published job, source, and pane. Stale row positions and changed hit payloads cannot open another job or page.
 - Graph crosshairs repaint changed cells. Unchanged native curves reuse bounded raster caches while axes, source age, and live controls continue to update.
 - Drag owners cancel stale captures after context changes. A new gesture retains its own release after an earlier gesture was cancelled.

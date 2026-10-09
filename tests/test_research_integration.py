@@ -286,8 +286,10 @@ def test_interactive_preflight_stays_responsive_and_has_only_one_background_oper
         app.run_command("prepare " + shlex.join([str(files["script"]), "--workdir", str(files["root"])]))
         assert time.perf_counter() - start < .5
         assert entered.wait(1)
+        assert app.tab == "research" and app.research_view == "submit"
         app.handle("right")
-        assert app.research_view == "arrays"
+        chosen_view = app.research_view
+        assert chosen_view == "predict"
         session.views.compose(session.store.snapshot(), app, 80, 20, session.actions)
         app.run_command("prepare " + shlex.quote(str(files["script"])))
         assert not app.command_ok and "still running" in app.message
@@ -295,7 +297,7 @@ def test_interactive_preflight_stays_responsive_and_has_only_one_background_oper
         released.set()
         finish_research_command(app)
     assert app.research.plan["valid"]
-    assert app.research_view == "submit"
+    assert app.research_view == chosen_view
 
 
 def test_research_rendering_and_array_drilldown_never_query_scheduler(research_dashboard):

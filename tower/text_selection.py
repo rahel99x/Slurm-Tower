@@ -85,6 +85,21 @@ def _slice(row, left, right):
     """Slice by terminal cells without tearing wide or combining characters."""
     result, column = [], 0
     for text, style in row:
+        if not text:
+            continue
+        if text.isascii():
+            if column >= right:
+                return "".join(result).rstrip()
+            start = max(0, left - column)
+            stop = min(len(text), right - column)
+            if start < stop:
+                result.append(text[start:stop])
+            column += len(text)
+            if column > right:
+                return "".join(result).rstrip()
+            # At the exact right edge, the next segment may begin with
+            # combining marks belonging to the last included character.
+            continue
         for char in text:
             size = L.vlen(char)
             if size == 0:

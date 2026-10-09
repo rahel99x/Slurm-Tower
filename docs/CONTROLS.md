@@ -860,6 +860,7 @@ Run `tower --help` for the parser's complete current syntax.
 | `--doctor` | Inspect demo, local, or remote prerequisites |
 | `--gpu-check [JOBID]` | Inspect GPU detection; omit JOBID to check current individual jobs |
 | `--gpu-check-output DIRECTORY` | Save a GPU check to a new private directory |
+| `--ui-trace FILE` | Record bounded interactive UI timings and page transitions; save to a new private JSON file on exit |
 | `--profile NAME` | Apply a configured cluster profile |
 | `--host HOST` | Run scheduler commands and log reads through SSH |
 | `--ssh-user USER` | Select the remote SSH login |

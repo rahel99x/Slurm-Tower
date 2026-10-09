@@ -10,6 +10,71 @@ from .research import clean
 
 COMMANDS = ("metric", "metrics", "passport", "validate", "artifacts", "prepare", "submit", "investigate", "array")
 OFFLINE = {"metric", "passport", "validate", "prepare"}
+BACKGROUND_VIEWS = {"prepare": "submit", "submit": "submit", "array": "submit",
+                    "passport": "passport", "validate": "artifacts"}
+
+
+def _background_context(app, hub):
+    """Identity of the workflow that accepted an explicit background command."""
+    project = getattr(app, "project_state", {})
+    project = project if isinstance(project, dict) else {}
+    binding = project.get("binding")
+    binding = binding if isinstance(binding, dict) else {}
+    return (getattr(app, "tab", None), getattr(app, "mode", None),
+            getattr(app, "research_view", None), getattr(app, "research_job_id", None),
+            getattr(app, "selected_id", None), getattr(app, "detail_id", None),
+            project.get("generation"), project.get("root"),
+            tuple(binding.get(key) for key in ("job_id", "run_id", "attempt", "project_root", "run_root")),
+            hub.generation)
+
+
+def _publish_detached(app, hub, cmd, ready, resources):
+    """Retain completed work without replacing another workflow or its source."""
+    if isinstance(ready, Exception):
+        app.fail(f"{cmd}: {clean(ready)}")
+        return
+    code = 0
+    if cmd in OFFLINE:
+        result, code = ready
+    elif cmd == "submit":
+        result, options = ready
+    else:
+        result = ready
+    app.research_background_result = {"command": cmd, "result": result}
+    if app.research_result is None:
+        app.research_result = result
+    changed = False
+    if cmd in ("prepare", "submit", "array") and hub.plan is resources[0]:
+        hub.plan = result
+        changed = True
+        if cmd == "submit":
+            hub.prepared_submission = (result, options.passport_dir)
+    elif cmd == "passport":
+        if "passport" in result and hub.passport is resources[1]:
+            hub.passport = result["passport"]
+            changed = True
+        elif "differences" in result and hub.passport_diff is resources[2]:
+            hub.passport_diff = result["differences"]
+            changed = True
+        elif "passport" not in result and "differences" not in result and hub.passport is resources[1]:
+            hub.passport = result
+            changed = True
+    # Cached cards derived from the retained plan/passport must display the
+    # completed result when the user deliberately returns to its workspace.
+    if changed:
+        with hub.lock:
+            for key in list(hub.cache):
+                if len(key) > 1 and key[1] == BACKGROUND_VIEWS.get(cmd):
+                    del hub.cache[key]
+    if cmd in ("submit", "array") and (not isinstance(result, dict) or not result.get("valid")):
+        app.fail(f"{cmd}: submission preflight failed; the completed result remains available")
+        return
+    if code:
+        app.fail(f"{cmd}: validation failed; the completed result remains available")
+    else:
+        app.command_ok = True
+        app.say(f"{cmd}: complete; current workspace retained" +
+                ("; open Research / Submit to review the prepared plan" if cmd in ("prepare", "submit", "array") else ""))
 
 
 class Parser(argparse.ArgumentParser):
@@ -186,6 +251,7 @@ def execute(app, cmd, args, *, ready=None):
         return True
     if cmd not in COMMANDS:
         return False
+    args = tuple(args)
     hub = getattr(app, "research", None)
     if hub is None:
         app.fail("research services are unavailable")
@@ -194,6 +260,8 @@ def execute(app, cmd, args, *, ready=None):
     try:
         if isinstance(ready, Exception):
             raise ready
+        if cmd == "submit" and ready is None and getattr(hub, "pending", None):
+            raise ValueError("a research operation is still running; review the completed plan before submission")
         if app.interactive and ready is None and (cmd in OFFLINE or cmd == "array" or (cmd == "submit" and args)):
             if getattr(app.files, "remote", False) or getattr(app, "replay", None):
                 raise ValueError("this research command requires local files on the cluster")
@@ -206,8 +274,32 @@ def execute(app, cmd, args, *, ready=None):
             else:
                 jobs, finished = list(app.store.jobs), list(app.store.finished)
                 fn = lambda: array_plan(args, jobs, finished)
-            if not hub.start_task(fn, lambda value: execute(app, cmd, args, ready=value)):
+            token, origin = object(), None
+            resources = (hub.plan, hub.passport, hub.passport_diff)
+
+            def completed(value):
+                if getattr(app, "_research_background_request", None) is not token:
+                    return
+                app._research_background_request = None
+                try:
+                    if getattr(app, "research", None) is hub and _background_context(app, hub) == origin:
+                        execute(app, cmd, args, ready=value)
+                    else:
+                        _publish_detached(app, hub, cmd, value, resources)
+                except Exception as exc:
+                    app.fail(f"{cmd}: {clean(exc)}")
+
+            if not hub.start_task(fn, completed):
                 raise ValueError("a research operation is still running; try again after it completes")
+            app._research_background_request = token
+            if cmd != "metric":
+                view = BACKGROUND_VIEWS[cmd]
+                if app.tab == "research" and app.research_view != view:
+                    from .navigation_ui import record
+                    record(app, "research", force=True)
+                app.enter_tab("research")
+                app.mode, app.research_view, app.research_scroll = "main", view, 0
+            origin = _background_context(app, hub)
             app.say(f"{cmd}: preparing in the background")
             return True
         if cmd in OFFLINE:
@@ -281,7 +373,8 @@ def execute(app, cmd, args, *, ready=None):
                 from .project_ui import selected_binding
                 if selected_binding(app) is not None:
                     raise ValueError("run submission reports are read-only; use :prepare SCRIPT --workdir DIR to review a new submission")
-                passport_dir = None
+                retained = getattr(hub, "prepared_submission", None)
+                passport_dir = retained[1] if retained and retained[0] is hub.plan else None
             if not hub.plan or not hub.plan.get("valid"):
                 raise ValueError("prepare a valid batch script first; review issues in Research / Submit")
             hub.configure()

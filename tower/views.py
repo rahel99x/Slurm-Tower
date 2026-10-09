@@ -27,6 +27,118 @@ LOG_WARNING = re.compile(r"\b(?:warn(?:ing)?|retry(?:ing)?|timeout)\b", re.IGNOR
 LOG_SUCCESS = re.compile(r"\b(?:done|complete(?:d)?|success(?:ful)?)\b", re.IGNORECASE)
 
 
+def _series_of(app, jid):
+    """Interactive frames use published memory while old samples restore."""
+    reader = getattr(app.store, "series_view", None) if getattr(app, "interactive", False) else None
+    return reader(jid) if callable(reader) else app.store.series_of(jid)
+
+
+def _series_jobs(app):
+    reader = getattr(app.store, "series_jobs_view", None) if getattr(app, "interactive", False) else None
+    return reader() if callable(reader) else app.store.series_jobs()
+
+
+def _native_series(samples):
+    """Safe native observations without changing the saved archive objects.
+
+    JSON objects from older versions or interrupted producers may be valid
+    documents with invalid counters. Native summaries ignore invalid times
+    and keep malformed counters as unknown readings, instead of multiplying
+    strings or comparing containers with measured memory.
+    """
+    result = []
+    for sample in samples:
+        if (not isinstance(sample, dict) or sample.get("k") not in ("live", "gpu")
+                or charts._finite(sample.get("t")) is None):
+            continue
+        if sample["k"] == "live":
+            changes = {field: None for field in ("cpu", "eff", "rss", "cpu_time")
+                       if sample.get(field) is not None and _gpu_value(sample[field], percentage=False) is None}
+            if changes:
+                sample = dict(sample, **changes)
+        result.append(sample)
+    return sorted(result, key=lambda sample: sample["t"])
+
+
+def _series_notice(app, jid):
+    """Explain background restores without accessing the archive on a frame."""
+    reader = getattr(app.store, "series_status", None) if getattr(app, "interactive", False) else None
+    info = reader(jid) if callable(reader) else None
+    if not isinstance(info, dict):
+        return None
+    status = info.get("status")
+    labels = {"loading": "Restoring recorded samples in the background",
+              "busy": "Recorded samples are queued for background restoration",
+              "limited": "Showing the most recent recorded samples; older observations remain on disk",
+              "error": "Recorded samples could not be restored",
+              "unavailable": "Recorded sample restoration is unavailable"}
+    if status not in labels:
+        return None
+    message = display_text(str(info.get("message") or ""))[:400]
+    return (labels[status] + (": " + message if message else ""),
+            "yellow" if status in ("error", "unavailable") else "dim", status)
+
+
+class _MetricValues(Sequence):
+    """Defer a native card's vectors until its band enters the viewport.
+
+    Length is source geometry, available before reading individual counters.
+    Materialization always returns plain lists for exact raster-cache identity;
+    providers belong to one composition and never hide historical corrections.
+    """
+    def __init__(self, length, factory):
+        self.length, self.factory, self.values = length, factory, None
+
+    def __len__(self):
+        return self.length
+
+    def materialize(self):
+        if self.values is None:
+            self.values = self.factory()
+        return self.values
+
+    def __iter__(self):
+        return iter(self.materialize())
+
+    def __getitem__(self, index):
+        return self.materialize()[index]
+
+
+def _metric_observations(values, timestamps, bounds, *, latest=None):
+    """Keep visible observations and the exact two possible edge neighbours.
+
+    Rasterizers sort observations and clip genuine measured line segments.
+    Their nearest outside samples preserve those intersections, gaps, and
+    duplicate-timestamp order without rescanning years of offscreen history.
+    ``latest`` excludes replayed future records from both curves and source age.
+    Callers only use this with an explicit positive sampling cadence, so
+    clipping cannot change an inferred median cadence.
+    """
+    lower, upper = bounds
+    selected, before, after, newest = [], None, None, None
+    visible = []
+    for index, (value, timestamp) in enumerate(zip(values, timestamps)):
+        if charts._finite(timestamp) is None or latest is not None and timestamp > latest:
+            continue
+        newest = timestamp if newest is None or timestamp > newest else newest
+        item = (index, value, timestamp)
+        if lower <= timestamp <= upper:
+            selected.append(item)
+            visible.append(charts._finite(value))
+        elif timestamp < lower:
+            if before is None or timestamp >= before[2]:
+                before = item
+        elif after is None or timestamp < after[2]:
+            after = item
+    if before is not None:
+        selected.append(before)
+    if after is not None:
+        selected.append(after)
+    selected.sort(key=lambda item: item[0])
+    return ([value for _, value, _ in selected], [timestamp for _, _, timestamp in selected],
+            visible, newest)
+
+
 def _gpu_value(value, *, percentage=True):
     """Unknown counters are gaps, never measured idle devices."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -241,6 +353,10 @@ class Views:
     def metric_curve(self, app, values, width, height, plot_key, *, row=0, column=0,
                      filled=False, running=None, **options):
         """Render one source-scoped curve and stage its measured cell bounds."""
+        if isinstance(values, _MetricValues):
+            values = values.materialize()
+        if isinstance(options.get("sample_times"), _MetricValues):
+            options["sample_times"] = options["sample_times"].materialize()
         from . import chart_interaction, metric_live
         controls = []
         if running is not None and not filled:
@@ -253,17 +369,15 @@ class Views:
         live_window = metric_live.window(app, plot_key, now=clock.now())
         if live_window:
             options["times"] = live_window
-            # A replay or delayed publication can contain later observations.
-            # The moving window must not use those future values to draw a
-            # line into the present or report them as the current source age.
-            timestamps = options.get("sample_times")
-            if timestamps is not None:
-                observations = [(value, timestamp) for value, timestamp in zip(values, timestamps)
-                                if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
-                values = [value for value, _ in observations]
-                options["sample_times"] = [timestamp for _, timestamp in observations]
         captured = chart_interaction.captured_bounds(app, plot_key, scale="linear")
         zoom = chart_interaction.bounds(app, plot_key, scale="linear")
+        if live_window and (zoom or captured) and options.get("sample_times") is not None:
+            # A captured coordinate system remains fixed while Live advances.
+            # Future replay records cannot enter its fitted bounds or source age.
+            observations = [(value, timestamp) for value, timestamp in zip(values, options["sample_times"])
+                            if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
+            values = [value for value, _ in observations]
+            options["sample_times"] = [timestamp for _, timestamp in observations]
         if zoom:
             options.update(times=zoom["x"], lo=zoom["y"][0], hi=zoom["y"][1])
             options["time_units"] = True
@@ -278,11 +392,24 @@ class Views:
         if captured:
             options.update(times=captured["x"], lo=captured["y"][0], hi=captured["y"][1])
         visible_values = None
+        newest, newest_known = None, False
         bounds = options.get("times")
         sample_times = options.get("sample_times")
         if bounds and sample_times is not None and (live_window or zoom or captured):
-            visible_values = [charts._finite(value) for value, timestamp in zip(values, sample_times)
-                              if charts._finite(timestamp) is not None and bounds[0] <= timestamp <= bounds[1]]
+            interval = charts._finite(options.get("sample_interval"))
+            if interval is not None and interval > 0:
+                values, sample_times, visible_values, newest = _metric_observations(
+                    values, sample_times, bounds, latest=live_window[1] if live_window else None)
+                options["sample_times"] = sample_times
+                newest_known = True
+            else:
+                if live_window:
+                    observations = [(value, timestamp) for value, timestamp in zip(values, sample_times)
+                                    if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
+                    values = [value for value, _ in observations]
+                    sample_times = options["sample_times"] = [timestamp for _, timestamp in observations]
+                visible_values = [charts._finite(value) for value, timestamp in zip(values, sample_times)
+                                  if charts._finite(timestamp) is not None and bounds[0] <= timestamp <= bounds[1]]
             if not zoom and not captured and options.get("hi") is None:
                 options["lo"], options["hi"] = charts._bounds(visible_values, options.get("lo", 0.0), None)
         rows, metadata = self._metric_rasters.render(
@@ -293,8 +420,10 @@ class Views:
                                      options.get("unit", ""), options.get("indent", "   "))
         chart_interaction.record(app, plot_key, metadata, row=row + len(controls), column=column)
         if controls:
-            timestamps = [timestamp for timestamp in sample_times or () if charts._finite(timestamp) is not None]
-            age = compact(max(0.0, clock.now() - max(timestamps))) if timestamps else "unavailable"
+            if not newest_known:
+                newest = max((timestamp for timestamp in sample_times or ()
+                              if charts._finite(timestamp) is not None), default=None)
+            age = compact(max(0.0, clock.now() - newest)) if newest is not None else "unavailable"
             cadence = options.get("sample_interval")
             note = f" Source age {age}; sampling {format_interval(cadence, ascii_=self.g.ascii)}" if cadence else f" Source age {age}"
             if polling is not None and polling_source(plot_key) == "trace":
@@ -810,7 +939,7 @@ class Views:
         old = (j.elapsed_s or 0) > 60 * self.th["warn_after_minutes"]
         same = any(f.name == j.name for f in snap["finished"])
         if lv and (old or same):
-            adv = advisor.advise_running(j, lv, app.store.series_of(j.id), snap["finished"])
+            adv = advisor.advise_running(j, lv, _native_series(_series_of(app, j.id)), snap["finished"])
             text = adv.summary(g_.dot)
             if text:
                 rows.append([("   advice ", "magenta"), (cut(text, width - 12, g_.ascii), "")])
@@ -2040,9 +2169,11 @@ class Views:
     def analytics_jobs(self, snap: dict, app) -> List[str]:
         """Jobs the series view can show: running first, then every job with a recorded series."""
         ids = [j.id for j in snap["jobs"] if not j.pending]
-        for i in app.store.series_jobs():
-            if i not in ids:
+        seen = set(ids)
+        for i in _series_jobs(app):
+            if i not in seen:
                 ids.append(i)
+                seen.add(i)
         chosen = getattr(app, "analytics_job", None)
         if chosen and chosen not in ids and any(record.id == chosen for record in
                 list(snap.get("jobs", ())) + list(snap.get("finished", ())) + list(snap.get("departed_jobs", {}).values())):
@@ -2157,7 +2288,7 @@ class Views:
                     out.append([])
                     continue
                 lv = snap["live"].get(j.id)
-                adv = advisor.advise_running(j, lv, app.store.series_of(j.id), by_name.get(j.name, ()))
+                adv = advisor.advise_running(j, lv, _native_series(_series_of(app, j.id)), by_name.get(j.name, ()))
                 text = adv.summary(g.dot) or "nothing to change yet"
                 out.append([(f"   {j.id} ", "cyan"), (pad(cut(j.name, 20, g.ascii), 20), "bold"), (" " + cut(text, width - 36, g.ascii), "")])
         if avail is not None:
@@ -2176,7 +2307,7 @@ class Views:
         rows = []
         series = {}
         for i in ids[:6]:
-            s = app.store.series_of(i)
+            s = _native_series(_series_of(app, i))
             series[i] = s
             live = [x for x in s if x.get("k") == "live"]
             gpu = [x for x in s if x.get("k") == "gpu"]
@@ -2250,27 +2381,47 @@ class Views:
         fin = next((f for f in snap["finished"] if f.id == jid), None)
         name = job.name if job else (fin.name if fin else "")
         state = job.state.lower() if job else (fin.state.lower() if fin else "no longer listed")
-        series = app.store.series_of(jid)
-        live = [s for s in series if s.get("k") == "live"]
-        gpus = [s for s in series if s.get("k") == "gpu"]
+        live, gpus, first, last = [], [], None, None
+        for sample in _series_of(app, jid):
+            if (not isinstance(sample, dict) or sample.get("k") not in ("live", "gpu")
+                    or charts._finite(sample.get("t")) is None):
+                continue
+            timestamp = sample["t"]
+            first = timestamp if first is None or timestamp < first else first
+            last = timestamp if last is None or timestamp > last else last
+            (live if sample["k"] == "live" else gpus).append(sample)
+        series_notice = _series_notice(app, jid)
+        span = last - first if first is not None and len(live) + len(gpus) > 1 else None
         head = [rule(g, width, f"job series {pos + 1}/{len(ids)}"),
-                [(f" {jid} ", "cyan"), (name, "bold"), (f"   {state}", ""), (f"   {len(live)} cpu samples, {len(gpus)} gpu samples" + (f" over {compact(series[-1]['t'] - series[0]['t'])}" if len(series) > 1 else ""), "dim")]]
+                [(f" {jid} ", "cyan"), (name, "bold"), (f"   {state}", ""), (f"   {len(live)} cpu samples, {len(gpus)} gpu samples" + (f" over {compact(span)}" if span is not None and charts._finite(span) is not None else ""), "dim")]]
         if job:
             head[1].append((f"   {job.partition} {g.dot} {job.nodelist or 'pending'} {g.dot} {job.cpus} cpus" + (f" {g.dot} {job.gpu_text}" if job.gpus else "") + f" {g.dot} {job.elapsed} of {job.limit}", "dim"))
-        if not series and not snap.get("trace", {}).get(jid):
+        if series_notice:
+            head.append([(" " + series_notice[0], series_notice[1])])
+        if not live and not gpus and not snap.get("trace", {}).get(jid):
+            if series_notice:
+                return head
             return head + _gpu_unavailable(snap, app, jid, job or fin) + [[("   no samples recorded for this job yet", "dim")]]
         charts_ = []
         if live:
-            cpu = [(s.get("cpu") if s.get("cpu") is not None else s.get("eff")) for s in live]
-            cpu_times = (live[0]["t"], live[-1]["t"])
-            cpu_stamps = [s["t"] for s in live]
+            def cpu_values():
+                values = [_gpu_value(s.get("cpu") if s.get("cpu") is not None else s.get("eff"), percentage=False)
+                          for s in live]
+                return [None if value is None else 100 * value for value in values]
+
+            cpu_times = (min(s["t"] for s in live), max(s["t"] for s in live))
+            cpu_stamps = _MetricValues(len(live), lambda: [s["t"] for s in live])
             cpu_title = "cpu per core (rate, efficiency where no rate)" if g.ascii else "CPU per core · rate / efficiency"
-            charts_.append((cpu_title, [None if v is None else 100 * v for v in cpu], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "cpu-rate"))
+            charts_.append((cpu_title, _MetricValues(len(live), cpu_values), 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "cpu-rate"))
             req = job.mem_bytes if job else (fin.req_mem if fin else 0)
             if req:
-                charts_.append(("memory of the request", [None if s.get("rss") is None else 100 * s["rss"] / req for s in live], 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "memory-request"))
+                memory = _MetricValues(len(live), lambda: [None if (rss := _gpu_value(s.get("rss"), percentage=False)) is None
+                                       else 100 * rss / req for s in live])
+                charts_.append(("memory of the request", memory, 100.0, "%", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "memory-request"))
             else:
-                charts_.append(("resident memory (GB)", [None if s.get("rss") is None else s["rss"] / 1024 ** 3 for s in live], None, "G", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "resident-memory"))
+                memory = _MetricValues(len(live), lambda: [None if (rss := _gpu_value(s.get("rss"), percentage=False)) is None
+                                       else rss / 1024 ** 3 for s in live])
+                charts_.append(("resident memory (GB)", memory, None, "G", cpu_times, cpu_stamps, self.cfg["intervals"]["live"], "resident-memory"))
         keys = []
         finite_gpu = _gpu_value
 
@@ -2287,9 +2438,7 @@ class Views:
                     result.append(total / count)
             return result
 
-        gpu_points = sorted((point for point in gpus if isinstance(point.get("t"), (int, float))
-                             and not isinstance(point["t"], bool) and charts._finite(point["t"]) is not None),
-                            key=lambda point: point["t"])
+        gpu_points = sorted(gpus, key=lambda point: point["t"])
         for s in gpu_points:
             devices = s.get("gpu", {})
             for k in devices if isinstance(devices, dict) else ():
@@ -2301,40 +2450,52 @@ class Views:
                         break
             if len(keys) == 4:
                 break
+        def gpu_reading(point, device):
+            devices = point.get("gpu", {})
+            reading = devices.get(device) if isinstance(devices, dict) else None
+            return finite_gpu(reading[0]) if isinstance(reading, (list, tuple)) and reading else None
+
+        stamps = _MetricValues(len(gpu_points), lambda: [point["t"] for point in gpu_points])
         for k in keys[:4]:
-            values = []
-            for point in gpu_points:
-                devices = point.get("gpu", {})
-                reading = devices.get(k) if isinstance(devices, dict) else None
-                values.append(finite_gpu(reading[0]) if isinstance(reading, (list, tuple)) and reading else None)
+            values = _MetricValues(len(gpu_points),
+                                   lambda device=k: [gpu_reading(point, device) for point in gpu_points])
             times = (gpu_points[0]["t"], gpu_points[-1]["t"])
-            stamps = [point["t"] for point in gpu_points]
             charts_.append((f"GPU {k} rate / utilization", values, 100.0, "%", times, stamps,
                             self.cfg["intervals"]["gpu"], f"gpu:{k}:rate"))
-            charts_.append((f"GPU {k} observed busy mean / efficiency proxy", busy_mean(values), 100.0, "%", times,
+            means = _MetricValues(len(values), lambda values=values: busy_mean(values))
+            charts_.append((f"GPU {k} observed busy mean / efficiency proxy", means, 100.0, "%", times,
                             stamps, self.cfg["intervals"]["gpu"], f"gpu:{k}:busy-mean"))
         trace = snap.get("trace", {}).get(jid, [])
-        trace_points = sorted((point for point in trace if isinstance(point, dict)
-                               and isinstance(point.get("index"), int) and not isinstance(point["index"], bool)
-                               and point["index"] >= 0 and isinstance(point.get("t"), (int, float))
-                               and not isinstance(point["t"], bool) and charts._finite(point["t"]) is not None),
-                              key=lambda point: (point["index"], point["t"]))
-        idx = sorted({point["index"] for point in trace_points})
+        trace_groups, trace_spans = {}, {}
+        for point in trace:
+            if (not isinstance(point, dict) or type(point.get("index")) is not int or point["index"] < 0
+                    or charts._finite(point.get("t")) is None):
+                continue
+            device, timestamp = point["index"], point["t"]
+            trace_groups.setdefault(device, []).append(point)
+            bounds = trace_spans.get(device)
+            trace_spans[device] = (min(bounds[0], timestamp), max(bounds[1], timestamp)) if bounds else (timestamp, timestamp)
+        idx = sorted(trace_groups)
         for i in idx[:4]:
-            pts = [point for point in trace_points if point["index"] == i]
-            values = [finite_gpu(point.get("util")) for point in pts]
-            times, stamps = (pts[0]["t"], pts[-1]["t"]), [point["t"] for point in pts]
+            group = trace_groups[i]
+            pts = _MetricValues(len(group), lambda group=group: sorted(group, key=lambda point: point["t"]))
+            values = _MetricValues(len(pts), lambda pts=pts: [finite_gpu(point.get("util")) for point in pts])
+            stamps = _MetricValues(len(pts), lambda pts=pts: [point["t"] for point in pts])
+            times = trace_spans[i]
             charts_.append((f"GPU trace {i} rate / utilization ({len(pts)} samples)", values, 100.0, "%", times,
                             stamps, 60.0, f"gpu-trace:{i}:rate"))
-            charts_.append((f"GPU trace {i} observed busy mean / efficiency proxy", busy_mean(values), 100.0, "%",
+            means = _MetricValues(len(values), lambda values=values: busy_mean(values))
+            charts_.append((f"GPU trace {i} observed busy mean / efficiency proxy", means, 100.0, "%",
                             times, stamps, 60.0, f"gpu-trace:{i}:busy-mean"))
         if keys or idx:
             head.append([(" GPU rate is sampled device busy %. Efficiency proxy is the mean of valid retained samples; gaps are excluded.", "dim")])
             head.append([(" GPU scope is observed devices only. Throughput, FLOP efficiency, and full-run allocation efficiency are not measured.", "dim")])
-            if not any(value is not None for _, values, _, _, _, _, _, identity in charts_
-                       if identity.startswith("gpu") for value in values):
+            available = (any(gpu_reading(point, device) is not None for point in gpu_points for device in keys)
+                         or any(finite_gpu(point.get("util")) is not None for device in idx[:4]
+                                for point in trace_groups[device]))
+            if not available:
                 head += _gpu_unavailable(snap, app, jid, job or fin, detected=True)
-        elif getattr(job or fin, "gpus", 0):
+        elif getattr(job or fin, "gpus", 0) and not (series_notice and series_notice[2] in ("loading", "busy")):
             head += _gpu_unavailable(snap, app, jid, job or fin)
         from . import analytics_document, chart_interaction, metric_live
         native_document = analytics_document.eligible(app, avail)
@@ -2343,7 +2504,8 @@ class Views:
         if not g.ascii and width >= 120 and (avail is None or avail >= 28):
             telemetry = [(title, values) for title, values, hi, unit, _, _, _, _ in charts_ if unit == "%" and len(values) >= 2][:4]
             if telemetry:
-                head += charts.heatmap(g, [values for _, values in telemetry], width,
+                head += charts.heatmap(g, [values.materialize() if isinstance(values, _MetricValues) else values
+                                         for _, values in telemetry], width,
                                       labels=[title.split(" · ")[0] for title, _ in telemetry], hi=100, unit="%",
                                       title="telemetry heatmap · each row's observations, oldest to newest")
         columns = 2 if not g.ascii and width >= 140 and n >= 2 and (native_document or avail is None or avail >= 20) else 1
@@ -2372,6 +2534,12 @@ class Views:
                 extras.append(extra)
             band_heights.append(band_rows + max(extras, default=0))
         chart_mark = chart_interaction.mark(app)
+        inline_window = getattr(app, "analytics_series_window", None)
+        if inline_window and inline_window[0] >= len(head) + sum(band_heights):
+            # A device source can disappear while viewing its final card.
+            # Reflow clamps the outer scroll only after composition, so paint
+            # this changed document once before establishing its new map.
+            inline_window = None
         if native_document:
             sticky = min(source_head, max(0, avail - 2))
             count = len(head) - sticky + sum(band_heights)
@@ -2385,9 +2553,16 @@ class Views:
                 # controls for cards outside the actual painted viewport.
                 out.extend([[] for _ in range(current_band_rows)])
                 continue
+            if inline_window and (len(out) + current_band_rows <= inline_window[0] or len(out) >= inline_window[1]):
+                out.extend([[] for _ in range(current_band_rows)])
+                continue
             panels = []
             for position, (title, values, hi, unit, times, sample_times, sample_interval, metric_id) in enumerate(charts_[offset:offset + columns]):
                 # Each resource uses its own sampled span; a GPU trace cannot move a CPU time axis.
+                if isinstance(values, _MetricValues):
+                    values = values.materialize()
+                if isinstance(sample_times, _MetricValues):
+                    sample_times = sample_times.materialize()
                 title = title.replace(" · ", " - ") if g.ascii else title
                 from . import chart_interaction
                 identity = chart_interaction.key(app, metric_id, unit, jid, scope="resource-series", attempt=attempt)

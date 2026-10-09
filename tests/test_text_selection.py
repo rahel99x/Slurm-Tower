@@ -1,5 +1,6 @@
 """Rendered document selections are pane-local, bounded and source-aware."""
 from types import SimpleNamespace
+from random import Random
 import time
 
 import pytest
@@ -189,6 +190,64 @@ def test_wide_and_combining_characters_use_cell_boundaries():
     assert T._slice([("a界e\u0301z", "text")], 1, 5) == "界e\u0301z"
     assert T._slice([("a界e\u0301z", "text")], 2, 5) == " e\u0301z"
     assert T._slice([("a界e\u0301z", "text")], 0, 2) == "a"
+
+
+@pytest.mark.parametrize("row,left,right,expected", [
+    ([("ab", "text"), ("", "dim"), ("\u0301", "accent"), ("c", "text")], 0, 2, "ab\u0301"),
+    ([("ab", "text"), ("\u0301", "accent"), ("c", "text")], 1, 2, "b\u0301"),
+    ([("ab", "text"), ("\u0301", "accent"), ("c", "text")], 2, 3, "c"),
+    ([("abc", "text"), ("\u0301", "accent")], 0, 2, "ab"),
+    ([("ab", "text"), ("界", "accent"), ("cd", "text")], 3, 5, " c"),
+    ([("ab", "text"), ("界", "accent"), ("cd", "text")], 0, 3, "ab"),
+    ([("   ", "dim"), ("ab", "text"), ("  ", "dim")], 2, 8, " ab"),
+    ([("", "text"), ("abc", "text")], 0, 0, ""),
+])
+def test_segment_slicing_preserves_combining_boundaries_and_partial_wide_cells(row, left, right, expected):
+    assert T._slice(row, left, right) == expected
+
+
+def test_optimized_slice_and_clip_match_scalar_reference_on_seeded_mixed_rows():
+    # Keep the former scalar algorithms as an independent regression oracle
+    # for segment fast paths, including empty segments and partial wide cells.
+    def scalar_slice(row, left, right):
+        result, column = [], 0
+        for text, _ in row:
+            for char in text:
+                size = L.vlen(char)
+                if size == 0:
+                    if result and left < column <= right:
+                        result.append(char)
+                    continue
+                if column >= right:
+                    return "".join(result).rstrip()
+                if column >= left and column + size <= right:
+                    result.append(char)
+                elif column < right and column + size > left:
+                    result.extend(" " for _ in range(min(right, column + size) - max(left, column)))
+                column += size
+        return "".join(result).rstrip()
+
+    def scalar_clip(row, width):
+        result, used = [], 0
+        for text, style in row:
+            if used >= width:
+                break
+            if L.vlen(text) > width - used:
+                text = L.truncate(text, width - used)
+            result.append((text, style))
+            used += L.vlen(text)
+        return result
+
+    random = Random(483)
+    alphabet = " a\t\x1b[31mZ界日é\u0301\u0302█⠿─╳⌛"
+    for _ in range(512):
+        row = [("".join(random.choices(alphabet, k=random.randrange(16))), "text")
+               for _ in range(random.randrange(1, 8))]
+        left = random.randrange(25)
+        right = left + random.randrange(20)
+        assert T._slice(row, left, right) == scalar_slice(row, left, right)
+        for width in (-2, -1, 0, 1, 2, random.randrange(45)):
+            assert L.clip_row(row, width) == scalar_clip(row, width)
 
 
 def test_full_width_selected_text_remains_visible_without_marker_overwrite():

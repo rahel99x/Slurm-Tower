@@ -74,7 +74,7 @@ def test_slow_fragmented_legacy_report_keeps_its_prefix_and_never_replays_resear
     assert reader.read(curses) == ("q", None)
 
 
-def test_timed_out_sgr_suffix_is_quarantined_without_losing_following_command(monkeypatch):
+def test_timed_out_sgr_suffix_retains_pointer_update_without_losing_following_command(monkeypatch):
     now = [0.0]
     monkeypatch.setattr(screen.time, "monotonic", lambda: now[0])
     window = Window("\x1b[<35;82")
@@ -83,6 +83,7 @@ def test_timed_out_sgr_suffix_is_quarantined_without_losing_following_command(mo
     now[0] = .1
     assert reader.read(curses) == (None, None)
     window.values.extend(";25Mq")
+    assert reader.read(curses) == ("mouse", (0, 81, 24, 0, curses.REPORT_MOUSE_POSITION))
     assert reader.read(curses) == ("q", None)
     assert not reader.queue
 
@@ -291,3 +292,123 @@ def test_invalid_sgr_quarantine_survives_a_long_gap(monkeypatch):
     window.values.extend(";82;25Mq")
     assert reader.read(curses) == ("q", None)
     assert not reader.queue
+
+
+@pytest.mark.parametrize("protocol", ["sgr", "urxvt", "x10"])
+@pytest.mark.parametrize("delay", [.05, .12, .8])
+@pytest.mark.parametrize("x,y", [(81, 24), (24, 81), (81, 81)])
+def test_bare_escape_timeout_recovers_delayed_mouse_packet_without_dispatching_bracket_or_coordinates(protocol, delay, x, y, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: now[0])
+    sequence = report(protocol, 35, x, y)
+    window = Window(sequence[:1])
+    reader = screen._InputReader(window)
+    assert reader.read(curses) is None
+    now[0] = delay
+    assert reader.read(curses) == ("esc", None)
+    window.values.extend(sequence[1:] + "q")
+    assert reader.read(curses) == ("mouse", (0, x, y, 0, curses.REPORT_MOUSE_POSITION))
+    assert not reader.queue
+    assert reader.read(curses) == ("q", None)
+
+
+@pytest.mark.parametrize("text", ["q", "r", "x", "[q", "[r"])
+def test_real_keyboard_input_after_bare_escape_is_preserved(text, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: now[0])
+    window = Window("\x1b")
+    reader = screen._InputReader(window)
+    assert reader.read(curses) is None
+    now[0] = .1
+    assert reader.read(curses) == ("esc", None)
+    window.values.extend(text)
+    assert [reader.read(curses) for _ in text] == [(char, None) for char in text]
+
+
+@pytest.mark.parametrize("prefix", ["\x1b[", "\x1b[<35;", "\x1b[M"])
+@pytest.mark.parametrize("key,name", [(curses.KEY_MOUSE, "mouse"), (curses.KEY_RESIZE, "resize"),
+                                    (curses.KEY_UP, "up")])
+def test_native_curses_event_resolves_partial_raw_prefix_without_losing_following_key(prefix, key, name, monkeypatch):
+    monkeypatch.setattr(screen.time, "monotonic", lambda: 0)
+    mouse = (0, 81, 24, 0, curses.REPORT_MOUSE_POSITION)
+    monkeypatch.setattr(curses, "getmouse", lambda: mouse)
+    window = Window(prefix)
+    reader = screen._InputReader(window)
+    assert reader.read(curses) is None
+    window.values.extend((key, "q"))
+    assert reader.read(curses) == (name, mouse if name == "mouse" else None)
+    assert reader.read(curses) == ("q", None)
+
+
+@pytest.mark.parametrize("protocol", ["sgr", "urxvt", "x10"])
+def test_c1_csi_mouse_introducer_has_same_safe_semantics_as_escape_bracket(protocol, monkeypatch):
+    monkeypatch.setattr(screen.time, "monotonic", lambda: 0)
+    window = Window("\x9b" + report(protocol, 35)[2:] + "q")
+    reader = screen._InputReader(window)
+    assert reader.read(curses) == ("mouse", (0, 81, 24, 0, curses.REPORT_MOUSE_POSITION))
+    assert reader.read(curses) == ("q", None)
+
+
+@pytest.mark.parametrize("protocol", ["sgr", "urxvt", "x10"])
+@pytest.mark.parametrize("protection", ["recent-pointer", "capture"])
+def test_pointer_context_grace_keeps_slow_mouse_header_from_emitting_escape(protocol, protection, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: now[0])
+    window = Window(report(protocol, 35) if protection == "recent-pointer" else "")
+    reader = screen._InputReader(window)
+    if protection == "recent-pointer":
+        assert reader.read(curses)[0] == "mouse"
+    else:
+        reader.protect_escape = True
+    sequence = report(protocol, 35)
+    window.values.extend(sequence[:1])
+    assert reader.read(curses) is None
+    now[0] = .12
+    assert reader.read(curses) is None
+    window.values.extend(sequence[1:] + "q")
+    assert reader.read(curses) == ("mouse", (0, 81, 24, 0, curses.REPORT_MOUSE_POSITION))
+    assert reader.read(curses) == ("q", None)
+
+
+@pytest.mark.parametrize("protection", ["recent-pointer", "capture"])
+def test_real_escape_in_pointer_context_is_bounded_and_still_cancels_selection(protection, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: now[0])
+    window = Window(report("sgr", 35) if protection == "recent-pointer" else "")
+    reader = screen._InputReader(window)
+    if protection == "recent-pointer":
+        assert reader.read(curses)[0] == "mouse"
+    else:
+        reader.protect_escape = True
+    window.values.append("\x1b")
+    assert reader.read(curses) is None
+    now[0] = .199
+    assert reader.read(curses) is None
+    now[0] = .201
+    event = reader.read(curses)
+    assert event == ("esc", None)
+    app = App(Store(persist=False), None, None, Config(), "test", interactive=False)
+    app.marks = {"7", "8"}
+    screen._apply_input(app, event, [], curses)
+    assert not app.marks
+
+
+def test_old_pointer_does_not_delay_keyboard_only_escape(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: now[0])
+    window = Window(report("sgr", 35))
+    reader = screen._InputReader(window)
+    assert reader.read(curses)[0] == "mouse"
+    now[0] = 1.0
+    window.values.append("\x1b")
+    assert reader.read(curses) is None
+    now[0] = 1.031
+    assert reader.read(curses) == ("esc", None)
+
+
+@pytest.mark.parametrize("x,y", [(120, 9), (9, 120), (200, 200)])
+def test_extended_x10_coordinates_are_payload_even_when_they_equal_c1_csi(x, y, monkeypatch):
+    monkeypatch.setattr(screen.time, "monotonic", lambda: 0)
+    reader = screen._InputReader(Window(report("x10", 35, x, y) + "q"))
+    assert reader.read(curses) == ("mouse", (0, x, y, 0, curses.REPORT_MOUSE_POSITION))
+    assert reader.read(curses) == ("q", None)

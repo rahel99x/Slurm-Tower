@@ -44,6 +44,8 @@ def vlen(s: str) -> int:
     """
     if s.isascii():
         return len(s)
+    if len(s) == 1:
+        return _character_width(s)
     return _short_unicode_width(s) if len(s) <= 512 else _unicode_width(s)
 
 
@@ -306,10 +308,12 @@ def clip_row(row: Row, width: int) -> Row:
     for text, style in row:
         if used >= width:
             break
-        if vlen(text) > width - used:
+        size = vlen(text)
+        if size > width - used:
             text = truncate(text, width - used)
+            size = vlen(text)
         out.append((text, style))
-        used += vlen(text)
+        used += size
     return out
 
 

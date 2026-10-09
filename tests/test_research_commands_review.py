@@ -76,7 +76,7 @@ def test_background_preparation_publishes_state_only_during_ui_tick(session, bat
     app.run_command(command("prepare", batch_files))
     assert entered.wait(3)
     assert app.research_result is None and app.research.plan is None
-    assert app.tab == "jobs"
+    assert app.tab == "research" and app.research_view == "submit"
     app.tick()  # Rendering while the worker is busy must remain nonblocking.
     assert app.research_result is None
     release.set()
@@ -207,8 +207,10 @@ def test_second_confirmation_while_submit_is_running_cannot_queue_a_second_job(s
     app.handle("y")
     assert entered.wait(3)
     app.run_command("submit")
-    app.handle("y")
     assert not app.command_ok and "still running" in app.message
+    assert app.mode == "main"
+    app.handle("y")
+    assert app.mode == "main" and len(calls) == 1
     release.set()
     finish_pending(app)
     assert len(calls) == 1

@@ -837,9 +837,17 @@ def cancel(app):
     return capture is not None
 
 
-def tick(app, now=None):
+def tick(app, now=None, *, identities=None):
     state = initialize(app)
-    for identity, entry in state["entries"].items():
+    # Maintenance validates all retained collection requests. Cosmetic feedback
+    # needs only its visible controls; visiting offscreen requests for every
+    # mouse report repeatedly acquires Store locks with no visible benefit.
+    entries = (state["entries"].items() if identities is None else
+               ((identity, state["entries"].get(identity))
+                for identity in dict.fromkeys(identities)))
+    for identity, entry in entries:
+        if not entry:
+            continue
         if entry["enabled"] or entry.get("rate", MIN_RATE) != MIN_RATE:
             _eligible(app, identity)
     capture = state["capture"]
@@ -1143,7 +1151,7 @@ def document_interval(app):
 def feedback(app, g):
     """Update only the small cached control rows between document refreshes."""
     state = initialize(app)
-    tick(app)
+    tick(app, identities=(control.key for control in state["records"]))
     if _blocked(app) or state["context"] != _context(app):
         return []
     from .metric_sampling import cadence

@@ -7,6 +7,8 @@ Tower 4.4.0 retains that path for draggable workspaces, shared launch groups, hi
 Tower 4.5.0 extends it to current-viewport directional focus and metric crosshair feedback.
 Tower 4.7.0 adds pane scrollbars, pinned rendered-line selections, and finer continuous Braille curves.
 Tower 4.8.2 separates protocol-safe pointer input from keyboard shortcuts and repaints changed cells.
+Tower 4.8.3 restores saved metrics in the background, releases the data lock before persistence,
+and limits inline Job Series raster work to the visible metric bands.
 Theme changes repaint the document with the selected canvas and surfaces.
 Live metric windows use display deadlines while source sampling retains its own limits.
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
@@ -312,3 +314,107 @@ The checks cover bounded work, cache invalidation, input ordering, and continued
 Use [Contribution guidance](../../CONTRIBUTING.md) for the complete test suite.
 Validate mouse behavior in an actual interactive terminal after changing input or painting code.
 Include narrow and wide terminals, Unicode and ASCII, and tmux-compatible terminal types.
+
+## Record a desktop latency report
+
+Use this procedure when a normal terminal and an SSH client both show pauses.
+The recorder measures Tower's foreground phases. It does not increase source polling.
+
+1. Start `tower --ui-trace ui-trace.json`. Use a new file name for each run.
+2. Open the affected job and graph view.
+3. Move and drag the pointer across the job list and plots for 20–30 seconds.
+4. Include a few source updates and a scroll through the Details graphs.
+5. Quit Tower normally. The report is written after the interactive session exits.
+6. Inspect `phases`, `slowest`, and `transitions` in the JSON file.
+
+The file is created with owner-only permissions. An existing file is not overwritten.
+The report contains timing statistics, terminal type, display size, event categories,
+known shortcut action names, and page/mode transitions. It excludes typed text, raw input bytes,
+job IDs, source paths, and log contents. Recording stays in bounded memory during the session;
+there are no report-file writes in the input or paint loop. A forced process kill can leave an empty report.
+Profile changes remain in the same report.
+
+| Phase | What a long duration identifies |
+| --- | --- |
+| `input_dispatch` | Event handling or the action triggered by an event |
+| `maintenance` | Foreground state maintenance and background-result publication |
+| `snapshot` | Shared state access and snapshot preparation |
+| `compose` | Page and graph construction |
+| `feedback` | Pointer, selection, and control feedback |
+| `paint` | Changed-cell preparation and curses drawing calls |
+| `terminal_flush` | Terminal output through `curses.doupdate()` |
+| `input_wait` | Waiting for input, including the normal idle timeout |
+
+Each phase reports mean, maximum, and p50/p95/p99 wall duration, plus total UI-thread CPU time.
+A high wall duration with little UI CPU time indicates waiting or scheduling; it does not prove
+which external component caused the wait. CPU time excludes worker threads.
+Parent phases include child phases. Do not add their totals.
+`input_wait` is excluded from the slow-processing list because idle waits are expected.
+Event context records the most recent input and its age; it does not establish causation.
+Percentiles retain the latest 2,048 samples per phase. Totals and maxima cover the full run.
+The recorder retains at most 32 phases, 64 slow events, and 128 page transitions.
+
+## Tower 4.8.3 spike audit
+
+The earlier warm-cache hover benchmark did not exercise all periodic update work.
+The follow-up audit also tests cold saved histories, delayed file I/O, fresh samples,
+Live windows, and mouse reports split immediately after their initial Escape byte.
+A real curses pseudo-terminal reproduced delayed report bytes becoming keyboard events in 4.8.2.
+The `[` byte selected the previous tab; an `r` coordinate could also request a refresh.
+
+A controlled 250 ms file delay made CPU and GPU sampler persistence block foreground job checks
+for about 253 ms and 251 ms. First Analytics composition took 289–308 ms while restoring saved data.
+With the same injected delay after the fix, foreground checks took 0.002–0.003 ms, and first interactive
+Analytics composition returned in 3.4–7.9 ms with a loading notice. The worker completed the read later.
+These are injected-delay reproductions on a Linux cloud runner, not measurements of Fedora hardware.
+The corrected paths keep file operations outside the data lock and restore interactive series
+through one bounded worker on the existing sampler executor.
+Headless exports retain synchronous access to saved history.
+
+Interactive archive reads retain the newest configured samples. Each restore has a 64 MiB byte budget
+and an 8 MiB line limit. The view identifies loading, errors, and limited history.
+A limited restore does not invent missing measurements. Use a headless export when complete retained
+archive coverage is required. Saved-series discovery is cached and refreshed in the background.
+
+Pointer feedback checks visible Live controls, while scheduled maintenance checks every retained request.
+A 128-request fixture with two visible controls reduced attempt checks across 20 feedback frames
+from 2,560 to 40. Job completion and requeue validation remain active.
+
+Use the [changing-data benchmark](../../scripts/benchmark_changing_ui.py) to reproduce this class of workload:
+
+```bash
+python3 -S scripts/benchmark_changing_ui.py --output /tmp/tower-changing-ui.json
+```
+
+The default fixture has 1,000 queue records, 3,000 accounting records, and 4,000 observations per source.
+It includes four native GPUs and four static GPU traces. Native samples publish every 500 ms;
+Live display windows advance at 10 Hz while pointer positions arrive at 50 Hz.
+Cases cover ordinary refresh, 30-second and one-second Live windows, job switches, and resize.
+Add `--cases scroll-end` to exercise the Details scrollbar endpoints.
+Use `--glyphs both` to compare Unicode and ASCII. Use `--source-root PATH` to measure an isolated checkout.
+`-S` prevents an installed editable-package finder from selecting a different source tree.
+
+The report includes frame and phase p50/p95/p99/max durations, raster counts, and unexpected page changes.
+Frames use a counting paint sink with published memory fixtures; the benchmark forbids scheduler and file reads.
+It excludes terminal output, network latency, and external data producers. Use the real `--ui-trace` procedure
+for those conditions. Compare identical options on the same machine, without competing benchmark processes.
+
+
+The final quiet comparison ran 4.8.2 and 4.8.3 sequentially on the same Python 3.12 Linux runner,
+using the default fixture above at 320 columns by 52 rows and 200 frames per case.
+These observed frame durations include UI computation and a counting paint sink; they exclude terminal transport.
+
+| Changing-data workload | 4.8.2 frame p95 | 4.8.3 frame p95 |
+| --- | ---: | ---: |
+| Native updates, Live off | 148.0 ms | 80.6 ms |
+| Live, 30-second window | 432.9 ms | 103.9 ms |
+| Live, one-second window | 397.5 ms | 106.4 ms |
+| Selected job changes | 373.0 ms | 133.1 ms |
+| Viewport resize | 360.5 ms | 126.9 ms |
+
+For the 30-second Live case, frame p99 changed from 621.6 to 127.8 ms, and the observed maximum
+changed from 876.8 to 227.8 ms. Each version performed 40 Live redraws. Raster calls fell from
+1,440 to 320: 36 to eight per redraw, while six plots remained visible in the measured viewport.
+No measured frame attempted source I/O. Timing varies with host scheduling, retained observations,
+visible controls, and terminal size. These results do not establish a universal frame-time limit.
+A separate 120-frame End/Home case retained visible graph controls in every frame, including the lower GPU trace cards.

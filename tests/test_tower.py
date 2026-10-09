@@ -225,7 +225,10 @@ def test_controller_filter_sort_tabs_overlays_and_mouse(tmp_path):
     assert app.quit
 
 
-def test_flags_thresholds_and_once_outputs(tmp_path):
+def test_flags_thresholds_and_once_outputs(tmp_path, monkeypatch):
+    # This assertion checks an exact displayed percentage. Keep the simulated
+    # GPU at its initial observation while worker scheduling varies under load.
+    monkeypatch.setattr(FakeBackend, "now", lambda self: 0.0)
     backend, store, sampler, actions, views, app = make_app(tmp_path)
     text = screen.once_text(app, views, store, actions, 180, False, tab="jobs")
     row = next(l for l in text.splitlines() if "12477369" in l)

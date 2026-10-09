@@ -265,7 +265,11 @@ def published_position(app, key, fallback, *, context=None, now=None):
     if entry is None or context is not None and entry["context"][0] != context:
         return int(fallback)
     pid = entry["pid"]
-    if (pid.updated is not None and now - pid.updated > MAX_DURATION or
+    # Non-wheel input clears the controller clock. Even if a later wheel
+    # report rearms motion, set_target will snap this uninitialized controller
+    # to the new logical offset. Virtualized sources must prepare that same
+    # range before viewport performs the final slice.
+    if (pid.updated is None or now - pid.updated > MAX_DURATION or
             int(fallback) == int(pid.target) and pid.changed is not None and now - pid.changed >= MAX_DURATION):
         return int(fallback)
     return int(math.floor(pid.position + .5))

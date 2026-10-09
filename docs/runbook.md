@@ -657,6 +657,7 @@ keys. The low-impact CARC profile remains the starting point for live monitoring
 | Selected range changed or expired | Reselect after rotation, truncation, or retained-tail eviction; `y` will not substitute the whole file. |
 | Log lines appear to lose their first characters | Use `:logpan 0` to restore the left edge; version 3.0.1 clears old saved offsets and resets position for each new source. |
 | Scrolling stalls and keys replay in a burst | Update Tower, inspect source failures, and try `:smoothscroll off`; current wheel handling combines target movement and cached navigation avoids foreground file reads. |
+| Fast pointer movement stalls or changes tabs | Install 4.8.3 or later. Use `tower --ui-trace ui-trace.json`, reproduce the issue, and quit normally. Review the phase timings and transitions in the new report. See [the spike audit](guides/ui-performance.md#tower-483-spike-audit). |
 | Mouse hover or slider dragging is missing | Check reports with `:terminaltest`; inspect the terminal emulator and tmux connection, or use F8 and `:rate N`. |
 | Arrows move buttons instead of document content | Press Esc or use `:focusbuttons off`; press F8 when you want directional control focus. |
 | Details seem clipped or arrows move the wrong panel | Use Ctrl-W/F6 to focus Main or Details, then scroll or maximize that panel; `:density compact` restores the compact layout. |

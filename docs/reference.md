@@ -27,6 +27,7 @@ tower --write-config         # ~/.config/tower/config.toml with the commented de
 tower --profile carc         # a [profiles.carc] section of the config: a cluster (host, account, ...)
 tower --host login.example.edu   # from a laptop: every Slurm command over ssh, logs read remotely
 tower --record today.jsonl.gz    # keep every command and answer; --replay today.jsonl.gz --speed 10 plays it back
+tower --ui-trace ui-trace.json   # record interactive UI timings; quit normally to save the new private report
 tower run cancel 123 --yes   # one palette command without the screen (exit 0 ok, 1 failed, 3 needs --yes)
 tower --eval '[j.id for j in running if j.cpu < 0.3]'     # an expression over the snapshot
 tower --wait-for 'n_pending == 0' --timeout 3600          # block until it holds (exit 0) or time out (exit 2)

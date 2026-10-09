@@ -15,6 +15,7 @@ from . import layout as L
 from . import palette as P
 from .model import to_plain
 from .views import stdout_path
+from .ui_trace import timed as _timed_ui
 
 KEYNAMES = {}
 CB_MAP = {"green": "blue", "red": "yellow", "yellow": "magenta"}       # colour-blind safe: blue / orange(yellow) / magenta instead of green / red / yellow
@@ -54,10 +55,13 @@ _ESCAPE_KEYS["\x1b[127;5u"] = "ctrl-backspace"
 del _modifier, _number, _suffix, _key, _code
 _ESCAPE_PREFIXES = frozenset(sequence[:end] for sequence in (*_ESCAPE_KEYS, _PASTE_START)
                              for end in range(1, len(sequence)))
+_ESCAPE_SECONDS = .03
+_POINTER_ESCAPE_SECONDS = .2
+_RECENT_POINTER_SECONDS = .5
 
 
 class _InputReader:
-    """Decode fragmented pastes without executing payload keys or blocking frames."""
+    """Decode fragmented terminal reports and pastes without replaying bytes."""
     def __init__(self, window):
         self.window = window
         self.escape = ""
@@ -67,38 +71,86 @@ class _InputReader:
         self.text = []
         self.queue = deque()
         self.discard_mouse = False
-        self.mouse_tail = False
         self.discard_csi = False
+        self.after_escape = False
+        self.recovered_escape = False
+        self.protect_escape = False
+        self.mouse_time = None
+        self.escape_grace = _ESCAPE_SECONDS
+        self.timed_out_mouse = False
+
+    def _mouse_result(self, report):
+        if report is not None:
+            self.mouse_time = time.monotonic()
+        self.timed_out_mouse = False
+        return "mouse", report
 
     def read(self, curses):
         if self.queue:
             return self.queue.popleft()
-        deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting or self.discard_mouse or self.mouse_tail or self.discard_csi else None
+        deadline = time.monotonic() + INPUT_BATCH_SECONDS if self.escape or self.pasting or self.discard_mouse or self.discard_csi else None
         for _ in range(256):
             try:
                 value = self.window.get_wch()
             except curses.error:
-                if self.escape and time.monotonic() - self.escape_time >= .03:
+                elapsed = time.monotonic() - self.escape_time if self.escape else 0.0
+                if self.escape and elapsed >= _ESCAPE_SECONDS:
                     pending = self.escape
+                    if pending == "\x1b" and elapsed < self.escape_grace:
+                        return None
                     if pending.startswith("\x1b[<"):
-                        self.escape = ""
-                        self.mouse_tail = True
-                        return None, None  # Incomplete reports never become commands.
+                        # A fragmented report remains bounded and may resume
+                        # after a slow terminal/SSH packet. Dropping the prefix
+                        # here loses pointer updates and makes hover lag.
+                        self.timed_out_mouse = True
+                        return None, None
                     if pending.startswith("\x1b["):
                         # A delayed X10/numeric report must keep its prefix:
                         # its coordinates can be ordinary shortcut letters.
                         return None, None
                     self.escape = ""
+                    self.after_escape = pending == "\x1b"
+                    self.recovered_escape = False
+                    self.timed_out_mouse = False
                     self.queue.extend((key_name(ch, curses), None) for ch in pending[1:])
                     return "esc", None
                 return None
-            if self.mouse_tail:
-                # A timed-out SGR report can resume in a later input batch.
-                # Discard its numeric suffix but preserve a subsequent key.
-                if isinstance(value, str) and ((value.isascii() and value.isdigit()) or value == ";"):
-                    continue
-                self.mouse_tail = False
-                if value in ("M", "m"):
+            if isinstance(value, int) and not self.pasting:
+                # Ncurses can resume decoding between fragments. A complete
+                # native key/mouse event resolves an older partial raw prefix
+                # instead of being swallowed into that prefix as empty text.
+                name = key_name(value, curses)
+                if name is not None:
+                    self.escape = ""
+                    self.after_escape = self.recovered_escape = False
+                    self.discard_mouse = self.discard_csi = False
+                    self.timed_out_mouse = False
+                    if name == "mouse":
+                        try:
+                            return self._mouse_result(curses.getmouse())
+                        except curses.error:
+                            return None, None
+                    return name, None
+            if value == "\x9b" and not self.pasting and not self.escape.startswith("\x1b[M"):
+                # UTF-8 terminals may deliver the C1 CSI introducer as one
+                # character rather than the equivalent two bytes Escape '['.
+                self.escape, self.escape_time = "\x1b[", time.monotonic()
+                self.after_escape = self.recovered_escape = False
+                self.discard_mouse = self.discard_csi = False
+                self.timed_out_mouse = False
+                deadline = self.escape_time + INPUT_BATCH_SECONDS
+                self.window.timeout(0)
+                continue
+            if self.after_escape:
+                # Bare Escape remains responsive, but it may have been the
+                # first packet of a delayed mouse report. Recover its framing
+                # before '[' can become the previous-tab shortcut.
+                self.after_escape = False
+                if value == "[":
+                    self.escape, self.escape_time = "\x1b[", time.monotonic()
+                    self.recovered_escape = True
+                    deadline = self.escape_time + INPUT_BATCH_SECONDS
+                    self.window.timeout(0)
                     continue
             if self.discard_csi:
                 if value == "\x1b":
@@ -130,28 +182,40 @@ class _InputReader:
             elif self.escape:
                 char = value if isinstance(value, str) else ""
                 candidate = self.escape + char
+                if candidate.startswith("\x1b[") and len(candidate) > 2 and candidate[2].isdigit():
+                    self.recovered_escape = False
                 if char == "\x1b":
                     self.escape, self.escape_time = char, time.monotonic()
+                    self.recovered_escape = False
+                    self.timed_out_mouse = False
                 elif candidate.startswith("\x1b[M"):
+                    self.recovered_escape = False
                     # Legacy X10 reports encode three raw characters. A
-                    # coordinate such as 'r' is data, never a Research key.
+                    # coordinate such as 'r' is data, never a keyboard shortcut.
                     if len(candidate) < 6:
                         self.escape = candidate
                     else:
                         self.escape = ""
-                        return "mouse", _x10_mouse(candidate, curses)
+                        return self._mouse_result(_x10_mouse(candidate, curses))
                 elif candidate.startswith("\x1b[<"):
+                    self.recovered_escape = False
                     # Some tmux/screen terminfo entries advertise legacy X10
                     # input even though the terminal supports requested SGR.
                     # Decode fragmented reports without executing their bytes.
                     match = _SGR_MOUSE.fullmatch(candidate)
                     if match:
                         self.escape = ""
-                        return "mouse", _sgr_mouse(match, curses)
+                        return self._mouse_result(_sgr_mouse(match, curses))
                     if len(candidate) <= 23 and _SGR_PREFIX.fullmatch(candidate):
                         self.escape = candidate
                     else:
                         self.escape = ""
+                        if self.timed_out_mouse and char and char not in "0123456789;Mm":
+                            # A nonreport key after an abandoned, timed-out
+                            # numeric prefix is still usable (especially Quit).
+                            self.timed_out_mouse = False
+                            return key_name(value, curses), None
+                        self.timed_out_mouse = False
                         self.discard_mouse = not candidate.endswith(("M", "m"))
                         return None, None
                 elif candidate == _PASTE_START:
@@ -160,21 +224,33 @@ class _InputReader:
                     self.window.keypad(False)
                 elif candidate in _ESCAPE_KEYS:
                     self.escape = ""
+                    self.recovered_escape = False
                     return _ESCAPE_KEYS[candidate], None
                 elif candidate in _ESCAPE_PREFIXES:
                     self.escape = candidate
                 elif _URXVT_MOUSE.fullmatch(candidate):
                     self.escape = ""
+                    self.recovered_escape = False
                     match = _URXVT_MOUSE.fullmatch(candidate)
                     code, x, y = (int(match.group(index)) for index in (1, 2, 3))
-                    return "mouse", _mouse_report(code - 32, x, y, "M", curses)
+                    return self._mouse_result(_mouse_report(code - 32, x, y, "M", curses))
                 elif _CSI_COMPLETE.fullmatch(candidate):
                     # Unknown terminal control sequences are indivisible;
                     # replaying their bytes can activate unrelated shortcuts.
                     self.escape = ""
+                    if self.recovered_escape:
+                        # Escape followed by literal '[' and an ordinary key
+                        # has no mouse framing. Preserve both user inputs.
+                        self.recovered_escape = False
+                        self.queue.extend((key_name(ch, curses), None) for ch in candidate[2:])
+                        return "[", None
                     return None, None
                 elif len(candidate) <= 64 and _CSI_PREFIX.fullmatch(candidate):
                     self.escape = candidate
+                    if char.isdigit():
+                        # A numeric CSI may be a urxvt mouse report; its bytes
+                        # must never be replayed as tab-number shortcuts.
+                        self.recovered_escape = False
                 elif candidate.startswith("\x1b["):
                     self.escape = ""
                     self.discard_csi = not (char and "@" <= char <= "~")
@@ -187,11 +263,15 @@ class _InputReader:
                 name = key_name(value, curses)
                 if name == "esc":
                     self.escape, self.escape_time = "\x1b", time.monotonic()
+                    self.timed_out_mouse = False
+                    pointer_recent = self.mouse_time is not None and self.escape_time - self.mouse_time <= _RECENT_POINTER_SECONDS
+                    self.escape_grace = (_POINTER_ESCAPE_SECONDS if self.protect_escape or pointer_recent
+                                         else _ESCAPE_SECONDS)
                     deadline = self.escape_time + INPUT_BATCH_SECONDS
                     self.window.timeout(0)
                 elif name == "mouse":
                     try:
-                        return name, curses.getmouse()
+                        return self._mouse_result(curses.getmouse())
                     except curses.error:
                         return None, None
                 else:
@@ -438,6 +518,15 @@ def _read_input(stdscr, curses):
             _INPUT_READERS.pop(next(iter(_INPUT_READERS)))
         reader = _INPUT_READERS[id(stdscr)] = _InputReader(stdscr)
     return reader.read(curses)
+
+
+def _protect_pointer_escape(app):
+    """Allow a short report-prefix grace while a pointer gesture owns input."""
+    states = (("chart_interaction_state", "capture"), ("metric_live_state", "capture"),
+              ("job_selection_state", "capture"), ("text_selection_state", "capture"),
+              ("scrollbar_state", "capture"), ("pane_drag_state", "capture"),
+              ("history_browser_state", "drag"), ("toolbar_state", "dragging"))
+    return any((getattr(app, name, None) or {}).get(key) for name, key in states)
 
 
 def _navigation_context(app):
@@ -756,7 +845,10 @@ def _consume_input_batch(app, stdscr, curses, hits, first, *, effects=None):
     def apply(value):
         if effects is not None:
             effects.record(app, value, curses)
-        _apply_input(app, value, hits, curses)
+        trace = getattr(app, "ui_trace", None)
+        if trace is not None:
+            trace.input(app, value)
+        _timed_ui(app, "input_dispatch", _apply_input, app, value, hits, curses)
 
     def is_motion(value):
         if value[0] != "mouse" or value[1] is None:
@@ -809,7 +901,7 @@ class _InputEffects:
 
     def record(self, app, event, curses):
         name, mouse = event
-        if name is None:
+        if name is None or name == "mouse" and mouse is None:
             return
         state = mouse[4] if name == "mouse" and mouse is not None else 0
         hover = name == "mouse" and _motion_report(state, curses)
@@ -996,14 +1088,14 @@ class _FrameCache:
         from .scrolling import begin_frame, finish_frame, timeout_ms
         from . import scrollbars
         from .interaction import publish
-        app.tick()
-        snap = store.snapshot()
+        _timed_ui(app, "maintenance", app.tick)
+        snap = _timed_ui(app, "snapshot", store.snapshot)
         app.width = width
         begin_frame(app)
         options = {"feedback": False} if getattr(views, "feedback_options", False) else {}
-        rows, hits = views.compose(snap, app, width, height, actions, **options)
+        rows, hits = _timed_ui(app, "compose", views.compose, snap, app, width, height, actions, **options)
         welcome = startup.overlay(views, snap, app, width, height) or []
-        overlays = views.overlay(snap, app, width, height, **options) or []
+        overlays = _timed_ui(app, "overlay", views.overlay, snap, app, width, height, **options) or []
         finish_frame(app)
         self.rows = getattr(app, "frame_rows", rows)
         self.hits, self.welcome = hits, welcome
@@ -1023,8 +1115,8 @@ class _FrameCache:
         scrollbars.publish(app, width, height, overlays=welcome + overlays)
         from .text_selection import publish as publish_text
         publish_text(app, self.rows, width, height, overlays=welcome + overlays)
-        publish(app, self.rows, hits, width, height, overlays=welcome + overlays,
-                extra_controls=metric_live.descriptors(app) + scrollbars.descriptors(app))
+        _timed_ui(app, "publish_controls", publish, app, self.rows, hits, width, height, overlays=welcome + overlays,
+                  extra_controls=metric_live.descriptors(app) + scrollbars.descriptors(app))
         self.snapshot, self.geometry = snap, (width, height)
         self.toolbar_token = _toolbar_feedback_token(app)
         now = time.monotonic()
@@ -1090,11 +1182,14 @@ def _mouse_reporting(enabled):
 
     Older terminals that do not support any-event mode retain button-event
     mode. Both are disabled explicitly on exit, including exceptional exits.
+    Clear inherited extended/pixel encodings before requesting cell-based SGR:
+    ncurses and raw decoding must agree about where each report ends.
     """
     if not sys.stdout.isatty():
         return
-    sys.stdout.write("\033[?1002h\033[?1003h\033[?1006h" if enabled else
-                     "\033[?1003l\033[?1002l\033[?1000l\033[?1006l")
+    formats_off = "\033[?1005l\033[?1015l\033[?1016l"
+    sys.stdout.write(formats_off + ("\033[?1002h\033[?1003h\033[?1006h" if enabled else
+                                  "\033[?1003l\033[?1002l\033[?1000l\033[?1006l"))
     sys.stdout.flush()
 
 
@@ -1171,27 +1266,30 @@ def run_curses(app, views, sampler, store, actions, cfg):
                 _mouse_reporting(mouse_enabled)
             height, width = stdscr.getmaxyx()
             if cache.due(app, width, height):
-                cache.rebuild(app, views, store, actions, width, height)
-            rows, overlays, bar = cache.feedback(app, views)
+                _timed_ui(app, "document", cache.rebuild, app, views, store, actions, width, height)
+            rows, overlays, bar = _timed_ui(app, "feedback", cache.feedback, app, views)
             hits, snap = cache.hits, cache.snapshot
             stdscr.timeout(cache.wait_ms())
             reader = _INPUT_READERS.get(id(stdscr))
-            if reader and (reader.escape or reader.pasting):
-                stdscr.timeout(5)
-            painter.draw(rows, overlays, width, height, bar=bar)
+            if reader:
+                reader.protect_escape = _protect_pointer_escape(app)
+                if reader.escape or reader.pasting:
+                    stdscr.timeout(5)
+            _timed_ui(app, "paint", painter.draw, rows, overlays, width, height, bar=bar)
             started = sum(1 for e in snap["events"] if e.get("kind") == "started" and not e.get("old"))
             if app.bell and started > rung:
                 curses.beep()
             rung = started
             stdscr.noutrefresh()
-            curses.doupdate()
-            event = pending_input if pending_input is not None else _read_input(stdscr, curses)
+            _timed_ui(app, "terminal_flush", curses.doupdate)
+            event = pending_input if pending_input is not None else _timed_ui(app, "input_wait", _read_input, stdscr, curses)
             pending_input = None
             if event is None:
                 continue
             effects = _InputEffects()
             before = (app.mode, app.tab, getattr(app, "selected_id", None))
-            pending_input = _consume_input_batch(app, stdscr, curses, hits, event, effects=effects)
+            pending_input = _timed_ui(app, "input_batch", _consume_input_batch,
+                                      app, stdscr, curses, hits, event, effects=effects)
             cache.dirty = (effects.document or pending_input is not None
                            or before != (app.mode, app.tab, getattr(app, "selected_id", None))
                            or not getattr(views, "feedback_options", False))

@@ -22,6 +22,7 @@ from . import clock, layout
 from .controller import KEY_LABELS_ASCII
 from .views import ANALYTICS_VIEWS, TABS
 from .research import RESEARCH_VIEWS
+from .series_archive import SeriesArchive
 
 
 _TRANSLATE = str.maketrans({"\u00b7": ".", "\u2026": "...", "\u2192": "->", "\u2190": "<-", "\u2013": "-", "\u2014": "--", "\u00d7": "x"})
@@ -80,6 +81,13 @@ class _ReportStore:
         self._reader.lock = threading.RLock()
         self._reader.series = copy.deepcopy(original.series)
         self._reader._series_loaded = set(original._series_loaded)
+        self._reader.jobs = snap["jobs"]
+        self._reader.finished = snap["finished"]
+        self._reader.departed_jobs = snap.get("departed_jobs", {})
+        self._reader._job_attempts = dict(original._job_attempts)
+        self._reader._series_archive = SeriesArchive(self._reader)
+        self._reader._series_archive.states = copy.deepcopy(original._series_archive.states)
+        self._reader._series_archive.limited = set(original._series_archive.limited)
         self.lock, self.series = self._reader.lock, self._reader.series
         self.state_dir, self.persist = original.state_dir, original.persist
         self.alerts = None

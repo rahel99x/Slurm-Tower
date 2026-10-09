@@ -410,14 +410,22 @@ class Sampler(threading.Thread):
             self.kick.set()
             self.pool.shutdown(wait=False, cancel_futures=True)
             self.gpu_pool.shutdown(wait=False, cancel_futures=True)
+        self.store.configure_series_loader(None)
+
+    def enable_series_background(self):
+        """Restore interactive metric histories on the existing source pool."""
+        with self._schedule_lock:
+            if not self.stop.is_set():
+                self.store.configure_series_loader(self.pool.submit)
 
     # ---- sources -----------------------------------------------------------------------------------
     def src_jobs(self):
         jobs = self.slurm.jobs()
         with self.store.lock:
             returning = {job.id for job in jobs} & self.store.preserved_detail_ids()
-            events = self.store.apply_jobs(jobs)
+            events = self.store.apply_jobs(jobs, _persist=False)
             self._gpu_cache_reapply_locked(time.monotonic())
+        self.store.flush_persistence(_events_only=True)
         with self._schedule_lock:
             requests = dict(self._metric_requests)
         if requests:
@@ -491,8 +499,9 @@ class Sampler(threading.Thread):
                         or self._gpu_identity(current) != identities[job.id]):
                     continue
                 self.store.prev_cpu[job.id] = keep
-                self.store.apply_live(job.id, lv)
+                self.store.apply_live(job.id, lv, _persist=False)
                 self.store.steps[job.id] = steps
+            self.store.flush_persistence(_series_only=True)
         with self.store.lock:
             alive = {job.id for job in self.store.jobs}
             for jid in set(self.store.steps) - alive:
@@ -610,9 +619,10 @@ class Sampler(threading.Thread):
                     if (current is None or self.store.job_attempt(job.id) != attempts[job.id]
                             or self._gpu_identity(current) != identities[job.id]):
                         continue
-                    self.store.apply_gpu(job.id, samples)
+                    self.store.apply_gpu(job.id, samples, _persist=False)
                     if error:
                         failures.append(error)
+                self.store.flush_persistence(_series_only=True)
         for fut in pending:
             fut.cancel()
         self.check_alerts()

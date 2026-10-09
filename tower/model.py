@@ -13,6 +13,7 @@ from functools import lru_cache
 from typing import Any, Deque, Dict, List, Optional, Sequence
 
 from . import clock
+from .series_archive import SeriesArchive
 
 
 # ------------------------------------------------------------------------------------------------ parsing helpers
@@ -474,6 +475,15 @@ class Store:
         self.alerts = None                                 # the AlertEngine (set by the cli)
         self.state_dir = state_dir
         self.persist = persist and bool(state_dir)
+        self._series_archive = SeriesArchive(self)
+        # Publication order is captured under Store.lock. The IO lock and queue
+        # lock never acquire Store.lock, so slow storage cannot block readers.
+        self._persist_queue = collections.deque()
+        self._persist_event_queue = collections.deque()
+        self._persist_queue_lock = threading.Lock()
+        self._persist_io_lock = threading.Lock()
+        self._persist_event_io_lock = threading.Lock()
+        self._events_path = os.path.join(state_dir, "events.jsonl") if self.persist else None
         if self.persist:
             os.makedirs(state_dir, exist_ok=True)
             self._load_events()
@@ -544,17 +554,14 @@ class Store:
         return {k: list(v.get("tags", [])) for k, v in self.tags.items()}
 
     # ---- events ------------------------------------------------------------------------------------
-    def event(self, kind: str, text: str, job: Optional[Job] = None, **extra) -> dict:
+    def event(self, kind: str, text: str, job: Optional[Job] = None, *, _persist: bool = True, **extra) -> dict:
         ev = dict(t=clock.now(), kind=kind, text=text, job=(job.id if job else extra.pop("job_id", "")),
                   name=(job.name if job else extra.pop("name", "")), **extra)
         with self.lock:
             self.events.append(ev)
-        if self.persist:
-            try:
-                with open(os.path.join(self.state_dir, "events.jsonl"), "a") as f:
-                    f.write(json.dumps(ev) + "\n")
-            except OSError:
-                pass
+            self._queue_persistence(os.path.join(self.state_dir, "events.jsonl") if self.persist else None, ev)
+        if _persist:
+            self.flush_persistence(_events_only=True)
         return ev
 
     def _load_events(self):
@@ -575,7 +582,7 @@ class Store:
                 pass
 
     # ---- transitions -------------------------------------------------------------------------------
-    def apply_jobs(self, jobs: Sequence[Job]) -> List[dict]:
+    def apply_jobs(self, jobs: Sequence[Job], *, _persist: bool = True) -> List[dict]:
         """Store a fresh squeue listing; returns the transition events (queued, started, finished, held, released)."""
         out = []
         with self.lock:
@@ -601,17 +608,17 @@ class Store:
                     self.fin_steps.pop(j.id, None)
                 prev = self.seen.get(j.id)
                 if prev is None and not first:
-                    out.append(self.event("queued" if j.pending else "started", f"{'queued' if j.pending else 'started'} {j.id} {j.name}", j))
+                    out.append(self.event("queued" if j.pending else "started", f"{'queued' if j.pending else 'started'} {j.id} {j.name}", j, _persist=False))
                 elif prev == "PENDING" and not j.pending:
-                    out.append(self.event("started", f"started {j.id} {j.name}", j))
+                    out.append(self.event("started", f"started {j.id} {j.name}", j, _persist=False))
                 elif prev is not None and prev != j.state and not j.pending and j.state in ("COMPLETING", "SUSPENDED"):
-                    out.append(self.event("state", f"{j.state.lower()} {j.id} {j.name}", j))
+                    out.append(self.event("state", f"{j.state.lower()} {j.id} {j.name}", j, _persist=False))
                 if prev is not None:
                     was_held = self.seen.get(j.id + ":held") == "1"
                     if j.held and not was_held:
-                        out.append(self.event("held", f"held {j.id} {j.name}", j))
+                        out.append(self.event("held", f"held {j.id} {j.name}", j, _persist=False))
                     elif was_held and not j.held:
-                        out.append(self.event("released", f"released {j.id} {j.name}", j))
+                        out.append(self.event("released", f"released {j.id} {j.name}", j, _persist=False))
                 self.seen[j.id + ":held"] = "1" if j.held else "0"
             for jid, st in list(self.seen.items()):
                 if ":" in jid:
@@ -621,7 +628,7 @@ class Store:
                     # Keep the historic event kind for plugins, but mark absence
                     # unconfirmed and never describe it as successful completion.
                     out.append(self.event(kind, f"left queue {jid} {self.names.get(jid, '')}", job_id=jid,
-                                          name=self.names.get(jid, ""), confirmed=False, state="ACCOUNTING"))
+                                          name=self.names.get(jid, ""), confirmed=False, state="ACCOUNTING", _persist=False))
                     previous = previous_jobs.get(jid)
                     # Compressed pending array ranges are presentation groups, not
                     # accounting job identities; splitting a range is not a finish.
@@ -657,6 +664,8 @@ class Store:
             for jid in self._job_attempts.keys() - retained_attempts:
                 del self._job_attempts[jid]
             self.t_jobs = clock.now()
+        if _persist:
+            self.flush_persistence(_events_only=True)
         return out
 
     def job_attempt(self, jid: str) -> int:
@@ -775,66 +784,94 @@ class Store:
         safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in jid)
         return os.path.join(self.state_dir, "series", f"{safe}.jsonl")
 
-    def record(self, jid: str, sample: dict):
-        """Append one sample {t, ...} to the job's series in memory and on disk."""
+    def _queue_persistence(self, path, sample):
+        if path is not None:
+            with self._persist_queue_lock:
+                queue = self._persist_event_queue if path == self._events_path else self._persist_queue
+                queue.append((path, sample))
+
+    def flush_persistence(self, *, _events_only=False, _series_only=False):
+        """Write queued observations in publication order without Store.lock.
+
+        Worker sources call this after publishing their entire atomic update.
+        Separate event and metric writers drain batches; another source can
+        publish while storage is slow, with per-file order preserved. A copy
+        event never waits for an unrelated metrics append.
+        """
+        if not self.persist:
+            return
+        if not _series_only:
+            self._drain_persistence(self._persist_event_queue, self._persist_event_io_lock)
+        if not _events_only:
+            self._drain_persistence(self._persist_queue, self._persist_io_lock)
+
+    def _drain_persistence(self, queue, io_lock):
+        with io_lock:
+            while True:
+                with self._persist_queue_lock:
+                    if not queue:
+                        return
+                    batch = list(queue)
+                    queue.clear()
+                paths = {}
+                for path, sample in batch:
+                    paths.setdefault(path, []).append(sample)
+                for path, samples in paths.items():
+                    try:
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        with open(path, "a") as stream:
+                            for sample in samples:
+                                stream.write(json.dumps(sample) + "\n")
+                    except OSError:
+                        pass
+
+    def record(self, jid: str, sample: dict, *, _persist: bool = True):
+        """Append a captured sample; defer IO when inside a larger publication."""
         with self.lock:
             self.series[jid].append(sample)
-        path = self._series_path(jid)
-        if path:
-            try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "a") as f:
-                    f.write(json.dumps(sample) + "\n")
-            except OSError:
-                pass
+            self._queue_persistence(self._series_path(jid), sample)
+        if _persist:
+            self.flush_persistence(_series_only=True)
+        return sample
+
+    def configure_series_loader(self, submit):
+        """Use the sampler executor for bounded interactive archive requests."""
+        self._series_archive.configure(submit)
 
     def series_of(self, jid: str) -> List[dict]:
-        """The job's samples, oldest first: what this session recorded plus what earlier sessions left on disk."""
-        with self.lock:
-            if jid not in self._series_loaded:
-                self._series_loaded.add(jid)
-                path = self._series_path(jid)
-                if path and os.path.exists(path):
-                    try:
-                        old = collections.deque(maxlen=self.series_keep)
-                        with open(path) as f:
-                            for line in f:
-                                try:
-                                    sample = json.loads(line)
-                                except ValueError:
-                                    continue  # Preserve valid history after a truncated final write.
-                                if isinstance(sample, dict):
-                                    old.append(sample)
-                    except OSError:
-                        old = []
-                    mem = list(self.series[jid])
-                    seen = {(s.get("t"), s.get("k")) for s in mem}
-                    merged = [s for s in old if (s.get("t"), s.get("k")) not in seen] + mem
-                    merged.sort(key=lambda s: s.get("t", 0))
-                    self.series[jid] = collections.deque(merged[-self.series_keep:], maxlen=self.series_keep)
-            return list(self.series[jid])
+        """Restore retained history synchronously for reports and headless use."""
+        return self._series_archive.read(jid)
+
+    def series_view(self, jid: str) -> List[dict]:
+        """Read published samples immediately; request saved history off-thread."""
+        return self._series_archive.read(jid, background=True)
+
+    def series_status(self, jid: str) -> dict:
+        """Explain whether saved history is loading, missing, limited or ready."""
+        return self._series_archive.status(jid)
 
     def series_jobs(self) -> List[str]:
-        """Job ids with a series on disk or in memory."""
-        ids = set(self.series)
-        if self.persist:
-            d = os.path.join(self.state_dir, "series")
-            try:
-                ids.update(f[:-6] for f in os.listdir(d) if f.endswith(".jsonl"))
-            except OSError:
-                pass
-        return sorted(ids)
+        """Job IDs with a series on disk or in memory; synchronous inventory."""
+        return self._series_archive.jobs()
 
-    def apply_live(self, jid: str, lv: Live):
+    def series_jobs_view(self) -> List[str]:
+        """Return cached IDs and refresh the filesystem inventory off-thread."""
+        return self._series_archive.jobs(background=True)
+
+    def apply_live(self, jid: str, lv: Live, *, _persist: bool = True):
         with self.lock:
             self.live[jid] = lv
             value = lv.rate if lv.rate is not None else lv.avg
             if value is not None:
                 self.hist_cpu[jid].append(value)
-        if lv.cpu_time is not None:
-            self.record(jid, dict(t=lv.t, k="live", cpu=lv.rate, eff=lv.avg, rss=lv.rss, cpu_time=lv.cpu_time))
+            sample = None
+            if lv.cpu_time is not None:
+                sample = self.record(jid, dict(t=lv.t, k="live", cpu=lv.rate, eff=lv.avg, rss=lv.rss, cpu_time=lv.cpu_time), _persist=False)
+        if _persist:
+            self.flush_persistence(_series_only=True)
+        return sample
 
-    def apply_gpu(self, jid: str, samples: Optional[List[GpuSample]]):
+    def apply_gpu(self, jid: str, samples: Optional[List[GpuSample]], *, _persist: bool = True):
         with self.lock:
             self.gpu[jid] = samples
             for s in samples or []:
@@ -845,8 +882,12 @@ class Store:
                 m = self.gpu_mean[key]
                 m[0] += s.util
                 m[1] += 1
-        if samples:
-            self.record(jid, dict(t=clock.now(), k="gpu", gpu={f"{s.node}:{s.index}": [s.util, s.used, s.total] for s in samples}))
+            sample = None
+            if samples:
+                sample = self.record(jid, dict(t=clock.now(), k="gpu", gpu={f"{s.node}:{s.index}": [s.util, s.used, s.total] for s in samples}), _persist=False)
+        if _persist and sample is not None:
+            self.flush_persistence(_series_only=True)
+        return sample
 
     def gpu_mean_of(self, key: str) -> Optional[float]:
         m = self.gpu_mean.get(key)

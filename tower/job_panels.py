@@ -625,9 +625,36 @@ def _research(views, snap, app, job, width, height, state, header_rows):
     return content[:MAX_ROWS], actions
 
 
-def _analytics(views, snap, app, job, width, height, state):
+def _analytics(views, snap, app, job, width, height, state, header_rows=0):
     proxy, retained = _scoped_app(app, job, state)
     proxy.analytics_document_mode = True
+    if state["analytics_view"] == "job" and height is not None and getattr(app, "interactive", False):
+        # Inline Series owns the same independently scrolling Details source
+        # as Research. Reserve offscreen bands instead of rasterizing the
+        # complete multi-GPU document on every fresh sample or Live frame.
+        header = header_rows + 2  # Job heading and accounting-window row.
+        document_key = (_view_key(state), width)
+        window = state["document_windows"].get(document_key)
+        previous = state["document_maps"].get(document_key)
+        from .workspace_layout import initialize as layout_state
+        logical_top = layout_state(app).scroll.get("jobs:details", 0)
+        # A new pane width has no exact wrapped-row map yet. At a retained
+        # lower offset, a top-only seed would publish a blank viewport until
+        # the next frame. Compose the bounded source once to establish that
+        # map, then resume visible-band rasterization immediately.
+        seed_full = not previous and logical_top > 0
+        if previous:
+            from .scrolling import published_position
+            top = published_position(app, "workspace:jobs:details", logical_top) + previous["sticky"]
+            raw = [index for index, position in previous["mapping"].items()
+                   if top - 3 <= position < top + max(1, height) + 3]
+            if raw:
+                window = (max(0, min(raw) - header - 3),
+                          max(0, max(raw) - header + 4))
+            elif logical_top > 0:
+                seed_full = True
+        proxy.analytics_series_window = None if seed_full else window or (0, max(1, height) + 6)
+        state["document_headers"][document_key] = header
     scoped_views = copy.copy(views)
     # A finished job without session samples must never fall back to a running
     # job's chart. The ordinary Analytics workspace keeps its own cycling list.
@@ -679,6 +706,10 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
     """Keep every requested/measured value when a wide table cannot fit."""
     from . import advisor, clock
     from .model import human, hms, secs, stamp
+    from .views import _native_series
+    series_reader = (proxy.store.series_view if getattr(proxy, "interactive", False)
+                     else proxy.store.series_of)
+    series_for = lambda jid: _native_series(series_reader(jid))
     row = lambda value, style="": [(clean(value, views.g.ascii), style)]
     if proxy.analytics_view == "advisor":
         now = clock.now()
@@ -708,7 +739,7 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
             if not isinstance(document, AdvisorDocument) or document.key != key:
                 document = retained["advisor_document"] = AdvisorDocument(advice, running, width, views.g.ascii, live=live, groups=by_name)
             document.bind(advice, running, lambda item: advisor.advise_running(
-                item, snap.get("live", {}).get(item.id), proxy.store.series_of(item.id), by_name.get(item.name, ())))
+                item, snap.get("live", {}).get(item.id), series_for(item.id), by_name.get(item.name, ())))
             proxy.analytics_advisor_document = document
             return rows
         for item in advice:
@@ -725,7 +756,7 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
             rows.append(row(" Running jobs so far", "heading+bold"))
             by_name = views.history_advice_cache.groups(snap.get("finished", []))
             for item in running:
-                observed = advisor.advise_running(item, snap.get("live", {}).get(item.id), proxy.store.series_of(item.id), by_name.get(item.name, ()))
+                observed = advisor.advise_running(item, snap.get("live", {}).get(item.id), series_for(item.id), by_name.get(item.name, ()))
                 rows.append(row(f" {item.id} / {item.name}: {observed.summary(views.g.dot) or 'nothing to change yet'}", "cyan"))
         return rows
     ids = proxy.compare_ids[:6]
@@ -735,7 +766,7 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
     for jid in ids:
         job, fin = jobs.get(jid), finished.get(jid)
         record = job or fin
-        series = proxy.store.series_of(jid)
+        series = series_for(jid)
         live = [point for point in series if point.get("k") == "live"]
         cpu = [point.get("cpu") if point.get("cpu") is not None else point.get("eff") for point in live]
         cpu = [value for value in cpu if value is not None]
@@ -931,7 +962,7 @@ def render(views, snap, app, job, width, height=None):
         content, content_hits = _research(views, snap, app, job, width, height, state, len(rows))
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     elif state["mode"] == "analytics":
-        content, content_hits = _analytics(views, snap, app, job, width, height, state)
+        content, content_hits = _analytics(views, snap, app, job, width, height, state, len(rows))
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     elif state["mode"] == "quick":
         content, content_hits = _quick(views, app, job, width)

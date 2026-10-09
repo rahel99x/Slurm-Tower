@@ -336,6 +336,8 @@ def parse(argv):
                     help="diagnose GPU allocation, NVIDIA sampling, traces, and retained samples; omit JOBID to check current jobs")
     ap.add_argument("--gpu-check-output", default="", metavar="DIRECTORY",
                     help="with --gpu-check: create a private new directory with report.json, report.txt, and command evidence")
+    ap.add_argument("--ui-trace", default="", metavar="FILE",
+                    help="save bounded UI phase timings and page transitions to a new JSON file when the interactive session exits")
     ap.add_argument("--profile", default="", help="a [profiles.NAME] section of the config to merge over it (a cluster)")
     ap.add_argument("--host", default="", help="remote mode: run every Slurm command on this login node over ssh")
     ap.add_argument("--ssh-user", default="", help="the login on --host (default: as here)")
@@ -401,7 +403,7 @@ def parse(argv):
         i = run_index
         pre, post, cmd = argv[:i], argv[i + 1:], []
         switches = {"--yes", "--fake", "--no-state", "--no-plugins", "--ascii", "--unicode", "--no-color", "--no-gpu", "--bell", "--paused", "--json"}
-        valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval", "--rate"}
+        valued = {"--tab", "--config", "--profile", "--host", "--ssh-user", "--user", "--account", "--width", "--replay", "--record", "--speed", "--days", "--interval", "--rate", "--ui-trace"}
         batch_command = bool(post and post[0] and any(c.startswith(post[0]) for c in ("resubmit", "prepare", "submit", "array")))
         from .research_commands import COMMANDS, command_value_option
         from .planning_commands import COMMANDS as planning_commands
@@ -437,6 +439,9 @@ def parse(argv):
         free_text = cmd[0] in ("eval", "find", "filter", "note")
         argv = pre + ["--run", " ".join(cmd) if free_text else shlex.join(cmd)]
     args = ap.parse_intermixed_args(argv)
+    if args.ui_trace and (args.doctor or args.gpu_check is not None or args.run or args.eval or args.wait_for
+                          or args.watch or args.report or args.csv or args.json or args.once or args.write_config):
+        ap.error("--ui-trace requires an interactive session")
     if args.gpu_check_output and args.gpu_check is None:
         ap.error("--gpu-check-output requires --gpu-check")
     if args.gpu_check is not None and (args.doctor or args.run or args.eval or args.wait_for or args.watch or args.report or args.csv or args.write_config or args.record):
@@ -492,6 +497,21 @@ def gpu_check(args, cfg):
 
 def main(argv=None):
     args = parse(argv)
+    if args.ui_trace and not sys.stdout.isatty():
+        print("tower: --ui-trace requires an interactive terminal", file=sys.stderr)
+        return 1
+    if args.ui_trace:
+        from .ui_trace import capture, TraceError
+        try:
+            with capture(args.ui_trace) as trace:
+                return _main(args, trace)
+        except TraceError as exc:
+            print(f"tower: {exc}", file=sys.stderr)
+            return 1
+    return _main(args)
+
+
+def _main(args, ui_trace=None):
     if args.write_config:
         path = default_path() if sys.version_info >= (3, 11) else default_path()[:-5] + ".json"
         try:
@@ -533,6 +553,8 @@ def main(argv=None):
             print(f"tower: {exc}", file=sys.stderr)
             return 1
         app, views, store, sampler, actions = s.app, s.views, s.store, s.sampler, s.actions
+        if ui_trace is not None:
+            app.ui_trace = ui_trace
         width = args.width or max(1, shutil.get_terminal_size((130, 40)).columns)
         color = cfg["color"] and sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb"
         try:

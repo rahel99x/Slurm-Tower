@@ -754,7 +754,8 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
             from .job_panels import _view_key
             view_key = _view_key(inline)
             inline["scrolls"][view_key] = logical_top
-            if inline.get("mode") == "research":
+            if (inline.get("mode") == "research" or
+                    inline.get("mode") == "analytics" and inline.get("analytics_view") == "job"):
                 usable_width = max(0, rect.width - padding * 2 - 1)
                 header = inline["document_headers"].get((view_key, usable_width), 0)
                 document_key = (view_key, usable_width)

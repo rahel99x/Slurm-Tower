@@ -216,3 +216,15 @@ def test_actual_screen_retains_footer_selection_and_pristine_copy(terminal):
         text = L.row_text(row)
         assert text.count("◆") == (1 if y == structural_y else 0)
         assert not text.endswith("◆")
+
+
+def test_ui_trace_covers_actual_curses_phases(terminal):
+    from tower.ui_trace import UITrace
+    terminal.app.ui_trace = UITrace()
+    terminal.cfg.set("animations", False)
+    terminal.run([("2", None), ("ctrl-c", None)])
+    report = terminal.app.ui_trace.report()
+    assert {"maintenance", "snapshot", "compose", "document", "feedback", "paint",
+            "terminal_flush", "input_wait", "input_batch", "input_dispatch"} <= set(report["phases"])
+    assert report["inputs"]["keyboard"] == 2
+    assert any(event["after"]["tab"] == "cluster" for event in report["transitions"])

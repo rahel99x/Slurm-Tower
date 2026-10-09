@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Pointer controls](pointer-navigation.md) · [Display performance](ui-performance.md)
 
-Tower 4.8.2 corrects pointer routing and repeated display work across the application.
+Tower 4.8.3 extends the pointer audit to delayed Escape prefixes, background completions, and fresh sample updates.
 This guide records reproduced faults, tested fixes, and a manual check procedure.
 The audit covers the shared input path and page-specific pointer handlers.
 It does not establish that every terminal or future input sequence is free of faults.
@@ -11,7 +11,13 @@ It does not establish that every terminal or future input sequence is free of fa
 
 | Fault | Cause | Correction |
 | --- | --- | --- |
-| Movement opens Research | The decoder replayed legacy X10 coordinate bytes as keyboard input. An `r` coordinate activated the Research shortcut. | Decode SGR, X10, and urxvt mouse reports as pointer input. Discard malformed control sequences without replaying shortcut bytes. |
+| Movement opens Research | A timeout after the first Escape byte released the delayed report body as keyboard input. `[` selects the previous tab, which takes Jobs to Research; a coordinate `r` forces a refresh. | Recover a delayed mouse prefix after Escape. Decode SGR, X10, and urxvt reports without replaying their contents as shortcuts. |
+| A delayed pointer prefix cancels a drag | The first Escape byte can arrive separately from the rest of a report. | Allow a bounded prefix grace period during recent pointer activity or an active capture. A genuine Escape still cancels the gesture after the timeout. |
+| An inherited mouse encoding leaks a coordinate | Extended X10 or pixel reporting can remain enabled after another application exits. Some ncurses terminal descriptions then consume only part of a report. | Clear modes 1005, 1015, and 1016 before enabling cell-based SGR 1006; clear them again on exit. |
+| Research opens after leaving a command | A background project command completed after the user changed workspace. | Bind completion to its original workflow. Retain detached results without changing the current page, source, or selection. |
+| Hover stalls while samples are saved | Sampler file operations held the same lock used by foreground job checks. | Complete the atomic data update under the lock, then perform persistence outside it. |
+| Opening or refreshing Analytics blocks | Saved series and their directory inventory were read in the foreground. | Restore saved samples and inventory through the existing background executor. Show restore status in the view. |
+| Fresh samples cause repeated graph spikes | Inline Job Series rasterized off-screen metric bands. | Render the viewport while retaining the complete scrollable document and source-bound controls. |
 | A delayed click opens old content | A job, source, viewport, or pane changed after the hit map was published. | Bind activation to immutable hit contents, current geometry, and the exact job or source. |
 | A double-click bypasses row validation | Follow-up activation used an old row without checking its horizontal location and current frame. | Validate the row before applying double-click activation. |
 | Hover continues an old drag | A release report was lost before a known no-button report arrived. | End captures when the decoded protocol proves that no button is held. Preserve compatibility when native curses reports do not provide that evidence. |
@@ -27,9 +33,15 @@ same-position drag reports, theme changes, overlays, and interrupted capture han
 Pointer feedback performs no measurement-source I/O in the tested memory fixtures.
 Scheduler actions retain their existing review step.
 
+During an active capture or recent pointer activity, a bare Escape prefix has a 200 ms grace period.
+Keyboard-only Escape retains its 30 ms decoder timeout. Terminal-library scheduling can add to these times.
+An indefinitely delayed report cannot be distinguished from a genuine Escape key without waiting indefinitely.
+If its prefix exceeds the grace period, Escape can cancel the gesture; its later mouse body remains quarantined.
+Recognized partial SGR reports retain their bounded prefix so a delayed packet can still update the pointer.
+
 ## Check the update in a terminal
 
-**Prerequisites:** Install Tower 4.8.2 or later.
+**Prerequisites:** Install Tower 4.8.3 or later.
 Use a terminal that reports pointer movement.
 
 1. Open Jobs and select a running job.
@@ -53,6 +65,8 @@ Use `:terminaltest` to inspect missing movement, drag, or release reports.
 Use `:terminaldoctor` to inspect terminal and connection settings.
 Press Esc to leave the test.
 See [display performance](ui-performance.md) for the synthetic benchmark and its limits.
+Use `tower --ui-trace ui-trace.json` when movement still stalls. Reproduce the issue, quit normally,
+and inspect the saved phase timings and page transitions.
 
 ## Run the regressions
 
@@ -70,7 +84,13 @@ These tests exercise both ASCII and Unicode paths where applicable.
 Installed-package checks exercise all main pages and Research views with synthetic Slurm data.
 The tests do not require or modify a user's live scheduler jobs.
 
-The 4.8.2 release check passed 8,949 tests on Python 3.12.
+The 4.8.3 delayed-input matrix covered 220 cases across all report byte boundaries under four TERM profiles.
+It retained all 440 pointer reports, with no leaked refresh commands or page changes.
+Two actual curses-loop checks each accepted 301 fragmented mixed-protocol reports and preserved Jobs and its selection.
+A separate real CLI run handled 600 rapid SGR reports and saved a valid timing report on quit.
+These checks exercise curses in a pseudo-terminal; they do not emulate the Termius client itself.
+
+The earlier 4.8.2 release check passed 8,949 tests on Python 3.12.
 The installed wheel passed 44 ASCII and Unicode display checks and three native Slurm command-fixture checks.
 Real curses input checks passed SGR, X10, and urxvt reports under `screen`, `screen-256color`,
 `tmux-256color`, and `xterm-256color` terminal descriptions.
