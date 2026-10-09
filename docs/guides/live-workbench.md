@@ -164,7 +164,8 @@ The graph status identifies its display lag; the current job values and source p
 See [Buffered running graphs](charts.md#read-buffered-running-graphs) for startup and source-outage behavior.
 Quick Advisor still requires explicit activation and reports its evidence limits.
 
-Right-click inside the History job list to open log export for the marked or selected job IDs.
+Right-click a selected or marked History row and choose **Export logs** to open export for those exact job IDs.
+Right-click elsewhere inside that list retains the direct export control.
 Right-click in Details to clear local selections; right-click on a graph retains its graph-reset action.
 Use the [History export procedure](log-view.md#export-logs-for-history-jobs) for complete log bundles.
 
@@ -256,7 +257,7 @@ Use `:artifact column NAME_OR_NUMBER` for column focus by command.
 
 ### Mark a job range with the mouse
 
-1. Press the left mouse button on a visible job row.
+1. Hold Shift and press the left mouse button on a visible job row.
 2. Keep the button pressed and drag through the required rows.
 3. Release the button to complete the marked range.
 4. Press `c` to open cancellation review when cancellation is the required action.
@@ -264,6 +265,10 @@ Use `:artifact column NAME_OR_NUMBER` for column focus by command.
 
 **Expected result:** The marked range follows the table's current visible order.
 Hold Shift during the drag to retain existing marks and add the new range.
+Starting a plain drag on an unselected row also selects a range.
+Dragging an already marked row moves its applicable marks to an existing group instead.
+For one job, click and release its row, then drag it onto a group.
+See [Add jobs to a group](batch-launches.md#add-jobs-to-a-group) for destination controls.
 Press Esc before release to cancel capture and restore the earlier marks.
 A simple click retains ordinary row selection.
 Marking jobs does not change their scheduler state.

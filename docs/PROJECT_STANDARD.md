@@ -370,7 +370,7 @@ select another entry without changing jobs. Lowercase `o` remains quick file
 cycling, and `e` switches scheduler stdout/stderr.
 
 History also exports complete log bundles for marked or selected job IDs.
-Drag through History rows, then right-click inside the list to select clipboard or directory export.
+Shift-drag through History rows, then right-click a marked row and choose **Export logs** to select clipboard or directory export.
 The background task combines the exact scheduler outputs with every declared source in the matching run inventory.
 Keep the inventory's `job_id`, `run_id`, and `attempt` correct so that another job or execution attempt cannot supply its logs.
 Register all worker logs and external locations explicitly.

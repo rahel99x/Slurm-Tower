@@ -490,6 +490,10 @@ def _toolbar_controls(app):
 
 def _modal_controls(app, rows, width, height, spans):
     mode = getattr(app, "mode", "main")
+    from .job_group_menu import active as group_menu_active, controls as group_menu_controls
+    if group_menu_active(app):
+        yield from group_menu_controls(app)
+        return
     from .history_log_export import active, controls
     if active(app):
         yield from controls(app)

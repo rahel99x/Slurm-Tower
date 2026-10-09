@@ -52,7 +52,7 @@ Job marks identify scheduler jobs. Rendered line selections identify displayed t
 Use job marks when you want to organize a job list.
 
 1. Click a row in the required job list to focus that pane.
-2. Mark at least two jobs with `Space`, or drag through supported job rows and release the mouse button.
+2. Mark at least two jobs with `Space`, or Shift-drag through supported job rows and release the mouse button.
 3. Press `g`.
 4. Open the resulting closed group with its down-pointing chevron when you need individual members.
 
@@ -70,6 +70,18 @@ Menus, text selection, graph controls, and graph/slider drags retain their own i
 Graph `u` still undoes zoom and leaves job marks in another pane unchanged.
 Click back into the job list before grouping a selection from that pane.
 See [Manual groups](batch-launches.md#create-a-manual-group) for saved state and exact-job rules.
+
+To add one job to an existing group, click and release its row, then drag that row onto the group's closed summary, an expanded member, or its chevron.
+Pressing a chevron directly retains its fold action and does not start a move.
+To add marked jobs, start the drag on one of their marked rows.
+Automatic cursor selection alone does not arm a single-job move.
+Starting on an unselected row retains range selection; Shift-drag always selects a range.
+The source selection includes exact jobs only. A closed source summary does not include its hidden members.
+Release on a group to commit, or press Esc, right-click, or release elsewhere to cancel.
+Right-click a selected or marked row for **Create Group**, **Ungroup**, and applicable **Add to** choices.
+History's menu also provides **Export logs**.
+Manual membership uses natural job-ID order regardless of when members were added. Displayed rows follow each list's active sort, including its default sort.
+See [Add jobs to a group](batch-launches.md#add-jobs-to-a-group) for destination identity and stale-input checks.
 
 ## Select rendered lines
 
@@ -99,7 +111,7 @@ A source or view-context change invalidates the selection.
 | `y` or Edit → Copy | Copy the complete selected rendered range. |
 | Esc / right-click | Clear the rendered selection. |
 
-Job-row dragging continues to mark exact job IDs.
+Job-row range selection marks exact job IDs. Dragging a selected row or marked selection can move those exact jobs to an existing group.
 Press `v` before selecting job-row text when you need rendered selection instead.
 Raw Logs retain their original-byte `v`, `V`, `y`, and `Y` controls.
 The existing source-page selection also retains its own controls.

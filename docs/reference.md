@@ -393,8 +393,9 @@ The mouse works too: a click selects a row or switches tabs, a double-click open
 (History), or opens the selected file in the Logs browser. The wheel scrolls,
 and Shift-click extends a line selection from the last click.
 Right-click inside a metric plot restores its full view and keeps selected and marked jobs.
-Right-click elsewhere on a main page clears job selections, marks, and line selections without activating the surface beneath it.
-In History, drag through rows to mark a range; right-click inside the list for the clipboard or directory log-export menu.
+Right-click a selected or marked job row for **Create Group**, **Ungroup**, and applicable **Add to GROUP NAME** choices.
+Right-click elsewhere on a main page clears job selections, marks, and line selections without activating the surface beneath it, subject to History's export control.
+In History, Shift-drag through rows to mark a range. Right-click a selected row and choose **Export logs** for the clipboard or directory export menu; right-click elsewhere inside the list to open export directly.
 Right-click outside the History list clears its job selection.
 In Logs, clearing keeps the same source open, including raw, alternate, and browser views.
 Click a job or line, or use navigation keys, to select again.
@@ -406,8 +407,9 @@ Analysis graphs retain their right-click reset control.
 Select a cleared sample or event again before a row action.
 Use `:historylogs [clipboard|directory|cancel]` for History export commands.
 See [Export History logs](guides/log-view.md#export-logs-for-history-jobs) for full-source copying, expected missing-file alerts, folder creation, and receipts.
-Drag through visible job rows to mark a range in the current table order.
-Shift adds the dragged range to existing marks.
+Drag from an unselected row through visible job rows to mark a range in the current table order.
+Shift-drag always selects a range and adds it to existing marks.
+Dragging a marked row, or a row previously clicked and released, starts a group move instead.
 Esc during capture restores the earlier marks.
 Release completes the marked range; supported bulk actions use their existing confirmation.
 Drag the top-right slider to change the fetching interval.
@@ -463,6 +465,19 @@ Removed members stay outside automatic grouping for that execution attempt.
 Press `U` to clear marks without changing groups.
 Grouping keys do not act on stale job marks while an editor, menu, graph, log text, or another pane owns input.
 In particular, graph `u` still undoes zoom without clearing retained job marks. `U` explicitly clears job marks.
+Click and release a job, then drag it onto an existing group's closed summary, expanded member, or chevron to add it.
+Pressing a chevron directly retains its fold action and does not start a move; right-clicking a selected row's chevron opens its job menu.
+Drag a marked row to add the applicable marked jobs. Automatic cursor selection alone does not arm a single-job move.
+Starting on an unselected row retains range selection. Shift-drag always selects a range.
+A closed source summary contributes only its real representative, not hidden members.
+Esc, right-click, an invalid drop, or a changed source/view cancels the move without changing membership.
+The job menu exposes **Create Group** for two or more targets, **Ungroup** for grouped targets, and **Add to GROUP NAME** when the destination would gain a member.
+A marked-row menu uses applicable marks. An active unmarked selected-row menu uses that exact job and preserves unrelated marks.
+Arrow keys, Tab, Shift-Tab, page keys, Home, and End navigate the menu; Enter or Space activates a choice. The wheel scrolls; Esc, `q`, and Ctrl-C close it.
+Manual membership uses natural job-ID order; displayed rows retain each list's active sort, including its default sort.
+Adding to an automatic group retains its label and converts its known members to manual membership.
+An existing manual destination retains its identity and saved absent members.
+Tower revalidates the exact source attempts and destination membership before changing local preferences.
 See [Manual groups](guides/batch-launches.md#create-a-manual-group) for selection, persistence, and identity rules.
 A closed group keeps a real representative record and exact action ID.
 Hidden members are not automatically marked or added to cancellation.
@@ -925,6 +940,9 @@ tower/
   job_panels.py  shared Jobs/History inline workspaces, independent mode preferences, and Main/Details focus handoffs
   job_groups.py  snapshot-based launch deduction, shared folds, exact-job projections, and disjoint state counts
   manual_job_groups.py  bounded attempt-specific manual membership and automatic-group exclusions
+  job_group_actions.py  frozen source selection and attempt validation for explicit membership changes
+  job_group_drag.py  published exact-job drag targets, cancelled-capture handling, and destination feedback
+  job_group_menu.py  selection-scoped group choices and History log-export handoff
   job_group_ui.py themed, width-aware group badges and representative rows
   job_selection.py exact job-ID range capture for existing marked-job actions and confirmation
   scrolling.py   bounded PID viewport motion, immediate selection, and saved smooth-scroll preferences

@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.12.0 |
+| Release | Tower 4.13.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -31,6 +31,13 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.13.0
+
+- Drag a selected job, or a marked selection, onto an existing group to add those exact jobs. Shift-drag retains range selection. A cancelled or stale drag does not change membership.
+- Right-click a selected or marked job for **Create Group**, **Ungroup**, and applicable **Add to** choices. History also provides **Export logs** through this menu.
+- Manual membership uses natural job-ID order, independent of insertion order. With JOBID sorted ascending, adding `7–9`, then `4–6`, to a group containing `1–3` displays `1–9`. Each list retains its active sorting, including default sorts.
+- Adding to an automatically detected group creates a manual group with its existing label and known members. Existing manual destinations retain their identity and saved members. See [Add jobs to a group](docs/guides/batch-launches.md#add-jobs-to-a-group).
 
 ## Changes in Tower 4.12.0
 
@@ -452,13 +459,15 @@ ASCII uses `p`, `t`, and `w`. Time usage does not report completed work.
 Projects can publish `progress.completed` and `progress.total` in their linked `metrics.jsonl`.
 See [Job progress](docs/guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for display states, alternate numeric keys, and sorting.
 
-To mark several jobs, drag the mouse through their visible rows.
-Hold Shift to add the dragged range to existing marks.
+To mark several jobs, Shift-drag the mouse through their visible rows to add a range to existing marks.
+Starting a plain drag on an unselected row also marks a range.
+Click and release one job, then drag that row onto a group to add it; drag a marked row to add the applicable marked jobs.
 Press Esc during a drag to restore the earlier marks.
 Press `c` after the drag to review cancellation of the marked jobs.
 Check every job ID before you confirm the action.
 Right-click a metric graph to restore its full view and keep the selected job and marks.
-Right-click elsewhere on a main page to clear job selections, marks, and line selections.
+Right-click a selected or marked job for group creation, removal, and **Add to** choices.
+Right-click elsewhere on a main page to clear job selections, marks, and line selections, subject to History's export control.
 That click does not activate the control beneath the pointer.
 An open log source remains open, including alternate views and file browsers.
 Click a job or line, or use its navigation keys, to select again.
@@ -472,8 +481,8 @@ In Logs, press `O` for the grouped file list.
 Select a file with arrow keys and press Enter.
 Press Esc to return to that list.
 
-To collect several completed jobs' outputs, drag through their History rows.
-Right-click inside the History job list, then choose **Copy all logs to clipboard** or **Copy logs to directory**.
+To collect several completed jobs' outputs, Shift-drag through their History rows.
+Right-click a marked row, choose **Export logs**, then choose **Copy all logs to clipboard** or **Copy logs to directory**.
 The directory picker can open folders and create a new folder beneath the configured projects root.
 Select **Save here** to export, or **Cancel** to return.
 Tower checks all registered job outputs and reports each missing source before it publishes an export.

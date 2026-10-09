@@ -10,7 +10,7 @@ You can also create a manual group from selected jobs or remove members from an 
 ## Create a manual group
 
 1. Click a job row in the required list to focus that pane.
-2. Mark at least two jobs with `Space`. In a list that supports mouse ranges, drag through the required rows and release the button.
+2. Mark at least two jobs with `Space`. In a list that supports mouse ranges, Shift-drag through the required rows and release the button.
 3. Check the marked job IDs.
 4. Press `g`, or enter `:jobgroup create`.
 
@@ -45,6 +45,67 @@ Click the intended job list before using its grouping keys.
 Release a job-row drag before grouping its selected range.
 If a grouping key ends an unfinished job-row drag, its delayed mouse release cannot extend the old selection or activate a different control.
 
+## Add jobs to a group
+
+Use an existing group's closed summary or any of its visible expanded members as the destination.
+
+1. Click a job to select it, or mark several jobs with `Space` or a range selection.
+2. Press the left button on that selected row or on one of the marked rows. Avoid its fold chevron.
+3. Drag to a row in the destination group.
+4. Release the button on that group row.
+
+**Expected result:** Tower adds the exact source jobs to the destination group.
+A drag from a marked row uses the applicable marks in its focused list; Jobs can include marks from both Main and Recents.
+A drag from an unmarked row that you previously clicked and released moves that one job.
+An automatically selected row does not start a move until you click and release it first.
+Starting on another unmarked row retains range selection. Hold Shift to select a range even when starting on a selected or marked row.
+A closed source summary contributes only its real representative. Expand it and mark its members to move those members together.
+The destination can be closed or expanded.
+Tower highlights an eligible destination and displays a move hint while you drag.
+You can drop into another job pane on the same page when its destination row is visible.
+You can release on the destination group's chevron as well as its row.
+A left press on a chevron still folds or opens that group; it does not start a move.
+Other buttons, scrollbars, and dividers retain their own controls and are not drop targets.
+
+The destination keeps its label. Adding to an automatically detected group creates a manual group containing its known members and the added jobs.
+An existing manual group retains its group identity and saved members that are absent from the current history window.
+Moving a member removes it from its previous manual group without changing other members.
+Adding a job already in the destination does not duplicate it.
+Manual membership uses natural job-ID order: `1`, `2`, ..., `9`, `10`, rather than the order in which members were added.
+Array task IDs also use natural order, such as `123_2` before `123_10`.
+Displayed rows follow each list's active sort, including its default sort.
+Sort JOBID ascending to display the group in increasing numeric order; adding `7–9`, then `4–6`, to members `1–3` then displays `1–9`.
+
+Press Esc or right-click to cancel an unfinished move and keep the job marks.
+Releasing outside an eligible group cancels it without changing membership.
+A new keyboard action, changed page, layout, filter, sort, source identity, or destination membership invalidates the gesture instead of redirecting it to different jobs.
+Tower checks the current execution attempts again before it applies a change.
+Pointer movement uses published row data and does not issue scheduler queries.
+The terminal must report press, movement, and release events; use the menu below if it does not.
+
+## Use the job menu
+
+Right-click a selected row or one of the marked rows to open its job menu. This also works on that row's group chevron.
+Right-clicking a marked row targets the applicable marks in that list.
+Right-clicking the active unmarked selected row targets that exact job and keeps unrelated marks.
+
+| Choice | Result |
+| --- | --- |
+| **Create Group** | Create a closed manual group when at least two exact jobs are targeted |
+| **Ungroup** | Dissolve targeted closed groups or detach targeted expanded members; available only when a target belongs to a group |
+| **Add to GROUP NAME** | Add the exact targeted jobs to an existing group; a destination that already contains all targets is omitted |
+| **Export logs** in History | Open the existing complete-log export procedure for the exact targeted jobs |
+| **Cancel** | Close the menu without changing jobs or membership |
+
+Use this menu when the destination group is not visible in the current viewport.
+If two destinations have the same label, their displayed ID ranges distinguish the choices.
+Use the arrow keys, Tab, Shift-Tab, Page Up, Page Down, Home, or End to select a choice; press Enter or Space to activate it.
+The mouse wheel scrolls a long menu. Esc, `q`, or Ctrl-C closes it.
+F8 also enables the standard directional button navigation for its visible choices.
+Creating and removing groups follows the same identity, focus, and persistence rules as `g` and `u`.
+Group operations organize Tower's display; they do not submit, cancel, or modify Slurm jobs.
+Right-click outside a selected job keeps the existing selection-clearing behavior, subject to History's log-export control and the graph-reset controls.
+
 ## Remove a group or some members
 
 | Required change | Procedure |
@@ -55,7 +116,7 @@ If a grouping key ends an unfinished job-row drag, its delayed mouse release can
 | Remove several closed groups | Mark their closed summary rows and press `u` |
 | Clear marks without changing any groups | Press `U` |
 
-You can use `:jobgroup ungroup` for the same operation as `u`.
+You can use `:jobgroup ungroup` or the job menu's **Ungroup** choice for the same membership operation as `u`.
 Applicable marks take precedence over the single selected row.
 A targeted closed summary removes the whole group, including its known members that are outside the current pane or hidden by filters.
 For a saved manual group, this includes saved members that are not in the currently fetched records.

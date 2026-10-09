@@ -3130,6 +3130,8 @@ class Views:
         app.last_hits = hits
         from .job_selection import publish as publish_selection
         publish_selection(app, rows, hits, width, height, snap=snap)
+        from .job_group_drag import publish as publish_group_drag
+        publish_group_drag(app, snap, rows, hits, width, height)
         if app.tab == "jobs" and app.animations_enabled and width >= 4:
             for item in app.completion.moving()[-3:]:
                 destination = next((y for y, kind, jid in hits if kind == "recent" and jid == item["job"]), None)
@@ -3160,7 +3162,8 @@ class Views:
         SB.publish(app, width, height)
         from .metric_live import descriptors as live_descriptors
         publish(app, output, hits, width, height, extra_controls=live_descriptors(app) + SB.descriptors(app))
-        return decorate(app, output), hits
+        from .job_group_drag import feedback as group_drag_feedback
+        return group_drag_feedback(app, decorate(app, output)), hits
 
     def step_lines(self, steps: Sequence[Step], width: int) -> List[Row]:
         """A small table of a job's steps (sstat for a running job, sacct -j for a finished one)."""

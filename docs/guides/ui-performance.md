@@ -33,6 +33,55 @@ With grouping off, the added selection-provenance stage took 3.41 ms for 10,000 
 This validation has a real cost on large lists. The cache does not skip in-place corrections or weaken attempt checks to remove that cost.
 See [Manual groups](batch-launches.md) for identity rules, limits, and reset controls.
 
+## Job drag and menu checks in 4.13.0
+
+Job moves use the last painted row geometry and exact source and destination
+identities. A pointer report does not query the Store or infer groups.
+Each document preparation publishes only visible destination spans and reuses
+unchanged destination evidence, including members hidden by collapsed groups.
+Opening a menu and committing a move still validate the current identities.
+Ungroup validates selected collapsed destinations in one batch.
+Menu feedback reuses its action list. A changed hover updates the bounded menu
+controls; an unchanged hover reuses that overlay.
+
+The local comparison used 1,000 or 10,000 jobs with known submission times,
+a 180-column by 52-row Jobs page, and six collapsed groups of 20 members each.
+After three warm-up calls, 25 calls measured median process CPU time for each
+publication stage. The 4.12.0 baseline was commit
+`fd57016423f0d3ca7e45eb9d3c63a808be16630a`. Times below are milliseconds.
+
+| Stage | 1,000 jobs | 10,000 jobs |
+| --- | ---: | ---: |
+| 4.12 selection publication | 0.20 | 3.45 |
+| 4.13 selection and destination publication | 0.37 | 4.12 |
+| 4.13 destination publication alone | 0.10 | 0.26 |
+| Explicit menu opening, five-call median | 1.25 | 15.76 |
+
+The input check used the actual `_FrameCache`, terminal input dispatcher, and
+cached feedback. At each source size it dispatched 360 held drag reports and
+360 menu hover reports. Hooks rejected any Store snapshot, document composition,
+group inference, token rescan, or job-record lookup during these reports.
+All checks passed, with no pointer-induced document invalidation.
+The scheduler clock was fixed during each input check to exclude independently
+due maintenance; process CPU timing remained active. Scheduled data updates
+continue to require document work in normal operation.
+
+For three measured 60-report bursts after warm-up, median input-plus-feedback
+CPU time was 20.82/21.15 ms for dragging and 51.53/50.40 ms for menu hover,
+at 1,000/10,000 jobs respectively. These checks omit terminal transport,
+terminal painting, fresh data, and large destination menus. The shared test
+host adds measurement variation. They establish neither zero overhead nor
+a maximum interactive delay. Run the focused input regressions with:
+
+```bash
+python3 -m pytest -q tests/test_job_group_drag.py \
+  tests/test_job_group_menu.py tests/test_job_group_mouse_integration.py
+```
+
+The measured 4.13 runtime digest was
+`3a7bdadcdf7d0320a648fbc0dfd9c74e28534b52c4d29147cf2deb56038709d5`.
+It is the SHA-256 of the concatenated `tower/*.py` contents in filename order.
+
 ## Check pointer feedback
 
 1. Open Jobs.

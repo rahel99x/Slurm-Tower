@@ -14,6 +14,7 @@ For full-file search, older pages, named bookmarks, and saved reading positions,
 ## Clear a selection without changing files
 
 Right-click in the main Logs page to clear job selections, marks, and line selections.
+Right-clicking a selected or marked job in its docked history pane opens that job's group menu instead.
 The same rule applies to raw text, split streams, diffs, structured records, folded messages, and the file browser.
 The exact source, display mode, and visible location remain open.
 The click does not open a file or activate another control.
@@ -33,15 +34,16 @@ The export includes registered stdout, stderr, additional job log files, and dec
 It does not use the displayed log page as the export content.
 
 1. Open History.
-2. Click a job row, or press the left mouse button and drag through the required rows.
+2. Click a job row, or hold Shift and drag through the required rows.
 3. Release the button to finish the marked range.
-4. Right-click inside the History job list.
+4. Right-click the selected row or one of the marked rows, then choose **Export logs**.
 5. Select **Copy all logs to clipboard**, **Copy logs to directory**, or **Cancel**.
 
-**Expected result:** The menu uses the exact marked IDs.
-When there are no marks, it uses the selected job.
+**Expected result:** A marked-row menu uses the exact applicable marked IDs.
+An unmarked selected-row menu uses that exact job and retains unrelated marks.
 The target list stays fixed while the menu and background task are open.
 A right-click outside the History list clears the selection without activating another control.
+Right-click elsewhere inside the list to open the legacy export menu directly for marked jobs, or the selected job when there are no marks.
 
 Use Space to mark individual rows when the terminal cannot report a drag.
 Hold Shift during a drag to add its range to the existing marks.

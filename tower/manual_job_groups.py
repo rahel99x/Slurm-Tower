@@ -20,12 +20,27 @@ from .model import Job, Finished
 
 MAX_GROUPS = 256
 MAX_IDENTITIES = 8192
+MAX_LABEL = 4128  # Inferred names can contain a 4096-character source plus prefix.
 _GROUP_ID = re.compile(r"manual:[0-9a-f]{20}\Z")
 _JOB_ID = re.compile(r"[A-Za-z0-9_+\[\]:%,.-]{1,128}\Z")
 _SUBMIT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\Z")
 _UNSET = object()
 _NATIVE = (Job, Finished)
 _RAW_FIELDS = attrgetter("id", "submit", "cluster", "name", "start", "user", "account")
+
+
+def _ordered_ids(values):
+    from .table_sort import _natural
+    return tuple(sorted(values, key=lambda value: (_natural(value), value)))
+
+
+def _ordered_members(values):
+    from .table_sort import _natural
+    return tuple(sorted(values, key=lambda value: (_natural(value[0]), value)))
+
+
+def _label(value):
+    return isinstance(value, str) and 0 < len(value) <= MAX_LABEL and value.isprintable() and bool(value.strip())
 
 
 class _RecordRef:
@@ -252,7 +267,10 @@ def validate_state(value):
             budget -= len(cleaned)
             if cleaned:
                 seen.add(gid)
-                result["groups"].append({"id": gid, "members": cleaned})
+                entry = {"id": gid, "members": cleaned}
+                if _label(group.get("label")):
+                    entry["label"] = group["label"]
+                result["groups"].append(entry)
             if budget <= 0:
                 break
     return result
@@ -266,11 +284,28 @@ class Result:
     job_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class TargetEvidence:
+    """Exact destination provenance captured when a menu or drag starts.
+
+    Status-only updates do not invalidate a destination. A changed member,
+    attempt, label, or override does, preventing late input from using a group
+    which merely inherited the same screen position or inferred ID.
+    """
+    group_id: str
+    kind: str
+    label: str
+    members: tuple[str, ...]
+    identities: tuple[tuple[str, str, str], ...]
+    tokens: tuple[tuple[str, tuple], ...]
+
+
 class ManualState:
     def __init__(self):
         self._reference = _UNSET
         self.persistent = validate_state(None)
         self.session_groups = {}
+        self.session_labels = {}
         self.session_detached = set()
         self.revision = 0
         self.overlay_count = 0
@@ -279,8 +314,10 @@ class ManualState:
         self._identities = {}
         self._next_session = 0
         self._groups = {}
+        self._labels = {}
         self._detached = set()
         self._session_ids = ()
+        self._target_cache = None
 
     def configure(self, value):
         # Command writes replace the complete validated object. No preference
@@ -291,6 +328,8 @@ class ManualState:
         self.persistent = validate_state(value)
         self._groups = {**{group["id"]: tuple(tuple(item) for item in group["members"])
                            for group in self.persistent["groups"]}, **self.session_groups}
+        self._labels = {**{group["id"]: group.get("label", "Manual group " + group["members"][0][0])
+                           for group in self.persistent["groups"]}, **self.session_labels}
         self._detached = {tuple(item) for item in self.persistent["detached"]} | self.session_detached
         self._session_ids = tuple(sorted({item[0] for members in self.session_groups.values() for item in members
                                          if item[1].startswith("session:")} |
@@ -353,7 +392,7 @@ class ManualState:
             present = tuple(item[0] for item in members if current.get(item[0]) == item)
             excluded.update(present)
             if len(present) >= 2:
-                manual[gid] = Group(gid, "Manual group " + members[0][0], "manual",
+                manual[gid] = Group(gid, self._labels.get(gid, "Manual group " + members[0][0]), "manual",
                                     "Jobs explicitly grouped in Tower; scheduler allocations are unchanged",
                                     "manual", present)
         merged = {}
@@ -381,18 +420,24 @@ def _prepare(app, snap):
     return value, value.manual, _records(snap)
 
 
-def _save(app, registry, groups, detached):
+def _save(app, registry, groups, detached, *, labels=None):
     state = registry.manual
     persistent_groups, session_groups = [], {}
+    labels = {**state._labels, **(labels or {})}
+    session_labels = {}
     for gid, members in groups.items():
+        members = _ordered_members(members)
+        label = labels.get(gid, "Manual group " + members[0][0])
         if all(_identity(item) is not None for item in members):
-            persistent_groups.append({"id": gid, "members": [list(item) for item in members]})
+            persistent_groups.append({"id": gid, "label": label, "members": [list(item) for item in members]})
         else:
             session_groups[gid] = tuple(members)
+            session_labels[gid] = label
     persistent_detached = [list(item) for item in sorted(detached) if _identity(item) is not None]
     data = {"version": 1, "groups": persistent_groups, "detached": persistent_detached}
     app.table_state["manual_groups"] = data
     state.session_groups = session_groups
+    state.session_labels = session_labels
     state.session_detached = {item for item in detached if _identity(item) is None}
     state.configure(data)
     app.manual_job_groups_revision = getattr(app, "manual_job_groups_revision", 0) + 1
@@ -405,7 +450,7 @@ def create(app, snap, job_ids):
     from .job_groups import _digest
     if not isinstance(job_ids, (tuple, list, set, frozenset)) or len(job_ids) > MAX_IDENTITIES:
         return Result(False, f"Select between 2 and {MAX_IDENTITIES} jobs to group")
-    ids = tuple(sorted({item for item in job_ids if isinstance(item, str)}))
+    ids = _ordered_ids({item for item in job_ids if isinstance(item, str)})
     if len(ids) < 2:
         return Result(False, "Select at least two jobs to group")
     registry, state, records = _prepare(app, snap)
@@ -417,8 +462,9 @@ def create(app, snap, job_ids):
     groups, detached = state.groups(), state.detached()
     chosen = set(keys)
     gid = "manual:" + _digest(part for key in keys for part in key)
-    if groups.get(gid) == keys and not chosen & detached:
-        return Result(False, "These jobs already share a manual group", gid, ids)
+    for existing, members in groups.items():
+        if set(members) == chosen and not chosen & detached:
+            return Result(False, "These jobs already share a manual group", existing, ids)
     updated = {old: tuple(item for item in members if item not in chosen)
                for old, members in groups.items()}
     updated = {old: members for old, members in updated.items() if members}
@@ -432,6 +478,131 @@ def create(app, snap, job_ids):
     registry.ensure(snap)
     session = any(_identity(key) is None for key in keys)
     return Result(True, f"Grouped {len(ids)} jobs" + (" for this session (submission time unavailable)" if session else ""), gid, ids)
+
+
+def _target_evidence(registry, state, group_id, tokens):
+    group = registry.index.groups.get(group_id)
+    if group is None or not 2 <= len(group.members) <= MAX_IDENTITIES:
+        return None
+    if any(tokens.get(jid) is None for jid in group.members):
+        return None
+    identities = state._groups.get(group_id, ())
+    if len(identities) > MAX_IDENTITIES or not _label(group.label):
+        return None
+    return TargetEvidence(group_id, group.kind, group.label, group.members,
+                          identities, tuple((jid, tokens[jid]) for jid in group.members))
+
+
+def target_evidence(app, snap, group_id):
+    """Capture a bounded group target once; do not call this on pointer motion."""
+    if not isinstance(group_id, str):
+        return None
+    return target_evidences(app, snap, (group_id,)).get(group_id)
+
+
+def target_evidences(app, snap, group_ids, *, index=None, tokens=None, all_groups=False):
+    """Publish exact destination evidence in one bounded, cached render step.
+
+    A checked render-frame index avoids inference; unchanged source revisions
+    reuse the evidence itself, including hidden collapsed members. Supplied
+    tokens must cover all members, not just the rendered representatives.
+    Explicit menu opening may set all_groups=True to enumerate all known
+    destinations once; per-destination persistence limits still apply.
+    """
+    from .job_groups import registry as get_registry
+    if not isinstance(group_ids, (list, tuple, set, frozenset)):
+        return {}
+    registry = get_registry(app)
+    if index is None:
+        index = registry.ensure(snap)
+    elif index is not registry.index or registry.selection_snapshot is not snap:
+        return {}
+    state = registry.manual
+    ids = tuple(sorted({gid for gid in group_ids if isinstance(gid, str) and gid in index.groups}))
+    if not all_groups:
+        ids = ids[:MAX_GROUPS]
+    cache_key = registry.selection_revision, state.revision, id(index), ids, all_groups
+    if tokens is None and state._target_cache is not None and state._target_cache[0] == cache_key:
+        return dict(state._target_cache[1])
+    wanted, eligible = set(), []
+    for gid in ids:
+        group = index.groups.get(gid)
+        if group is None or len(group.members) > MAX_IDENTITIES:
+            continue
+        if not all_groups and len(wanted) + len(group.members) > MAX_IDENTITIES:
+            continue
+        wanted.update(group.members)
+        eligible.append(gid)
+    if tokens is None:
+        tokens = selection_tokens(snap, wanted) if wanted else {}
+        cached = True
+    else:
+        cached = False
+    result = {}
+    for gid in eligible:
+        evidence = _target_evidence(registry, state, gid, tokens)
+        if evidence is not None:
+            result[gid] = evidence
+    if cached:
+        state._target_cache = cache_key, result
+    return dict(result)
+
+
+def add(app, snap, group_id, job_ids, *, expected=None):
+    """Atomically move exact jobs into an existing manual or automatic group.
+
+    Automatic destinations become explicit overrides of their current exact
+    membership. Saved absent members remain in manual destinations. Canonical
+    membership is naturally ordered; callers retain their own table sort.
+    """
+    from .job_groups import _digest
+    if (not isinstance(group_id, str) or not isinstance(job_ids, (tuple, list, set, frozenset))
+            or not 1 <= len(job_ids) <= MAX_IDENTITIES
+            or any(not isinstance(jid, str) or not _JOB_ID.fullmatch(jid) for jid in job_ids)):
+        return Result(False, "Select current jobs and an existing group to add them to")
+    ids = _ordered_ids(set(job_ids))
+    registry, state, records = _prepare(app, snap)
+    group = registry.index.groups.get(group_id)
+    if group is None or len(group.members) > MAX_IDENTITIES:
+        return Result(False, "The destination group changed or exceeds the grouping limit; select its current row again")
+    tokens = selection_tokens(snap, set(ids) | set(group.members))
+    if any(token is None for token in tokens.values()):
+        return Result(False, "Some selected or destination job IDs refer to different attempts or unavailable records; refresh the list and select again")
+    current = _target_evidence(registry, state, group_id, tokens)
+    if current is None or expected is not None and current != expected:
+        return Result(False, "The destination group changed; select its current row again")
+    keys = tuple(state.identity(jid, records, snap) for jid in ids)
+    if any(key is None for key in keys):
+        return Result(False, "Some selected jobs are no longer available; select the current rows again")
+    destination_keys = (current.identities if group_id in state._groups else
+                        tuple(state.identity(jid, records, snap) for jid in group.members))
+    if any(key is None for key in destination_keys):
+        return Result(False, "The destination group changed; select its current row again")
+    chosen, destination = set(keys), set(destination_keys)
+    if chosen <= destination:
+        return Result(False, "These jobs already belong to " + group.label, group_id, ids)
+    combined = _ordered_members(destination | chosen)
+    groups, detached = state.groups(), state.detached()
+    gid = group_id if group_id in groups else "manual:" + _digest(part for key in _ordered_members(destination) for part in key)
+    updated = {old: tuple(item for item in members if item not in chosen)
+               for old, members in groups.items() if old != gid}
+    updated = {old: members for old, members in updated.items() if members}
+    updated[gid] = combined
+    detached -= destination | chosen
+    if len(updated) > MAX_GROUPS:
+        return Result(False, "Saved grouping limit reached; use :jobgroup reset to restore automatic grouping")
+    if sum(map(len, updated.values())) + len(detached) > MAX_IDENTITIES:
+        return Result(False, "Saved grouping identity limit reached; use :jobgroup reset to restore automatic grouping")
+    was_collapsed = registry.is_collapsed(group)
+    _save(app, registry, updated, detached, labels={gid: group.label})
+    registry.ensure(snap)
+    if gid != group_id and was_collapsed:
+        registry.fold(gid, True)
+        app.table_state["collapsed"] = sorted(registry.collapsed)
+    count = len(chosen - destination)
+    session = any(_identity(key) is None for key in combined)
+    return Result(True, f"Added {count} job{'s' if count != 1 else ''} to {group.label}"
+                  + (" for this session (submission time unavailable)" if session else ""), gid, ids)
 
 
 def detach(app, snap, job_ids=(), group_ids=()):

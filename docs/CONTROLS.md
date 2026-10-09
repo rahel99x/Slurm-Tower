@@ -314,8 +314,13 @@ See [Navigation](guides/navigation.md#feature-35) for multiline input and quotin
 
 Marked jobs are the target of supported group actions.
 When no jobs are marked, the selected job is the target.
-Drag through visible job rows to mark a range in the current table order.
-Hold Shift to add that range to existing marks.
+Drag from an unselected job row through visible rows to mark a range in the current table order.
+Hold Shift to select a range from any job row and add it to existing marks.
+Click and release one job, then drag that row onto an existing group to add it. Drag a marked row to add the applicable marked jobs.
+Automatic cursor selection alone does not arm a single-job move.
+The destination can be a closed summary, an expanded member, or that group's chevron. A closed source summary contributes only its representative job.
+Pressing a chevron directly retains its fold action and does not start a move.
+Release outside an eligible group, press Esc, or right-click to cancel a group move.
 Press Esc during capture to cancel the drag and restore earlier marks.
 Release the mouse button to complete the range before opening a job action.
 Press `g` to group the marked jobs in the focused list.
@@ -324,15 +329,21 @@ Open the group, mark specific members, and press `u` to detach those members.
 Select its closed summary and press `u` to dissolve the group.
 These controls change Tower's display organization only.
 See [Manual groups](guides/batch-launches.md#create-a-manual-group) for focus, identity, and persistence rules.
+Right-click a selected or marked job, including its group chevron, for **Create Group** (at least two targets), **Ungroup** (grouped targets), and applicable **Add to GROUP NAME** choices.
+Right-clicking a marked row targets applicable marks; an unmarked selected row targets that exact job and retains unrelated marks.
+History's job menu also provides **Export logs**.
+In this menu, arrows, Tab, Shift-Tab, page keys, Home, and End select a choice; Enter or Space activates it. The wheel scrolls, and Esc, `q`, or Ctrl-C closes it.
+Manual membership uses natural job-ID order; displayed rows retain each list's active sort, including its default sort.
 Right-click a metric graph to restore its full view and keep the selected job and marks.
-Right-click elsewhere on a main page to clear job selections, marks, and line selections.
+Right-click outside selected job rows on a main page to clear job selections, marks, and line selections, subject to History's export control below.
 It keeps the viewed log source open and does not activate the surface beneath the pointer.
 This also applies to raw Logs, alternate log views, and browser panes.
 Click a job or line, or use its navigation keys, to select again.
 Click a Jobs or Recents row to return arrow navigation from Details to that list.
 When Details controls have focus, one Esc returns to Main; F6 or Ctrl-W switches panes.
 Focus changes preserve marks. Right-click clearing cancels unfinished drags and consumes their later releases.
-In History, right-click inside the job list to open the selected jobs' log-export menu.
+In History, right-click a selected or marked row and choose **Export logs** to open the log-export menu.
+Right-click elsewhere inside that job list retains the direct log-export control.
 Right-click outside that list to clear the selection without activating another surface.
 Inspect the complete target list in the action review.
 Use Tab to choose Cancel or Confirm.
@@ -384,7 +395,7 @@ Use Analyze this job in an idle restored panel, Refresh analysis for newer evide
 Changing the selected job or leaving the mode discards its later result.
 Inline views fit the panel width and retain an independent vertical position for each subview.
 Jobs and History save separate mode, Research subview, and Analytics subview preferences.
-History-list right-click retains log export; Details right-click clears selections, except that a graph keeps its zoom-reset action.
+History-list right-click retains log export, through **Export logs** on a selected row's job menu; Details right-click clears selections, except that a graph keeps its zoom-reset action.
 The full Research, Analytics, and Logs pages keep their own selection and position.
 See [Live workbench](guides/live-workbench.md#inspect-a-job-inside-jobs) for procedures and layout behavior on Jobs and History.
 
@@ -419,8 +430,9 @@ See [Job history panels](guides/adaptive-workspaces.md#keep-job-history-beside-t
 
 | Control | Function |
 | --- | --- |
-| Press, drag, and release through History rows | Mark exact jobs in the current table order |
-| Right-click inside the History job list | Open the clipboard, directory, and Cancel menu for marked or selected jobs |
+| Shift-press, drag, and release through History rows | Mark exact jobs in the current table order |
+| Right-click a selected or marked History row, then **Export logs** | Open the clipboard, directory, and Cancel menu for the targeted jobs |
+| Right-click elsewhere inside the History job list | Open the existing export menu directly for marked or selected jobs |
 | `:historylogs` | Open that export menu without a mouse |
 | `:historylogs clipboard` | Discover and copy complete selected jobs' log outputs to the clipboard |
 | `:historylogs directory` | Open the confined project-directory picker |
@@ -492,6 +504,9 @@ With a grouped job selected and ordinary page focus, Left closes its group and R
 Closed groups retain one real representative ID.
 Manual groups use the same chevrons and state summaries.
 `g` creates one from at least two marked jobs; `u` removes the selected group or its selected expanded members.
+Drag a selected row or marked selection onto a group row to add those exact jobs.
+Right-click the selected row for equivalent group creation, removal, and destination choices.
+Manual membership uses natural job-ID order. Displayed rows retain each list's active sort, including its default sort.
 Use `U` when you only want to clear marks.
 These membership keys belong to the focused job list. Graph `u` still undoes zoom; text and menu controls retain their own input behavior.
 Their INFO badges use `run`, `pend`, `dep`, `never`, `done`, `fail`, `cancel`, and `other` for nonzero counts.

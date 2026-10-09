@@ -164,7 +164,7 @@ See [Toolbar menus](live-workbench.md#use-the-terminal-toolbar) for every menu c
 
 ## Mark several jobs by dragging
 
-1. Press the left mouse button on a visible job row.
+1. Hold Shift and press the left mouse button on a visible job row.
 2. Keep the button pressed and move through the required rows.
 3. Release the button to complete the marked range.
 4. Press `c` when you need to review cancellation of the marked jobs.
@@ -173,7 +173,10 @@ See [Toolbar menus](live-workbench.md#use-the-terminal-toolbar) for every menu c
 **Expected result:** The marked range follows the table's current displayed order.
 Sorting and filtering define that order.
 A simple click continues to select one row without starting a range.
-Hold Shift during a drag to add the range to existing marks.
+Shift-drag adds the range to existing marks, including when the starting row is selected or marked.
+Without Shift, starting on an unselected row marks a range; starting on a marked row moves its applicable selection to an existing group.
+To move one unmarked job, click and release its row first, then drag it to a group.
+Automatic cursor selection alone does not arm a single-job move.
 Press Esc before release to cancel capture and restore the previous marks.
 Runtime header changes do not add a job beneath a stationary pointer.
 Resizing the terminal stops the drag and keeps its marked job IDs.
@@ -184,14 +187,33 @@ Range dragging is available for job rows in Jobs, Recents, History, Group, and D
 The terminal must report mouse press, movement, and release for a drag.
 Use Space to mark individual jobs when those events are unavailable.
 
-In History, drag through visible job rows to mark a range.
-Right-click inside its job list to open the log-export menu for the marked jobs, or for the selected job when there are no marks.
+In History, Shift-drag through visible job rows to mark a range.
+Right-click a selected or marked row and choose **Export logs** to open the log-export menu for those exact jobs.
+Right-click elsewhere inside its job list retains the existing direct export control.
 Right-click outside that list to clear the selection without activating another control.
 See [Export History logs](log-view.md#export-logs-for-history-jobs) for clipboard and directory procedures.
 
+## Drag jobs into a group
+
+Click and release a job row, then drag it onto an existing group's closed summary or an expanded member.
+For several jobs, mark them first, then start the drag on one of the marked rows.
+The destination highlight and footer identify the move while the button is held.
+Release over the group to apply the membership change.
+Drop targets can be in another visible job pane on the same page.
+Releasing over the destination group's chevron also adds the jobs.
+Pressing that chevron directly still folds or opens its group and does not start a move.
+Other buttons, dividers, and scrollbar rails retain their normal controls.
+
+A closed source summary supplies its exact representative only.
+Expand a source group and mark its members to move them together.
+Press Esc, right-click, or release outside an eligible group to cancel the move and retain marks.
+A changed view or execution attempt cancels the gesture; a delayed release cannot activate another control.
+Right-click a selected or marked row, including its group chevron, for **Create Group**, **Ungroup**, and applicable **Add to** choices when dragging is inconvenient.
+See [Add jobs to a group](batch-launches.md#add-jobs-to-a-group) for ordering, identity, and menu controls.
+
 ## Clear selections with right-click
 
-Right-click on a main page to clear job selections, all marks, and line selections.
+Right-click outside a selected or marked job row on a main page to clear job selections, all marks, and line selections, subject to the controls below.
 This works in raw Logs, alternate log views, file browsers, and docked history browsers.
 The viewed log source and its display mode remain open.
 The click does not activate a page label, button, link, or other control beneath it.
@@ -199,12 +221,14 @@ Clearing cancels unfinished drags and prevents their delayed releases from commi
 The cleared state remains through ordinary display and sampler updates.
 Click a job or line, or use its navigation keys, to select again.
 
-Two main-page targets retain their specific right-click controls:
+These main-page targets retain their specific right-click controls:
 
 | Target | Right-click result |
 | --- | --- |
 | Metric plot | Reset that graph to its full view and turn off its Live window. Keep the selected job and marks. |
-| History job list | Open the log-export menu for the exact marked or selected jobs. |
+| Selected or marked job row | Open its group menu. A marked row uses applicable marks; an unmarked selected row uses that exact job. History adds **Export logs**. |
+| Elsewhere inside the History job list | Open the log-export menu for the exact marked or selected jobs. |
+| An unfinished group move | Cancel the move and retain marks. |
 
 Right-click elsewhere in History clears selections without opening that menu.
 In a Log Tools page, results list, or bookmarks list, right-click clears only the local selection.
@@ -321,7 +345,7 @@ They do not read log files or send scheduler actions.
 | `resume_lines(app)` | Restore a line cursor without implicitly selecting a job. |
 | `clear_lines(app)` | Clear text and log cursors while preserving job marks, source, and dialog ownership. |
 | `clear(app)` | Clear job marks and line selections, cancel captures, and preserve the viewed source. |
-| `context_click(app, y, x, button="left")` | Preserve graph and History-export priority; apply main-page clearing or supported dialog-local clearing. |
+| `context_click(app, y, x, button="left")` | Preserve graph, selected-job menu, and History-export priority; apply main-page clearing or supported dialog-local clearing. |
 | `publish(app, rows, hits, width, height)` | Publish the clipped History job-list rectangle for its export priority. |
 | `active(app)`, `tick(app)`, `handle_key(app, key)` | Check, validate, or cancel an unfinished job-range drag. |
 | `handle_mouse(app, y, x, button="left", shift=False)` | Select exact visible job IDs during a range drag. |

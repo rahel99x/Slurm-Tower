@@ -650,6 +650,7 @@ def _read_input(stdscr, curses):
 def _protect_pointer_escape(app):
     """Allow a short report-prefix grace while a pointer gesture owns input."""
     states = (("chart_interaction_state", "capture"), ("metric_live_state", "capture"),
+              ("job_group_drag_state", "capture"),
               ("job_selection_state", "capture"), ("text_selection_state", "capture"),
               ("scrollbar_state", "capture"), ("pane_drag_state", "capture"),
               ("history_browser_state", "drag"), ("toolbar_state", "dragging"))
@@ -692,6 +693,10 @@ def _finish_unheld_pointer(app, mouse, curses):
     """
     if getattr(mouse, "held", None) is not False or not _motion_report(mouse[4], curses):
         return
+    move = getattr(app, "job_group_drag_state", {}) or {}
+    if move.get("capture") or move.get("pending"):
+        from .job_group_drag import cancel as cancel_group_drag
+        cancel_group_drag(app)
     selection = getattr(app, "job_selection_state", {}) or {}
     text = getattr(app, "text_selection_state", {}) or {}
     if selection.get("capture") or text.get("capture"):
@@ -811,6 +816,16 @@ def _apply_input(app, event, hits, curses):
     startup_mouse(app, my, mx, button=button, shift=shift)
     from .history_log_export import active as export_active, handle_mouse as export_mouse
     from .scrollbars import handle_mouse as scrollbar_mouse
+    from .job_group_drag import active as group_drag_active, pending as group_drag_pending, handle_mouse as group_drag_mouse
+    if ((group_drag_active(app) or group_drag_pending(app) and button not in ("press", "left"))
+            and group_drag_mouse(app, my, mx, button=button, shift=shift)):
+        return
+    from .job_group_menu import active as group_menu_active, handle_mouse as group_menu_mouse
+    if group_menu_active(app):
+        if scrollbar_mouse(app, my, mx, button=button, shift=shift):
+            return
+        group_menu_mouse(app, my, mx, button=button, shift=shift)
+        return
     if not button.startswith("wheel-") and scrollbar_mouse(app, my, mx, button=button, shift=shift):
         return
     if export_active(app):
@@ -822,6 +837,8 @@ def _apply_input(app, event, hits, curses):
         if toolbar_reset(app, my, mx):
             return
         if live_mouse(app, my, mx, button=button, shift=shift):
+            return
+        if group_menu_mouse(app, my, mx, button=button, shift=shift):
             return
     from .job_selection import context_click
     if button == "right":
@@ -870,7 +887,7 @@ def _apply_input(app, event, hits, curses):
             return
     if button in ("motion", "drag", "release"):
         from .job_selection import active as selection_active
-        if (selection_active(app) or getattr(app, "pane_drag_state", {}).get("capture") or
+        if (selection_active(app) or group_drag_pending(app) or getattr(app, "pane_drag_state", {}).get("capture") or
                 getattr(app, "history_browser_state", {}).get("drag") or
                 getattr(app, "chart_interaction_state", {}).get("capture") or
                 getattr(app, "text_selection_state", {}).get("capture") or
@@ -1034,7 +1051,8 @@ class _InputEffects:
         hover = name == "mouse" and _motion_report(state, curses)
         chart = getattr(app, "chart_interaction_state", {}) or {}
         live = getattr(app, "metric_live_state", {}) or {}
-        if ((chart.get("capture") or live.get("capture") or getattr(app, "text_selection_state", {}).get("capture")) and hover):
+        if ((chart.get("capture") or live.get("capture") or getattr(app, "text_selection_state", {}).get("capture")
+             or getattr(app, "job_group_drag_state", {}).get("capture")) and hover):
             # Pointer feedback uses the published raster. Live slider motion
             # redraws its control immediately; its curve keeps a 10 Hz limit.
             return
@@ -1188,6 +1206,12 @@ def _toolbar_feedback_token(app):
         worker_token(app))
 
 
+def _group_menu_feedback_token(app):
+    state = getattr(app, "job_group_menu_state", {}) or {}
+    return ((state.get("token"), state.get("cursor"), state.get("top"), state.get("hover"))
+            if getattr(app, "mode", "main") == "job_group_menu" else None)
+
+
 def _drain_prepaint_motion(app, stdscr, curses, hits, pending_input=None):
     """Paint the newest queued passive pointer after a document rebuild.
 
@@ -1248,6 +1272,7 @@ class _FrameCache:
         self.preview_ready = 0.0
         self.next_preview = float("inf")
         self.toolbar_token = None
+        self.group_menu_token = None
 
     def due(self, app, width, height, now=None):
         now = time.monotonic() if now is None else now
@@ -1296,6 +1321,7 @@ class _FrameCache:
                   extra_controls=metric_live.descriptors(app) + scrollbars.descriptors(app))
         self.snapshot, self.geometry = snap, (width, height)
         self.toolbar_token = _toolbar_feedback_token(app)
+        self.group_menu_token = _group_menu_feedback_token(app)
         now = time.monotonic()
         self.next_maintenance = now + MAINTENANCE_SECONDS
         idle = 100 if app.animations_enabled and app.completion.active else 200
@@ -1317,6 +1343,18 @@ class _FrameCache:
         from .interaction import publish, decorate, decorate_overlays
         from . import toolbar
         width, height = self.geometry
+        from . import job_group_menu
+        group_menu_token = _group_menu_feedback_token(app)
+        if job_group_menu.active(app) and group_menu_token != self.group_menu_token:
+            # Menu hover changes only a bounded cached action list, never the
+            # underlying job tables, source snapshot, or graph rasters.
+            self.content = job_group_menu.overlay(views, self.snapshot, app, width, height) or []
+            from . import scrollbars, metric_live
+            scrollbars.publish(app, width, height, overlays=self.welcome + self.content + self.toolbar)
+            publish(app, self.rows, self.hits, width, height,
+                    overlays=self.welcome + self.content + self.toolbar,
+                    extra_controls=metric_live.descriptors(app) + scrollbars.descriptors(app))
+            self.group_menu_token = _group_menu_feedback_token(app)
         token = _toolbar_feedback_token(app)
         if token != self.toolbar_token:
             # A menu cursor, switch, or pointer dismissal only changes this
@@ -1337,6 +1375,8 @@ class _FrameCache:
         rows = decorate(app, self.rows)
         from .job_progress import animate_rows
         rows = animate_rows(app, rows)
+        from .job_group_drag import feedback as group_drag_feedback
+        rows = group_drag_feedback(app, rows)
         overlays = self.welcome + decorate_overlays(app, self.content + self.toolbar)
         from .chart_interaction import feedback as chart_feedback
         overlays += chart_feedback(app, ascii_=bool(getattr(getattr(views, "g", None), "ascii", False)),
