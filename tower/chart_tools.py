@@ -79,6 +79,13 @@ def format_value(value, preference):
     return number + ((" " + unit) if unit and unit != "%" else unit)
 
 
+def format_axis(value, preference, lo, hi):
+    """Honor declared precision, otherwise resolve ticks at the selected scale."""
+    if preference.get("precision") is not None:
+        return format_value(value, preference)
+    return charts.axis_num(value, lo, hi, preference.get("unit", ""))
+
+
 def axis_values(values, axis):
     """Return plotted coordinates, bounds, and count undefined on a log axis."""
     mode = axis.get("mode", "auto")

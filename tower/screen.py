@@ -435,6 +435,10 @@ def _apply_input(app, event, hits, curses):
         if app.mode == "terminal_probe":
             app.handle(f"paste ({len(mouse)} characters)")
         else:
+            from .history_log_export import active as export_active, paste as export_paste
+            if export_active(app):
+                export_paste(app, mouse)
+                return
             from .command_ui import paste
             paste(app, mouse)
         return
@@ -462,6 +466,13 @@ def _apply_input(app, event, hits, curses):
     note_input(app, "wheel" if button.startswith("wheel-") else button)
     from .startup import handle_mouse as startup_mouse
     startup_mouse(app, my, mx, button=button, shift=shift)
+    from .history_log_export import active as export_active, handle_mouse as export_mouse
+    if export_active(app):
+        export_mouse(app, my, mx, button=button, shift=shift)
+        return
+    from .job_selection import context_click
+    if context_click(app, my, mx, button=button):
+        return
     # Every final pointer position survives global capture. Wheels change the
     # document or menu and publish fresh hover geometry immediately afterward;
     # avoid resolving the displaced graph for every report in a wheel burst.
@@ -740,6 +751,9 @@ class _FrameCache:
         overlays = views.overlay(snap, app, width, height, **options) or []
         self.rows = getattr(app, "frame_rows", rows)
         self.hits, self.welcome = hits, welcome
+        from .job_progress import publish_animation
+        publish_animation(app, self.rows, hits,
+                          ascii_=bool(getattr(getattr(views, "g", None), "ascii", False)))
         if options:
             self.content = getattr(app, "content_overlay_rows", []) or []
             self.toolbar = getattr(app, "toolbar_overlay_rows", []) or []
@@ -784,9 +798,12 @@ class _FrameCache:
                     extra_controls=metric_live.descriptors(app))
             self.toolbar_token = _toolbar_feedback_token(app)
         rows = decorate(app, self.rows)
+        from .job_progress import animate_rows
+        rows = animate_rows(app, rows)
         overlays = self.welcome + decorate_overlays(app, self.content + self.toolbar)
         from .chart_interaction import feedback as chart_feedback
-        overlays += chart_feedback(app, ascii_=bool(getattr(getattr(views, "g", None), "ascii", False)))
+        overlays += chart_feedback(app, ascii_=bool(getattr(getattr(views, "g", None), "ascii", False)),
+                                   rows=rows, overlays=overlays)
         from .metric_live import feedback as live_feedback
         glyphs = getattr(views, "g", None) or L.Glyphs(bool(getattr(app, "ascii", False)))
         overlays += live_feedback(app, glyphs)

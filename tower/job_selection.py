@@ -9,7 +9,82 @@ ROW_KINDS = {"jobs": {"job", "recent"}, "history": {"fin"},
 def initialize(app):
     if not isinstance(getattr(app, "job_selection_state", None), dict):
         app.job_selection_state = {"capture": None}
+    app.job_selection_state.setdefault("deselected", {})
     return app.job_selection_state
+
+
+def selected(app, tab, identifier):
+    """Keep an explicitly cleared table clear across maintenance frames."""
+    return None if initialize(app)["deselected"].get(tab, False) else identifier
+
+
+def resume(app, tab=None):
+    initialize(app)["deselected"][tab or getattr(app, "tab", "")] = False
+
+
+def clear(app):
+    state = initialize(app)
+    state["capture"] = None
+    state["deselected"][app.tab] = True
+    app.marks.clear()
+    app.selected_id = None
+    app.sel_anchor = app.click_row = None
+    pointer = getattr(app, "interaction_state", {})
+    pointer.update(active=False, focused=None, frame_required=True)
+    getattr(app, "job_panel_state", {})["focus"] = ""
+    from . import chart_interaction, metric_live, pane_drag
+    chart_interaction.cancel(app)
+    metric_live.cancel(app)
+    pane_drag.blur(app)
+    app.say("Job selection cleared; click a job or use the arrows to select")
+
+
+def context_click(app, y, x, button="left"):
+    """Right-click clearing is deliberately ahead of every clickable surface."""
+    if button != "right" or getattr(app, "mode", "main") != "main":
+        return False
+    if not (0 <= x < getattr(app, "width", 120)
+            and 0 <= y < getattr(app, "height", 100000)):
+        return False
+    tab = getattr(app, "tab", "")
+    if tab == "history":
+        rect = getattr(app, "history_jobs_rect", None)
+        if rect is not None and rect.contains(y, x):
+            from .history_log_export import handle_mouse
+            return handle_mouse(app, y, x, button=button)
+    if tab in ("jobs", "history"):
+        clear(app)
+        return True
+    return False
+
+
+def publish(app, rows, hits, width, height):
+    """Publish the clipped History list, excluding summaries and Details."""
+    app.history_jobs_rect = None
+    if getattr(app, "tab", "") != "history" or height is None:
+        return
+    from .interaction import Rect
+    from .workspace_layout import enabled, _section_title
+    headers = [y for y, kind, value in hits if kind == "sort_header"
+               and isinstance(value, (tuple, list)) and value[:1] == ("history",)]
+    records = [y for y, kind, value in hits if kind == "fin"]
+    if not headers and not records:
+        return
+    left, right, bottom = 0, width, max(0, height - 1)
+    top = max(0, min(headers) - 1 if headers else min(records))
+    main = getattr(app, "workspace_main_rect", None) if enabled(app) else None
+    if main is not None:
+        left, right = main.x, min(width, main.x + main.width)
+        top, bottom = max(top, main.y), min(bottom, main.y + main.height)
+    else:
+        last = max(records) if records else max(headers)
+        for y in range(last + 1, min(len(rows), bottom)):
+            title = _section_title(rows[y])
+            if title and title.startswith(("selected", "details")):
+                bottom = y
+                break
+    if top < bottom and left < right:
+        app.history_jobs_rect = Rect(top, left, bottom, right)
 
 
 def command_names():
@@ -29,6 +104,9 @@ def _order(app):
     if tab == "jobs":
         return tuple((list(getattr(app, "visible_ids", [])) + list(getattr(app, "recent_ids", [])))[:MAX_SELECTION])
     if tab == "history":
+        cached = getattr(app, "last_history_ids", None)
+        if isinstance(cached, (list, tuple)):
+            return tuple(cached[:MAX_SELECTION])
         return tuple(record.id for record in app.history_jobs())[:MAX_SELECTION]
     return tuple(getattr(app, "group_ids" if tab == "group" else "dep_ids", []))[:MAX_SELECTION]
 
@@ -39,6 +117,10 @@ def _hit(app, y, x):
     if getattr(app, "tab", "") == "jobs":
         from .job_panels import contains
         if contains(app, y, x):
+            return None
+    if getattr(app, "tab", "") == "history":
+        rect = getattr(app, "history_jobs_rect", None)
+        if rect is not None and not rect.contains(y, x):
             return None
     kinds = ROW_KINDS.get(getattr(app, "tab", ""), set())
     return next((identifier for row, kind, identifier in getattr(app, "last_hits", [])
@@ -82,8 +164,11 @@ def _range(app, capture, identifier):
     first, last = sorted((ids.index(capture["anchor"]), ids.index(identifier)))
     app.marks = (set(capture["base"]) if capture["extend"] else set()) | set(ids[first:last + 1])
     capture["moved"] = True
+    resume(app)
     app.cursor[app.tab] = ids.index(identifier)
-    app.sync_selection()
+    # The exact published order was validated above. Rebuilding accounting or
+    # taking a Store snapshot for each pointer report adds no selection safety.
+    app.selected_id = identifier
     app.say(f"{len(app.marks)} jobs marked; drag to adjust, release to finish")
 
 
@@ -126,6 +211,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
                         "base": set(app.marks), "extend": bool(shift), "moved": False,
                         "point": (y, x), "size": (getattr(app, "width", None), getattr(app, "height", None))}
     # A press retains ordinary row selection. Marks change only on a range drag.
+    resume(app)
     app.cursor[app.tab] = ids.index(identifier)
-    app.sync_selection()
+    app.selected_id = identifier
     return True

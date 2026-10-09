@@ -185,6 +185,11 @@ class Views:
         zoom = chart_interaction.bounds(app, plot_key, scale="linear")
         if zoom:
             options.update(times=zoom["x"], lo=zoom["y"][0], hi=zoom["y"][1])
+            options["time_units"] = True
+            if chart_interaction.autofit(app, plot_key, scale="linear") and options.get("sample_times") is not None:
+                options["lo"], options["hi"] = charts.fit_time_bounds(
+                    values, options["sample_times"], zoom["x"], zoom["y"], options.get("sample_interval"))
+                options["fitted"] = True
         visible_values = None
         bounds = options.get("times")
         sample_times = options.get("sample_times")
@@ -586,6 +591,8 @@ class Views:
             row["progress"] = progress.format(self.g.ascii)
             row["_progress_value"] = progress.fraction
             row["_styles"]["progress"] = progress.style
+            row["_progress_animation"] = ("hourglass" if progress.basis == "pending" else
+                                          "clock" if progress.basis == "time" and j.state in ("RUNNING", "COMPLETING") else "")
             rec = snap.get("tags", {}).get(j.id, {})
             row["tags"] = " ".join(rec.get("tags", []))
             row["pinned"] = bool(rec.get("pinned"))
@@ -827,14 +834,16 @@ class Views:
             app.cursor["jobs"] = ids.index(app.selected_id)
         app.last_jobs_ids = list(ids)
         cur = app.clamp_cursor("jobs", len(ids))
-        app.selected_id = ids[cur] if ids else None
+        from .job_selection import selected
+        app.selected_id = selected(app, "jobs", ids[cur] if ids else None)
+        selection_active = app.selected_id is not None
         recent_focus = bool(fin) and cur >= n
-        sel = rows_d[cur]["job"] if n and not recent_focus else None
+        sel = rows_d[cur]["job"] if n and not recent_focus and selection_active else None
         from .job_panels import render as render_details
-        selected_record = fin[cur - n] if recent_focus else sel
+        selected_record = fin[cur - n] if recent_focus and selection_active else sel
         if height is None:
             det = self.selected_panel(snap, sel, width, app.log_lines, app)
-            if recent_focus:
+            if recent_focus and selection_active:
                 det = self.finished_summary(fin[cur - n], width)
             detail_hits = []
         else:
@@ -890,11 +899,12 @@ class Views:
         top = app.scroll_to("jobs", min(cur, max(0, n - 1)), max(1, vis), n)
         shown = rows_d[top:top + vis]
         app.job_progress_visible = [row["id"] for row in shown]
+        app.job_progress_animation = {row["id"]: row.get("_progress_animation", "") for row in shown[:256]}
         marks = {i for i, r in enumerate(shown) if r["id"] in app.marks}
         for r in shown:
             r["_mark"] = self.g.pin if r.get("pinned") else ""
         cells = []
-        trows, _ = table(job_columns, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus else cur - top, marks=marks, mark_char=self.g.mark,
+        trows, _ = table(job_columns, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus or not selection_active else cur - top, marks=marks, mark_char=self.g.mark,
                          header_cells=cells)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
         out = [rule(self.g, width, title)] + trows if show_queue else []
@@ -917,7 +927,7 @@ class Views:
             recent_shown = fin[fin_top:fin_top + fin_vis]
             base = len(out)
             recent_cells = []
-            recent_rows = self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus else None,
+            recent_rows = self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus and selection_active else None,
                                              app=app, header_cells=recent_cells, sort_tab="recent")
             hits += header_hits("recent", recent_cells, base + 1) + [(base + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
             out += recent_rows
@@ -1013,7 +1023,8 @@ class Views:
         key, rev = app.sort.get("history", "end"), app.reverse.get("history", False)
         n = len(fin)
         cur = app.clamp_cursor("history", n)
-        app.selected_id = fin[cur].id if fin else None
+        from .job_selection import selected
+        app.selected_id = selected(app, "history", fin[cur].id if fin else None)
         counts: Dict[str, int] = {}
         observed = getattr(app, "history_all_records", fin)
         for f in observed:
@@ -1039,7 +1050,9 @@ class Views:
         shown = fin[top:top + vis]
         data = [self.finished_dict(f) for f in shown]
         cells = []
-        trows, _ = table(fin_columns, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top,
+        marks = {i for i, record in enumerate(shown) if record.id in app.marks}
+        trows, _ = table(fin_columns, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top if app.selected_id else None,
+                         marks=marks, mark_char=self.g.mark,
                          header_cells=cells)
         title = f"history {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "history"
         out = prefix + [rule(self.g, width, title)] + trows
@@ -1047,7 +1060,7 @@ class Views:
             out.append([("   nothing matches the filter; Esc clears it" if app.filter else "   No completed runs yet. Finished jobs and efficiency appear here.", "dim")])
         hits = header_hits("history", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
         self.group_controls(app, out, hits, shown, len(prefix) + 2, "history", width)
-        if fin:
+        if fin and app.selected_id:
             out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
         record_page(app, "history", len(shown))
         return out, hits
@@ -2151,18 +2164,30 @@ class Views:
         # Title + plot rows + baseline + time axis. Running controls and their
         # source-age footer add two rows; an area companion adds four rows.
         band_rows = h + 3 + 2 * int(running and cell_width >= metric_live.MIN_WIDTH) + 4 * int(filled)
+        band_heights = []
+        for offset in range(0, n, columns):
+            extras = []
+            for _, _, _, unit, _, _, _, metric_id in charts_[offset:offset + columns]:
+                identity = chart_interaction.key(app, metric_id, unit, jid, scope="resource-series", attempt=attempt)
+                extra = int(chart_interaction.bounds(app, identity, scale="linear") is not None)
+                if filled:
+                    area_key = chart_interaction.key(app, metric_id, unit, jid, scope="resource-area", attempt=attempt)
+                    extra += int(chart_interaction.bounds(app, area_key, scale="linear") is not None)
+                extras.append(extra)
+            band_heights.append(band_rows + max(extras, default=0))
         chart_mark = chart_interaction.mark(app)
         if native_document:
             sticky = min(source_head, max(0, avail - 2))
-            count = len(head) - sticky + ((n + columns - 1) // columns) * band_rows
+            count = len(head) - sticky + sum(band_heights)
             painted, page = analytics_document.prepare(app, jid, attempt, width, avail, sticky, count)
         for offset in range(0, n, columns):
             if not native_document and avail is not None and len(out) >= avail:
                 break
-            if native_document and (len(out) + band_rows <= sticky + painted or len(out) >= sticky + painted + page):
+            current_band_rows = band_heights[offset // columns]
+            if native_document and (len(out) + current_band_rows <= sticky + painted or len(out) >= sticky + painted + page):
                 # Reserve measured document rows without rasterizing or staging
                 # controls for cards outside the actual painted viewport.
-                out.extend([[] for _ in range(band_rows)])
+                out.extend([[] for _ in range(current_band_rows)])
                 continue
             panels = []
             for position, (title, values, hi, unit, times, sample_times, sample_interval, metric_id) in enumerate(charts_[offset:offset + columns]):
@@ -2373,6 +2398,8 @@ class Views:
                                       ("*" if self.g.ascii else "◆", "fg:#fb923c+bold")]
         hits = [(y, kind, key) for y, kind, key in hits if 0 <= y < max(0, height - 1)]
         app.last_hits = hits
+        from .job_selection import publish as publish_selection
+        publish_selection(app, rows, hits, width, height)
         if app.tab == "jobs" and app.animations_enabled and width >= 4:
             for item in app.completion.moving()[-3:]:
                 destination = next((y for y, kind, jid in hits if kind == "recent" and jid == item["job"]), None)
@@ -2394,6 +2421,8 @@ class Views:
         app.tab_hits = [hit for hit in app.tab_hits if hit[0] < height - 1 and hit[1] < hit[2]]
         output = rows + [L.clip_row(self.footer(app, width), width)]
         app.frame_rows = output
+        from .job_progress import publish_animation
+        publish_animation(app, output, hits, ascii_=self.g.ascii)
         if not feedback:
             return output, hits
         from .interaction import publish, decorate

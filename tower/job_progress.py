@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections import OrderedDict
+from itertools import islice
 import copy
 import math
 import os
@@ -22,6 +23,12 @@ POLL_INTERVAL = 8.0
 MAX_BATCH = 4
 MAX_REPORTS = 128
 MAX_INVENTORIES = 256
+CLOCK_FRAMES = "◴◷◶◵"
+HOURGLASS_FRAMES = "⧗⧖"
+CLOCK_INTERVAL = 0.4
+HOURGLASS_INTERVAL = 0.8
+MAX_ANIMATIONS = 256
+MAX_ANIMATION_HITS = 4096
 
 
 def initialize(app):
@@ -30,7 +37,8 @@ def initialize(app):
         state = app.job_progress_state = {"identity": None, "last": None}
     defaults = {"reports": OrderedDict(), "inventory_key": None, "inventory_index": {},
                 "inventory_root": "", "batch_token": 0, "batch_callback": None,
-                "batch_cancel": None, "batch_last": None, "batch_cursor": 0}
+                "batch_cancel": None, "batch_last": None, "batch_cursor": 0,
+                "animation_slots": (), "animation_context": None}
     for key, value in defaults.items():
         state.setdefault(key, value)
     return state
@@ -333,17 +341,144 @@ class Observation:
         return self.format()
 
     def format(self, ascii_=False):
-        """Return exactly six terminal cells in both terminal character modes."""
+        """Return six cells: a narrow source icon, a gap and a four-cell bar.
+
+        A fixed spacer keeps the clock clear of the plot at every fraction,
+        including 100%. Numeric fractions remain available for sorting and
+        inspection; squeezing their digits into this chart would remove the
+        spacer or clip the bar. Emoji clocks and hourglasses occupy two cells
+        on common terminals, so these markers use narrow text characters.
+        """
         if self.fraction is None:
-            return " wait " if self.basis == "pending" else "   -- "
-        percent = int(min(999, max(0, self.fraction * 100)) + .5)
-        eighths = int(max(0, min(1, self.fraction)) * 8 + .5)
-        block = "░" if not eighths else "▏▎▍▌▋▊▉█"[eighths - 1]
+            return ("w wait" if ascii_ else "⧗ wait") if self.basis == "pending" else "   -- "
+        fraction = _number(self.fraction)
+        if fraction is None:
+            return "   -- "
+        eighths = int(max(0, min(1, fraction)) * 32 + .5)
         if ascii_:
             prefix = "t" if self.basis == "time" else "p"
-            return f"{prefix}{percent:3d}% "
-        prefix = "◷" if self.basis == "time" else "▸"
-        return f"{prefix}{percent}%".ljust(5) + block
+            cells = ["=" if eighths >= (i + 1) * 8 else ">" if eighths > i * 8 else "-" for i in range(4)]
+        else:
+            prefix = "◷" if self.basis == "time" else "▸"
+            cells = ["░" if eighths <= i * 8 else "▏▎▍▌▋▊▉█"[min(8, eighths - i * 8) - 1]
+                     for i in range(4)]
+        return prefix + " " + "".join(cells)
+
+
+def _animation_context(app):
+    return (getattr(app, "tab", ""), getattr(app, "mode", "main"),
+            getattr(app, "theme", ""), bool(getattr(app, "animations_enabled", False)))
+
+
+def publish_animation(app, rows, hits, *, ascii_=False):
+    """Retain only icon cells in the final, already painted Jobs geometry.
+
+    Row IDs come from the existing hit publication; eligibility comes from
+    the visible table slice. No scheduler queries, samples or file reads are
+    needed, and offscreen or clipped progress columns cannot animate.
+    """
+    state = initialize(app)
+    state["animation_context"] = _animation_context(app)
+    state["animation_slots"] = ()
+    if ascii_ or state["animation_context"][:2] != ("jobs", "main") or not state["animation_context"][3]:
+        return
+    eligible = getattr(app, "job_progress_animation", {})
+    if not isinstance(eligible, dict) or not isinstance(rows, (list, tuple)) or not isinstance(hits, (list, tuple)):
+        return
+    left = None
+    for hit in islice(hits, MAX_ANIMATION_HITS):
+        if not isinstance(hit, (tuple, list)) or len(hit) != 3:
+            continue
+        y, kind, value = hit
+        if (kind == "sort_header" and isinstance(value, (tuple, list)) and len(value) == 4
+                and tuple(value[:2]) == ("jobs", "progress") and all(isinstance(x, int) and not isinstance(x, bool) for x in value[2:])
+                and value[3] - value[2] == 6):
+            left = value[2]
+            break
+    if left is None or left < 0:
+        return
+    slots = []
+    seen = set()
+    for hit in islice(hits, MAX_ANIMATION_HITS):
+        if not isinstance(hit, (tuple, list)) or len(hit) != 3:
+            continue
+        y, kind, jid = hit
+        if kind != "job" or not isinstance(jid, str) or eligible.get(jid) not in ("clock", "hourglass"):
+            continue
+        if not isinstance(y, int) or isinstance(y, bool) or not 0 <= y < len(rows) or (y, left) in seen:
+            continue
+        cell = _glyph_at(rows[y], left)
+        expected = CLOCK_FRAMES if eligible[jid] == "clock" else HOURGLASS_FRAMES
+        if cell not in expected:
+            continue
+        seen.add((y, left))
+        slots.append((y, left, eligible[jid]))
+        if len(slots) == MAX_ANIMATIONS:
+            break
+    state["animation_slots"] = tuple(slots)
+
+
+def _glyph_at(row, x):
+    used = 0
+    for text, _ in row:
+        width = L.vlen(text)
+        if used <= x < used + width:
+            offset = x - used
+            prefix = L.truncate(text, offset)
+            if L.vlen(prefix) != offset:
+                return None
+            return text[len(prefix):len(prefix) + 1]
+        used += width
+    return None
+
+
+def _replace_glyph(row, x, glyph):
+    """Replace a known one-cell marker without changing its painted style."""
+    used = 0
+    for index, (text, style) in enumerate(row):
+        width = L.vlen(text)
+        if used <= x < used + width:
+            offset = x - used
+            prefix = L.truncate(text, offset)
+            if L.vlen(prefix) != offset or len(prefix) >= len(text) or L.vlen(text[len(prefix)]) != 1:
+                return row
+            if text[len(prefix)] == glyph:
+                return row
+            changed = list(row)
+            changed[index] = (prefix + glyph + text[len(prefix) + 1:], style)
+            return changed
+        used += width
+    return row
+
+
+def animate_rows(app, rows, *, now=None):
+    """Patch visible progress icons without rebuilding the cached document.
+
+    The existing <=200ms input wakeup is sufficient for 400/800ms frames.
+    Animation therefore never increases scheduler/file polling or triggers a
+    chart/research recomputation. Hover, marks and cursor colours are retained.
+    """
+    state = getattr(app, "job_progress_state", {})
+    if (not isinstance(state, dict) or state.get("animation_context") != _animation_context(app)
+            or not getattr(app, "animations_enabled", False)):
+        return rows
+    now = _number(time.monotonic() if now is None else now)
+    if now is None or now < 0:
+        return rows
+    out = rows
+    for y, x, kind in state.get("animation_slots", ()):
+        if not 0 <= y < len(rows):
+            continue
+        frames, interval = (CLOCK_FRAMES, CLOCK_INTERVAL) if kind == "clock" else (HOURGLASS_FRAMES, HOURGLASS_INTERVAL)
+        if _glyph_at(rows[y], x) not in frames:
+            continue
+        glyph = frames[int(now / interval) % len(frames)]
+        row = _replace_glyph(rows[y], x, glyph)
+        if row is not rows[y]:
+            if out is rows:
+                out = list(rows)
+            out[y] = row
+    return out
 
 
 def _fraction(progress, latest):
@@ -509,11 +644,11 @@ def published(app, snap):
 
 
 def observation(job, sources):
+    if getattr(job, "pending", False) or getattr(job, "state", "") == "PENDING":
+        return Observation(None, "pending", "waiting for execution")
     source = sources.get(job.id)
     if isinstance(source, Source) and (value := _number(source.fraction)) is not None and 0 <= value <= 1:
         return Observation(source.fraction, "reported", source.source, source.unit)
-    if getattr(job, "pending", False) or getattr(job, "state", "") == "PENDING":
-        return Observation(None, "pending", "waiting for execution")
     elapsed = _number(secs(getattr(job, "elapsed", "")))
     limit = _number(secs(getattr(job, "limit", "")))
     if elapsed is not None and limit is not None and limit > 0 and elapsed >= 0:

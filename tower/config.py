@@ -20,6 +20,7 @@ DEFAULTS: Dict[str, Any] = {
     "log_lines": 8,                      # stdout tail under the selected job
     "log_max_mb": 32,                    # the Log tab keeps the last this many MB of a file in memory (read once, then only what is appended)
     "logs": {"manifest_file": ""},       # optional per-run log index, relative to the selected workdir
+    "exports": {"projects_root": ""},   # local History log destination browser; empty: registered project or ~/projects
     "gpu_sampling": True,                # nvidia-smi inside the job's allocation
     "bell": False,                       # terminal bell when one of your jobs starts
     "animations": True,                  # short completion motion and two History pulses (reader is static)

@@ -33,8 +33,8 @@ def publish(app, identity=("job", "101", "CPU"), *, bounds=None, row=0, column=0
     return C.publish(app, app.width, app.height)[-1]
 
 
-def drag(app, start=(2, 15), end=(8, 45)):
-    assert C.handle_mouse(app, *start, button="press")
+def drag(app, start=(2, 15), end=(8, 45), *, shift=False):
+    assert C.handle_mouse(app, *start, button="press", shift=shift)
     assert C.handle_mouse(app, *end, button="drag")
     assert C.handle_mouse(app, *end, button="release")
 
@@ -43,12 +43,13 @@ def test_crosshair_has_cell_accurate_plus_dotted_axes_and_cyan_tone(app):
     plot = publish(app)
     assert C.hover(app, 5, 30)
     overlay = C.feedback(app)
-    assert (5, 30, [("+", "cursor+bold")]) in overlay
+    assert (5, 30, [("+", "cursor")]) in overlay
     assert all(plot.visible.contains(y, x) for y, x, _ in overlay)
     assert all(char in ("·", "+") for _, _, row in overlay for char, _ in row)
     assert any(y == 5 and x != 30 for y, x, _ in overlay)
     assert any(x == 30 and y != 5 for y, x, _ in overlay)
-    assert len(overlay) < 40
+    assert len(overlay) == (plot.visible.right - plot.visible.left) + (plot.visible.bottom - plot.visible.top) - 1
+    assert all("bold" not in style for _, _, row in overlay for _, style in row)
     assert any(row[0][0] == "." for _, _, row in C.feedback(app, ascii_=True))
     assert not C.hover(app, 0, 30)  # title is not part of the graph
     assert C.feedback(app) == []
@@ -64,11 +65,12 @@ def test_margins_axes_and_other_sections_are_not_captured(app, point):
 @pytest.mark.parametrize("start,end", [((2,15),(8,45)), ((8,45),(2,15)), ((2,45),(8,15)), ((8,15),(2,45))])
 def test_box_zoom_all_drag_directions_maps_x_and_inverted_y(app, start, end):
     plot = publish(app)
-    drag(app, start, end)
+    drag(app, start, end, shift=True)
     bounds = C.bounds(app, plot.key)
     assert bounds["x"] == pytest.approx((100*5/49, 100*35/49))
     assert bounds["y"] == pytest.approx((200*2/9, 200*8/9))
     assert C.initialize(app)["revision"] == 1
+    assert not C.autofit(app, plot.key)
     assert not C.active(app)
 
 
@@ -90,7 +92,7 @@ def test_drag_is_a_preview_until_release_and_crosshair_never_modifies_source(app
     assert C.bounds(app, plot.key)
 
 
-@pytest.mark.parametrize("end", [(2,15),(2,40),(8,15),(8,16),(0,40),(12,40),(8,5),(8,65)])
+@pytest.mark.parametrize("end", [(2,15),(8,15),(8,16),(0,40),(12,40),(8,5),(8,65)])
 def test_tiny_and_outside_release_cancel_without_accidental_zoom(app,end):
     plot = publish(app)
     assert C.handle_mouse(app,2,15,button="press")
@@ -405,7 +407,7 @@ def test_inspector_records_exact_modal_box_and_keyboard_samples_follow_box_zoom(
     C.begin_frame(app,120,40)
     zoomed=A.overlay(SimpleNamespace(g=L.Glyphs(False)),{},app,120,40)
     labels="\n".join(L.row_text(row) for _,_,row in zoomed)
-    assert "Box zoom t=" in labels and "zoomed Y" in labels
+    assert "Time zoom t=" in labels and "zoomed Y" in labels and "fits observed interval" in labels
     assert "Zoom x1 |" not in labels
     C.publish(app,120,40)
     assert A.handle_key(app,"home")

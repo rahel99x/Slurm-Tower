@@ -107,7 +107,9 @@ Jobs and Recents retain separate filters and cascading sorts.
 
 Open **Analytics → Job series** or an available **Research** metric view for the selected job.
 Point inside a plot for a cyan dotted crosshair.
-Drag a rectangle and release inside that plot to set its horizontal and vertical bounds.
+Drag across a time interval and release inside that plot to fit its horizontal extent and visible curve.
+Hold Shift before pressing to set explicit horizontal and vertical bounds instead.
+Selected intervals use adaptive `s`, `ms`, or `us` axis labels and identify their start timestamp.
 Use `u` while pointing at the plot to undo, or `0` to reset rectangular zoom.
 The graph keeps the exact selected job and source.
 
@@ -300,15 +302,21 @@ It uses published data and starts no file read or scheduler command while render
 
 | Display | Meaning |
 | --- | --- |
-| `▸`, a percentage, and a fractional block | Application-reported completion fraction |
-| `p` and a percentage in ASCII | The same application-reported fraction |
-| `◷`, a percentage, and a fractional block | Elapsed time as a fraction of the Slurm time limit |
-| `t` and a percentage in ASCII | The same time-limit usage fraction |
-| `wait` | The job is pending |
+| `▸`, a space, and four fractional block cells | Application-reported completion fraction |
+| `p` and four ASCII bar cells | The same application-reported fraction |
+| A clock, a space, and four fractional block cells | Elapsed time as a fraction of the Slurm time limit |
+| `t` and four ASCII bar cells | The same time-limit usage fraction |
+| An hourglass and `wait`, or `w wait` in ASCII | The job is pending |
 | `--` | Neither application progress nor a usable time limit is available |
 
-For example, `▸42% ▍` and `◷42% ▍` each use six cells.
-ASCII uses `p 42% ` and `t 42% ` respectively.
+For example, `▸ █▋░░` and `◷ █▋░░` each use six cells for about 42 percent.
+The space after the symbol separates it from the bar.
+ASCII uses `p =>--` and `t =>--` respectively.
+The underlying fraction remains available for numeric sorting.
+When animation is enabled, a running time symbol cycles through `◴`, `◷`, `◶`, and `◵` every 0.4 seconds.
+A pending symbol alternates between `⧗` and `⧖` every 0.8 seconds.
+These are single-cell characters; Tower does not use double-width emoji in this column.
+ASCII, reader mode, disabled animations, and noninteractive output use static symbols.
 The clock or `t` value measures used allocation time.
 It does not measure completed work or predict when the application will finish.
 A completed job still needs valid application progress to show application completion.

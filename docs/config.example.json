@@ -1,4 +1,7 @@
 {
+  "exports": {
+    "projects_root": ""
+  },
   "profiles": {
     "demo": {
       "theme": "default"

@@ -659,7 +659,7 @@ def test_ascii_default_crosshair_uses_real_views_ref(app):
     )
     C.publish(app, 120, 40)
     C.hover(app, 8, 30)
-    assert any(row == [(".", "cursor+bold")] for _, _, row in C.feedback(app))
+    assert any(row == [(".", "cursor")] for _, _, row in C.feedback(app))
 
 
 def test_running_job_beyond_ten_thousand_rows_stays_eligible_with_bounded_index(app):

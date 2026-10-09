@@ -22,7 +22,7 @@ QUADRANTS = " ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"
 
 def _finite(v: Optional[float]) -> Optional[float]:
     try:
-        return v if v is not None and math.isfinite(v) else None
+        return v if v is not None and not isinstance(v, bool) and math.isfinite(v) else None
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -162,6 +162,73 @@ def _window_values(values: Sequence[Optional[float]], sample_times: Optional[Seq
             if _finite(timestamp) is not None and times[0] <= timestamp <= times[1]]
 
 
+def fit_time_bounds(values: Sequence[Optional[float]], sample_times: Sequence[float],
+                    times: Tuple[float, float], fallback: Tuple[float, float],
+                    sample_interval: Optional[float] = None) -> Tuple[float, float]:
+    """Fit the actual observed line in a selected time interval.
+
+    Keep every measured extremum, including duplicate timestamps, and include
+    genuine intersections with the interval edges. Unknown endpoints and
+    cadence outages never provide an interpolated bound. No extrapolation is
+    permitted. An empty interval retains finite display bounds without creating
+    a sample. Fits are computed by renderers, never by pointer input handlers.
+    """
+    if (not isinstance(times, (list, tuple)) or len(times) != 2 or
+            any(_finite(item) is None for item in times) or times[0] >= times[1]):
+        return fallback
+    samples = [(timestamp, _finite(value)) for timestamp, value in zip(sample_times, values)
+               if _finite(timestamp) is not None]
+    samples.sort(key=lambda item: item[0])
+    deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:])
+                    if b[0] > a[0] and math.isfinite(b[0] - a[0]))
+    cadence = sample_interval if _finite(sample_interval) is not None and sample_interval > 0 else (
+              deltas[(len(deltas) - 1) // 2] if deltas else 0.0)
+    vertices = [value for _, value, _ in _clip_time_samples(samples, times,
+                                                          min(sys.float_info.max, cadence * 2.5))
+                if value is not None]
+    if not vertices:
+        return fallback
+    lower, upper = min(vertices), max(vertices)
+    span = upper - lower
+    if lower == upper:
+        padding = abs(lower) * .025 if lower else .5
+    else:
+        padding = span * .025 if math.isfinite(span) else upper * .025 - lower * .025
+    lo, hi = lower - padding, upper + padding
+    lo = lo if math.isfinite(lo) else lower
+    hi = hi if math.isfinite(hi) else upper
+    if lo >= hi:
+        lo, hi = math.nextafter(lower, -math.inf), math.nextafter(upper, math.inf)
+        lo = lo if math.isfinite(lo) else lower
+        hi = hi if math.isfinite(hi) else upper
+    return (lo, hi) if lo < hi else fallback
+
+
+def axis_num(value: float, lo: float, hi: float, unit: str = "") -> str:
+    """Compact Y ticks with enough significant digits for the fitted span."""
+    span = hi - lo
+    magnitude = max(abs(lo), abs(hi))
+    if not math.isfinite(span) or span <= 0 or magnitude == 0:
+        return fmt_num(value, unit)
+    digits = min(16, max(3, math.ceil(math.log10(magnitude) - math.log10(span)) + 2))
+    return f"{value:.{digits}g}{unit}"
+
+
+def time_scale(t0: float, t1: float) -> Tuple[float, str]:
+    """Pick an offset unit from the selected duration, independent of its epoch."""
+    span = t1 - t0
+    return (1.0, "s") if span >= 1 or not math.isfinite(span) else (
+           (1e3, "ms") if span >= 1e-3 else (1e6, "us"))
+
+
+def time_selection_note(t0: float, t1: float, width: int, indent: str = "   ") -> Row:
+    """Retain the exact absolute anchor when selected axes show relative offsets."""
+    scale, unit = time_scale(t0, t1)
+    span = (t1 - t0) * scale
+    label = f"{span:.6g}{unit}" if math.isfinite(span) else ">1e308s"
+    return clip_row([(indent + f"Time +offset from t_a={t0!r}s; span {label}", "dim")], width)
+
+
 def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float], width: int,
                  times: Optional[Tuple[float, float]], sample_interval: Optional[float],
                  envelope: bool = False) -> Tuple[List[Tuple[int, Optional[float], bool]], Tuple[float, float]]:
@@ -264,14 +331,39 @@ def fmt_num(v: Optional[float], unit: str = "") -> str:
     return f"{v:.2f}{unit}"
 
 
-def time_axis(t0: float, t1: float, width: int, indent: str = "", elapsed: bool = False) -> Row:
-    """One row with time labels spread over ``width`` columns (HH:MM, or MM-DD HH:MM when the span crosses days)."""
+def time_axis(t0: float, t1: float, width: int, indent: str = "", elapsed: bool = False,
+              units: bool = False) -> Row:
+    """Spread time ticks over actual cells, or selected offsets in s/ms/us.
+
+    Offset labels subtract the selected origin before scaling. Narrow intervals
+    at large Unix epochs therefore retain useful precision. Tick labels never
+    collide, and equal representable timestamps never get duplicate labels.
+    """
     width = max(0, min(MAX_COLUMNS, width))
     if width <= 8 or _finite(t0) is None or _finite(t1) is None or t1 <= t0:
         return [(indent + " " * max(0, width), "dim")]
     span = t1 - t0
     fmt = "%H:%M" if span < 36 * 3600 else "%m-%d %H:%M"
     n = max(2, min(8, width // 14))
+    if units and math.isfinite(span):
+        scale, unit = time_scale(t0, t1)
+        line, placed = [" "] * width, set()
+
+        def offset_label(fraction):
+            value = (_between(t0, t1, fraction) - t0) * scale
+            return f"{value:.6g}{unit}"
+
+        # Endpoints have priority. Intermediate ticks use only remaining space.
+        for i in [0, n - 1] + list(range(1, n - 1)):
+            fraction = i / (n - 1)
+            label = offset_label(fraction)
+            if vlen(label) > width or label in placed:
+                continue
+            x = max(0, min(width - len(label), round(fraction * (width - 1)) - len(label) // 2))
+            if all(char == " " for char in line[max(0, x - 1):min(width, x + len(label) + 1)]):
+                line[x:x + len(label)] = list(label)
+                placed.add(label)
+        return [(indent + "".join(line), "dim")]
     if span < 1:
         # Preserve the actual timestamp anchor and enough fractional digits to
         # distinguish small display windows. Rounding the fractional component
@@ -389,13 +481,18 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
                indent: str = "   ", axis_w: int = 7, sample_times: Optional[Sequence[float]] = None,
                sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
                axis_formatter: Optional[Callable[[float], str]] = None,
-               metadata: Optional[dict] = None) -> List[Row]:
+               metadata: Optional[dict] = None, fitted: bool = False, time_units: bool = False) -> List[Row]:
     """A vertical bar (area) chart ``height`` rows tall with eight sub-levels per row, a y axis on the left and a
     time axis below.  ``values`` are resampled to the chart width; None leaves a gap."""
     axis_w = max(1, axis_w)
+    values = [_finite(v) for v in values]
+    lo, hi = _bounds(values, lo, hi)
+    if fitted:
+        axis_formatter = axis_formatter or (lambda value: axis_num(value, lo, hi, unit))
+        axis_w = min(max(axis_w, 1 + max(vlen(axis_formatter(value)) for value in (lo, hi, _mean((lo, hi))))),
+                     max(1, width - vlen(indent) - 3))
     chart_w = max(0, min(MAX_COLUMNS, width - vlen(indent) - axis_w))
     height = max(0, min(MAX_HEIGHT, height))
-    values = [_finite(v) for v in values]
     lows = [None] * chart_w
     if sample_times is None:
         vals = resample(values, chart_w, "max" if envelope else "mean")
@@ -463,7 +560,9 @@ def vbar_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, height:
     rows.append([(base, "dim")])
     if times:
         rows.append(_trace_axis(times, len(values), chart_w, indent + " " * axis_w, elapsed=elapsed) if sample_times is None else
-                    time_axis(times[0], times[1], chart_w, indent + " " * axis_w, elapsed))
+                    time_axis(times[0], times[1], chart_w, indent + " " * axis_w, elapsed, units=time_units))
+        if time_units:
+            rows.append(time_selection_note(times[0], times[1], width, indent))
     return [clip_row(row, width) for row in rows]
 
 
@@ -501,7 +600,7 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
                   indent: str = "   ", axis_w: int = 7, sample_times: Optional[Sequence[float]] = None,
                   sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
                   axis_formatter: Optional[Callable[[float], str]] = None,
-                  metadata: Optional[dict] = None) -> List[Row]:
+                  metadata: Optional[dict] = None, fitted: bool = False, time_units: bool = False) -> List[Row]:
     """Connected telemetry with a solid 2 x 2 quadrant raster per Unicode cell.
 
     The historical function name remains API-compatible. Opaque half-cell strokes
@@ -514,6 +613,10 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
     axis_w = max(1, axis_w)
     values = [_finite(v) for v in values]
     lo, hi = _bounds(values, lo, hi)
+    if fitted:
+        axis_formatter = axis_formatter or (lambda value: axis_num(value, lo, hi, unit))
+        axis_w = min(max(axis_w, 1 + max(vlen(axis_formatter(value)) for value in (lo, hi, _mean((lo, hi))))),
+                     max(1, width - vlen(indent) - 3))
     chart_w = max(0, min(MAX_COLUMNS, width - vlen(indent) - axis_w))
     height = max(0, min(MAX_HEIGHT, height))
     raster = 1 if g.ascii else 2
@@ -602,7 +705,9 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
     rows.append([(indent + " " * max(0, axis_w - 1) + ("+" if g.ascii else "└") + g.rule * chart_w, "dim")])
     if times:
         rows.append(_trace_axis(times, len(values), chart_w, indent + " " * axis_w, raster, elapsed) if sample_times is None else
-                    time_axis(times[0], times[1], chart_w, indent + " " * axis_w, elapsed))
+                    time_axis(times[0], times[1], chart_w, indent + " " * axis_w, elapsed, units=time_units))
+        if time_units:
+            rows.append(time_selection_note(times[0], times[1], width, indent))
     return [clip_row(row, width) for row in rows]
 
 

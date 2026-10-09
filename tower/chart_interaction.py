@@ -21,7 +21,7 @@ MAX_KEY_PARTS = 16
 MAX_KEY_TEXT = 512
 MAX_OVERLAY_CELLS = 4096
 CAPTURE_TIMEOUT = 15.0
-CROSSHAIR_STYLE = "cursor+bold"
+CROSSHAIR_STYLE = "cursor"
 
 
 @dataclass(frozen=True)
@@ -350,14 +350,15 @@ def _apply(app, plot, target):
     zooms = state["zoom"]
     old = zooms.get(plot.key)
     undo = list(old.get("undo", ())) if old else []
-    undo.append({"x": old["x"], "y": old["y"]} if old else None)
+    undo.append({"x": old["x"], "y": old["y"], "fit_y": old.get("fit_y", False)} if old else None)
     zooms[plot.key] = {**target, "scale": plot.scale, "undo": undo[-MAX_UNDO:]}
     zooms.move_to_end(plot.key)
     while len(zooms) > MAX_ZOOMS:
         zooms.popitem(last=False)
     state["last_key"] = plot.key
     state["revision"] += 1
-    _say(app, "Chart area zoomed; u undoes, 0 resets while over this graph")
+    _say(app, ("Chart time range zoomed; Y fits observed data" if target.get("fit_y") else "Chart area zoomed") +
+         "; u undoes, 0 resets while over this graph")
 
 
 def handle_mouse(app, y, x, button="left", shift=False):
@@ -382,7 +383,8 @@ def handle_mouse(app, y, x, button="left", shift=False):
             state["capture"] = None
             plot = capture["plot"]
             start_y, start_x = capture["start"]
-            if (not plot.visible.contains(y, x) or abs(x - start_x) < 2 or abs(y - start_y) < 1):
+            if (not plot.visible.contains(y, x) or abs(x - start_x) < 2 or
+                    capture.get("shift", False) and abs(y - start_y) < 1):
                 return True
             left, right = sorted((start_x, x))
             top, bottom = sorted((start_y, y))
@@ -390,7 +392,12 @@ def handle_mouse(app, y, x, button="left", shift=False):
             xf = lambda value: (value - plot.rect.left) / (plot.rect.right - plot.rect.left - 1)
             yf = lambda value: 1 - (value - plot.rect.top) / (plot.rect.bottom - plot.rect.top - 1)
             target = {"x": (charts._between(*plot.x_bounds, xf(left)), charts._between(*plot.x_bounds, xf(right))),
-                      "y": (charts._between(*plot.y_bounds, yf(bottom)), charts._between(*plot.y_bounds, yf(top)))}
+                      "y": (charts._between(*plot.y_bounds, yf(bottom)), charts._between(*plot.y_bounds, yf(top))),
+                      "fit_y": not capture.get("shift", False)}
+            # A horizontal gesture is a valid time range. Keep a finite fallback
+            # Y transform; the next renderer fits the actual observed curve.
+            if target["fit_y"] and not _bounds(target["y"]):
+                target["y"] = plot.y_bounds
             if _bounds(target["x"]) and _bounds(target["y"]):
                 _apply(app, plot, target)
             hover(app, y, x)
@@ -402,7 +409,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
         state["last_key"] = plot.key
         if button == "press":
             state["capture"] = {"plot": plot, "context": _context(app), "start": (y, x),
-                                "current": (y, x), "last": time.monotonic()}
+                                "current": (y, x), "last": time.monotonic(), "shift": bool(shift)}
         hover(app, y, x)
         return True
     return False
@@ -416,6 +423,18 @@ def bounds(app, identity, *, scale=None):
     if zoom is None or scale is not None and zoom["scale"] != scale:
         return None
     return {"x": zoom["x"], "y": zoom["y"]}
+
+
+def autofit(app, identity, *, scale=None):
+    """Whether a time selection should fit the complete observed Y range.
+
+    This is display state only. The renderer computes the actual fit from its
+    already published samples, so input handling never reads or scans a source.
+    ``bounds`` retains its historical X/Y mapping for explicit box zoom callers.
+    """
+    identity = _key(identity)
+    value = initialize(app)["zoom"].get(identity) if identity else None
+    return bool(value and value.get("fit_y") and (scale is None or value["scale"] == scale))
 
 
 def undo(app, identity=None):
@@ -480,8 +499,14 @@ def overlay(views, snap, app, width, height):
     return None
 
 
-def feedback(app, *, ascii_=None):
-    """Return a small cosmetic overlay over the cached chart document."""
+def feedback(app, *, ascii_=None, rows=None, overlays=()):
+    """Return thin dotted feedback preserving the painted plot background.
+
+    Terminals cannot alpha blend a glyph. When supplied, cached document rows
+    and prior overlays provide each cell's actual background, so dots do not
+    cut a canvas-coloured outline into a raised, sunken or highlighted plot.
+    Row/style lookups are reused within the gesture; no graph is rasterized.
+    """
     state = initialize(app)
     tick(app)
     capture = state["capture"]
@@ -491,10 +516,43 @@ def feedback(app, *, ascii_=None):
         return []
     ascii_ = state["ascii"] if ascii_ is None else ascii_
     dot, output, seen = ("." if ascii_ else "·"), [], set()
+    backgrounds, styles = {}, {}
+    theme = getattr(app, "theme", "default")
+    layers = {}
+    if rows is not None:
+        for y in range(plot.visible.top, min(plot.visible.bottom, len(rows))):
+            layers[y] = [(0, rows[y])]
+        for y, x, row in overlays:
+            if plot.visible.top <= y < plot.visible.bottom:
+                layers.setdefault(y, []).append((x, row))
+
+    def style_at(y, x):
+        if y not in backgrounds:
+            from .layout import vlen
+            from .palette import cell_style, resolve
+            spans = []
+            for offset, row in layers.get(y, ()):
+                for text, style in row:
+                    end = offset + vlen(text)
+                    if end > plot.visible.left and offset < plot.visible.right:
+                        if style not in styles:
+                            resolved = resolve(cell_style(style, theme), theme)
+                            background = resolved.foreground if "rev" in resolved.flags else resolved.background
+                            styles[style] = (CROSSHAIR_STYLE + "+bg-raw:#" +
+                                             "".join(f"{part:02x}" for part in background)
+                                             if background is not None else CROSSHAIR_STYLE)
+                        if spans and spans[-1][1] == offset and spans[-1][2] == styles[style]:
+                            spans[-1] = (spans[-1][0], end, styles[style])
+                        else:
+                            spans.append((offset, end, styles[style]))
+                    offset = end
+            backgrounds[y] = spans
+        return next((style for left, right, style in reversed(backgrounds[y]) if left <= x < right), CROSSHAIR_STYLE)
+
     def put(y, x, char=dot):
         if plot.visible.contains(y, x) and (y, x) not in seen and len(output) < MAX_OVERLAY_CELLS:
             seen.add((y, x))
-            output.append((y, x, [(char, CROSSHAIR_STYLE)]))
+            output.append((y, x, [(char, style_at(y, x))]))
     if capture:
         sy, sx = capture["start"]
         cy, cx = capture["current"]
@@ -503,25 +561,24 @@ def feedback(app, *, ascii_=None):
         left, right = sorted((sx, cx))
         top, bottom = sorted((sy, cy))
         for x in range(left, right + 1):
-            if (x - left) % 2 == 0:
-                put(top, x)
-                put(bottom, x)
+            put(top, x)
+            put(bottom, x)
         for y in range(top, bottom + 1):
-            if (y - top) % 2 == 0:
-                put(y, left)
-                put(y, right)
+            put(y, left)
+            put(y, right)
         # Corners are explicit plus signs even when a dotted edge overlaps.
         corners = {(top, left), (top, right), (bottom, left), (bottom, right)}
         output = [item for item in output if item[:2] not in corners]
         for y, x in sorted(corners):
-            output.append((y, x, [("+", CROSSHAIR_STYLE)]))
+            seen.discard((y, x))
+            put(y, x, "+")
     elif pointer:
         y, x = pointer
         for column in range(plot.visible.left, plot.visible.right):
-            if (column - x) % 2 == 0 and column != x:
+            if column != x:
                 put(y, column)
         for row in range(plot.visible.top, plot.visible.bottom):
-            if (row - y) % 2 == 0 and row != y:
+            if row != y:
                 put(row, x)
         put(y, x, "+")
     return output

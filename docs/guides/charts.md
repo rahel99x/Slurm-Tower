@@ -39,8 +39,10 @@ When a slider or directional button focus owns the keys, its controls take prior
 ## Point at a metric graph
 
 Move the pointer inside a visible metric plot with recorded data.
-Tower draws a cyan dotted crosshair with `+` at the pointer.
+Tower draws a thin cyan dotted crosshair with `+` at the pointer.
 Unicode uses `·` for the dots; ASCII uses `.`.
+Every cell along the guide can contain a dot.
+The guide preserves the graph's background and has no black outline.
 The crosshair stays inside the measured plot, outside its labels and controls.
 It marks the pointer's coordinates and does not turn a missing sample into a measurement.
 
@@ -63,6 +65,7 @@ Each metric has its own setting. A curve and its filled companion share one sett
 **Expected result:** Live displays the interval from the dashboard's current time minus the chosen duration to its current time.
 The slider uses logarithmic steps between `5s` and `1ms`.
 Subsecond axes show fractional seconds in their timestamp labels.
+Selected time intervals use relative offsets with adaptive `s`, `ms`, or `us` units and an exact start-time anchor.
 Labels use available terminal space and do not imply a finer source cadence.
 Each metric retains its own duration. A completed job has no active Live control.
 The control row needs at least 24 available terminal columns.
@@ -95,23 +98,38 @@ A precise capture timestamp does not establish equally frequent source measureme
 
 During a rectangular selection, Tower holds that plot's painted time mapping fixed.
 Cancelling the selection resumes Live.
-Committing a valid rectangle turns Live off and keeps the selected bounds.
+Committing a valid time selection turns Live off and keeps its selected interval.
 Enabling Live again clears that metric's completed rectangular zoom.
 
-## Zoom a rectangular area
+<a id="zoom-a-rectangular-area"></a>
+
+## Zoom a time interval
 
 1. Press the left mouse button inside the required metric plot.
-2. Keep the button pressed and move to the opposite corner of the required area.
-3. Check the dotted rectangle.
+2. Keep the button pressed and move horizontally across the required time interval.
+3. Check the thin dotted preview.
 4. Release inside the same plot.
 
-**Expected result:** The graph uses the rectangle's horizontal and vertical bounds.
-The selection must span at least two columns and one row.
-A click without that area leaves the view unchanged.
+**Expected result:** The selected interval fills the graph's horizontal extent.
+Tower calculates the vertical limits from the complete known curve inside that interval.
+Both axes update to the new view.
+The selection must span at least two columns.
+A click without that width leaves the view unchanged.
 The operation changes the display bounds and preserves the original measurements.
 Between adjacent known samples, a zoom can show their connected line even when
 the selected interval contains no original sample. The sample count still
 reports zero for that interval. Missing values and sampling outages remain gaps.
+
+Time labels show offsets from the selected start, using seconds, milliseconds, or microseconds.
+Tower selects the unit from the displayed span and the available space.
+The note below the plot identifies the start timestamp and interval length.
+Very small finite spans can use scientific notation.
+Display precision does not imply a finer measurement cadence.
+
+Hold Shift before pressing the mouse button to select an explicit two-axis rectangle.
+Move to the opposite corner and release inside the same plot.
+This mode requires at least two columns and one row.
+It keeps the selected vertical limits instead of fitting them to the visible data.
 
 Press `u` while pointing at the graph to undo the last rectangular zoom.
 Press `0` while pointing at it to restore its original rectangular view.
@@ -131,7 +149,7 @@ Changing the page, job, source, graph bounds, panel geometry, or terminal size c
 Opening a menu, dialog, or startup preview cancels it too.
 A missing release times out after 15 seconds.
 Cancellation keeps the previous completed zoom.
-On a logarithmic graph, vertical selection uses that graph's logarithmic coordinates.
+On a logarithmic graph, Shift-drag uses that graph's logarithmic coordinates.
 
 <a id="feature-41"></a>
 
@@ -348,6 +366,7 @@ file or process I/O. Use `Glyphs(True)` for ASCII output.
 | `envelope_points(values, width)` | Retain first, minimum, maximum, and last samples in each equally spaced bucket. |
 | `fmt_num(value, unit="")` | Format a compact numeric label. |
 | `time_axis(t0, t1, width, ...)` | Draw timestamp or elapsed-time labels. |
+| `time_selection_note(t0, t1, width, ...)` | Identify the exact selected start timestamp and the displayed span. |
 | `vbar_chart(g, values, width, height, ...)` | Draw a filled area graph with scale labels and optional timestamps. |
 | `hbar_rows(g, items, width, ...)` | Draw horizontal bars with measured values. |
 | `braille_chart(g, values, width, height, ...)` | Draw connected opaque Unicode quadrant strokes or equivalent ASCII strokes. The historical method name remains compatible. |
@@ -387,12 +406,13 @@ Zoom bounds use plotted coordinates; logarithmic vertical bounds remain base-10 
 | `cancel(app)` | Discard an unfinished preview without changing completed zoom. |
 | `handle_mouse(app, y, x, button="left", shift=False)` | Apply plot press, motion, and valid-release controls. |
 | `bounds(app, identity, scale=None)` | Return completed source-specific display bounds. |
+| `autofit(app, identity, scale=None)` | Identify a time-only zoom that requires an observed-data vertical fit. |
 | `undo(app, identity=None)` | Restore the previous rectangular view. |
 | `reset(app, identity=None)` | Remove rectangular zoom for the selected source. |
 | `handle_key(app, key)` | Apply cancellation, undo, and reset controls in plot context. |
 | `command_names()` | Return the interaction command names. |
 | `run_command(app, args)` | Apply `chartzoom undo` or `chartzoom reset`. |
-| `feedback(app, ascii_=None)` | Return the bounded crosshair or rectangle feedback overlay. |
+| `feedback(app, ascii_=None, rows=None, overlays=())` | Return thin dotted feedback with each underlying plot cell's actual background. |
 | `overlay(views, snap, app, width, height)` | Return no full modal overlay; feedback belongs to the current plot. |
 
 ### `tower.metric_live`

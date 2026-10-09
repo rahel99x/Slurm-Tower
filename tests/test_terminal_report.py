@@ -58,7 +58,8 @@ def test_report_clears_only_private_filter_and_renders_every_job_series():
     app.logs.candidates = {'7': (1000, [])}
     app_before = vars(app).copy()
     # Worker primitives retain identity; all mutable presentation data must be isolated.
-    primitives = (app.execution_state["cancel"], app.execution_state["progress"])
+    primitives = (app.execution_state["cancel"], app.execution_state["progress"],
+                  app.history_log_export_state["progress_lock"])
     memo = {id(value): value for value in primitives}
     mutable_before = {key: copy.deepcopy(value, memo.copy()) for key, value in vars(app).items()
                       if isinstance(value, (dict, list, set))}

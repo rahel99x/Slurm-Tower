@@ -265,18 +265,19 @@ def raster_viewport(points, times):
     return points[max(0, first - 1):min(len(points), last + 1)]
 
 
-def _crosshair(rows, width, height, points, selected, times, ascii_):
+def _crosshair(rows, width, height, points, selected, times, ascii_, plot_rect=None):
     """Place a visible guide on the same timestamp buckets as the chart."""
-    plot_width = max(0, min(charts.MAX_COLUMNS, width - 10))
+    top, left, bottom, right = plot_rect or (1, 10, height + 1, width)
+    plot_width = max(0, min(charts.MAX_COLUMNS, right - left))
     if not points or not plot_width or not selected or times[1] <= times[0]:
         return rows
     # Braille is a two-column raster, and its timestamp rounding happens there.
     raster = 1 if ascii_ else 2
     fraction = charts._fraction(selected["t"], *times)
-    x = min(plot_width - 1, round(fraction * (plot_width * raster - 1)) // raster) + 10
+    x = min(plot_width - 1, round(fraction * (plot_width * raster - 1)) // raster) + left
     guide = "|" if ascii_ else "│"
     out = list(rows)
-    for y in range(1, min(len(out), height + 1)):
+    for y in range(top, min(len(out), bottom)):
         before, after, position = [], [], 0
         for text, style in out[y]:
             for ch in text:
@@ -290,19 +291,20 @@ def _crosshair(rows, width, height, points, selected, times, ascii_):
     return out
 
 
-def _highlight_interval(rows, width, height, selected, times, ascii_=False):
+def _highlight_interval(rows, width, height, selected, times, ascii_=False, plot_rect=None):
     """Show the selected source interval without adding or changing a value."""
-    plot_width = max(0, min(charts.MAX_COLUMNS, width - 10))
+    top, axis_left, bottom, axis_right = plot_rect or (1, 10, height + 1, width)
+    plot_width = max(0, min(charts.MAX_COLUMNS, axis_right - axis_left))
     if not selected or not plot_width or times[1] <= times[0]:
         return rows
     first, last = selected[0]["t"], selected[-1]["t"]
     if last < times[0] or first > times[1]:
         return rows
     raster = 1 if ascii_ else 2
-    left = 10 + round(charts._fraction(first, *times) * (plot_width * raster - 1)) // raster
-    right = 10 + round(charts._fraction(last, *times) * (plot_width * raster - 1)) // raster
+    left = axis_left + round(charts._fraction(first, *times) * (plot_width * raster - 1)) // raster
+    right = axis_left + round(charts._fraction(last, *times) * (plot_width * raster - 1)) // raster
     output = list(rows)
-    for y in range(1, min(len(rows), height + 1)):
+    for y in range(top, min(len(rows), bottom)):
         line, position = [], 0
         for value, style in rows[y]:
             for char in value:
@@ -411,9 +413,10 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
     zone = (os.environ.get("TZ"), time.tzname, time.timezone, time.daylight)
     glyphs = (g.ascii, g.spark, g.box, g.dot, g.rule)
     box = chart_interaction.bounds(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
+    auto_fit = chart_interaction.autofit(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
     key = (name, width, height, glyphs, label, unit, (type(precision), precision), color,
            axis.get("mode"), repr(axis.get("low")), repr(axis.get("high")), zone, content,
-           (box["x"], box["y"]) if box else None, live_window)
+           (box["x"], box["y"], auto_fit) if box else None, live_window)
     cache = state.setdefault("chart_card_cache", OrderedDict())
     entry = cache.get(key)
     if entry is not None:
@@ -472,25 +475,31 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
     if len(raster_points) > len(visible):
         low, high = charts._bounds(visible_plotted, low, high)
     plotted, _, _, _ = chart_tools.axis_values([point["value"] for point in raster_points], axis)
+    cadence = _cadence(full)
+    auto_fit = chart_interaction.autofit(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
     if box:
         low, high = box["y"]
+        if auto_fit:
+            low, high = charts.fit_time_bounds(plotted, [point["t"] for point in raster_points],
+                                               times, box["y"], cadence)
     def axis_label(value):
         if axis["mode"] == "log":
             try:
                 value = 10 ** value
             except OverflowError:
                 return ">1e308"
+        if auto_fit and axis["mode"] != "log":
+            return chart_tools.format_axis(value, preference, low, high)
         return chart_tools.format_value(value, preference)
-    cadence = _cadence(full)
+    plot_metadata = metadata if isinstance(metadata, dict) else {}
     rows = charts.braille_chart(g, plotted, width, height, lo=low, hi=high, title=clean(label, g.ascii),
                                sample_times=[p["t"] for p in raster_points], times=times,
                                sample_interval=cadence, color=lambda _: color, axis_formatter=axis_label,
-                               metadata=metadata)
-    if isinstance(metadata, dict):
-        metadata["scale"] = "log" if axis.get("mode") == "log" else "linear"
-        metadata["key"] = zoom_key
+                               metadata=plot_metadata, fitted=auto_fit, time_units=bool(box))
+    plot_metadata["scale"] = "log" if axis.get("mode") == "log" else "linear"
+    plot_metadata["key"] = zoom_key
     selected_points = chart_tools.interval(full, state, name) if interactive else []
-    rows = _highlight_interval(rows, width, height, selected_points, times, g.ascii)
+    rows = _highlight_interval(rows, width, height, selected_points, times, g.ascii, plot_metadata["plot_rect"])
     # Summary and exact inspection always describe the original measurements,
     # including values undefined on a logarithmic axis.
     if rows:
@@ -502,7 +511,7 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
         state["cursor"] = max(0, min(len(visible) - 1, int(state.get("cursor", 0))))
         selected = visible[state["cursor"]]
         state["cursor_t"] = selected["t"]
-        rows = _crosshair(rows, width, height, visible, selected, times, g.ascii)
+        rows = _crosshair(rows, width, height, visible, selected, times, g.ascii, plot_metadata["plot_rect"])
         step = f"  step {selected['step']}" if selected.get("step") is not None else ""
         exact = repr(selected["value"]) if selected["value"] is not None else "unavailable"
         rows.append([(clean(f" {_time(selected['t'])}  t={selected['t']!r}  value {exact}{step}", g.ascii), "yellow+bold")])
@@ -511,7 +520,7 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
         from .metric_live import format_delta
         description += f" | Live {format_delta(live_window[1] - live_window[0])}; no gap filling"
     if box:
-        description += f" | zoomed Y [{axis_label(low)}, {axis_label(high)}]"
+        description += f" | zoomed Y [{axis_label(low)}, {axis_label(high)}]" + (" fits observed interval" if auto_fit else "")
     if axis.get("low") is not None:
         description += f" [{axis['low']!r}, {axis['high']!r}]"
         clipped = sum(value is not None and (value < axis["low"] or value > axis["high"]) for value in values)
@@ -1198,21 +1207,28 @@ def _job_diff_rows(g, snap, app, width):
             plotted, _, _, _ = chart_tools.axis_values([point["value"] for point in raster_points], axis)
             if state["shared_scale"]:
                 lo, hi = shared_lo, shared_hi
+            auto_fit = chart_interaction.autofit(app, identity, scale=scale)
             if box:
                 lo, hi = box["y"]
+                if auto_fit:
+                    lo, hi = charts.fit_time_bounds(plotted, [point["t"] for point in raster_points],
+                                                    curve_times, box["y"], _cadence(points))
             def axis_label(value):
                 if axis["mode"] == "log":
                     try:
                         value = 10 ** value
                     except OverflowError:
                         return ">1e308"
+                if auto_fit and axis["mode"] != "log":
+                    return chart_tools.format_axis(value, preference, lo, hi)
                 return chart_tools.format_value(value, preference)
             metadata = {}
             curve = charts.braille_chart(g, plotted, width, 3, lo=lo, hi=hi,
                                             title=jid, sample_times=[p["t"] for p in raster_points],
                                             times=curve_times, sample_interval=_cadence(points),
                                             elapsed=True, axis_formatter=axis_label,
-                                            color=lambda _, i=i: COLORS[i % len(COLORS)], metadata=metadata)
+                                            color=lambda _, i=i: COLORS[i % len(COLORS)], metadata=metadata,
+                                            fitted=auto_fit, time_units=bool(box))
             chart_interaction.record(app, identity, metadata, row=len(rows), scale=scale, layer=1)
             if curve:
                 curve[0] = charts._header(g, values, width, jid, unit, "   ")
@@ -1268,7 +1284,8 @@ def overlay(views, snap, app, width, height):
         active_preset = state.get("preset", "all" if state.get("zoom", 1) == 1 and not state.get("window") else "custom")
         display_box = chart_interaction.bounds(app, zoom_key, scale=plot_metadata.get("scale", "linear"))
         if display_box:
-            rows.append(row(f" Box zoom t={display_box['x'][0]:.9g} to {display_box['x'][1]:.9g} | u: undo | 0: reset", "cyan"))
+            fit = chart_interaction.autofit(app, zoom_key, scale=plot_metadata.get("scale", "linear"))
+            rows.append(row(f" {'Time' if fit else 'Box'} zoom t={display_box['x'][0]!r} to {display_box['x'][1]!r} | u: undo | 0: reset", "cyan"))
         else:
             rows.append(row(f" Zoom x{state.get('zoom', 1):g} | pan {state.get('pan', 0):.0%}{window}" +
                             (" | [custom]" if active_preset == "custom" else ""), "cyan"))

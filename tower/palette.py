@@ -261,6 +261,16 @@ def resolve(style: str, theme: str = "default") -> Style:
             if token in ("red", "yellow", "magenta"):
                 flags.append("bold")
             continue
+        if token.startswith("bg-raw:"):
+            # Cosmetic overlays inherit an already resolved painted RGB. Do
+            # not recolour it a second time through theme aliases or CB maps.
+            # This internal token remains a strictly validated six-digit RGB.
+            try:
+                background = rgb(token[7:])
+                colored = True
+            except ValueError:
+                pass
+            continue
         if token.startswith("gradient:"):
             try:
                 _, start, end, fraction = token.split(":")

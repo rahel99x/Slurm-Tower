@@ -364,6 +364,14 @@ to open a file. Esc returns from the file to its list, then closes the list;
 select another entry without changing jobs. Lowercase `o` remains quick file
 cycling, and `e` switches scheduler stdout/stderr.
 
+History also exports complete log bundles for marked or selected job IDs.
+Drag through History rows, then right-click inside the list to select clipboard or directory export.
+The background task combines the exact scheduler outputs with every declared source in the matching run inventory.
+Keep the inventory's `job_id`, `run_id`, and `attempt` correct so that another job or execution attempt cannot supply its logs.
+Register all worker logs and external locations explicitly.
+A declared missing file appears in the per-job alert; an undeclared file cannot be identified as an expected missing output.
+See [History log exports](guides/log-view.md#export-logs-for-history-jobs) for the destination picker, raw-file manifest, and clipboard limits.
+
 Inside a file, arrows move the logical line cursor before `v` starts selection.
 Arrows/page keys/Home/End then extend the selected source-line range across
 pages. The right edge shows `›` for the cursor and orange `◆` for selected lines

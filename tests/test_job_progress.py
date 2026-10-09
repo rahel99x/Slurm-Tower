@@ -40,8 +40,8 @@ def test_canonical_report_has_a_distinct_reported_marker_and_six_cells(dashboard
     observation = P.observation(dashboard.store.jobs[0], source(dashboard))
     assert observation.fraction == .42 and observation.basis == "reported"
     assert observation.unit == "steps" and observation.style == "cyan"
-    assert observation.format(True) == "p 42% "
-    assert observation.text == "▸42% ▍" and L.vlen(observation.text) == 6
+    assert observation.format(True) == "p =>--"
+    assert observation.text == "▸ █▋░░" and L.vlen(observation.text) == 6
 
 
 @pytest.mark.parametrize("latest,expected", [({"progress_fraction": .625}, .625),
@@ -73,8 +73,8 @@ def test_canonical_progress_is_authoritative_over_optional_metric_names(dashboar
 def test_invalid_reported_bounds_do_not_create_progress(dashboard, progress):
     cache(dashboard, {"status": "ok", "progress": progress})
     observation = P.observation(dashboard.store.jobs[0], source(dashboard))
-    assert observation.basis == "time" and observation.format() == "◷42% ▍"
-    assert observation.format(True) == "t 42% "
+    assert observation.basis == "time" and observation.format() == "◷ █▋░░"
+    assert observation.format(True) == "t =>--"
 
 
 @pytest.mark.parametrize("latest", [{"progress_fraction": 1.01}, {"progress_fraction": -.01},
@@ -97,7 +97,7 @@ def test_all_progress_cells_are_exactly_six_terminal_columns(fraction, ascii_, b
     assert cell.isascii() if ascii_ else True
 
 
-@pytest.mark.parametrize("basis,expected", [("pending", " wait "), ("unknown", "   -- ")])
+@pytest.mark.parametrize("basis,expected", [("pending", "⧗ wait"), ("unknown", "   -- ")])
 def test_unknown_and_pending_have_no_sortable_fraction(basis, expected):
     observation = P.Observation(None, basis)
     assert observation.fraction is None and observation.text == expected
@@ -108,13 +108,13 @@ def test_time_use_is_not_called_completion_and_can_exceed_one_hundred_percent():
     job = Job("900", "exact", "cpu", "RUNNING", elapsed="01:12:00", limit="01:00:00")
     observation = P.observation(job, {})
     assert observation.basis == "time" and observation.fraction == 1.2
-    assert observation.text == "◷120%█" and observation.style == "red"
-    assert observation.format(True) == "t120% "
+    assert observation.text == "◷ ████" and observation.style == "red"
+    assert observation.format(True) == "t ===="
     assert observation.source == "elapsed/requested wall-time"
 
 
 @pytest.mark.parametrize("basis,marker", [("time", "◷"), ("reported", "▸")])
-@pytest.mark.parametrize("fraction,suffix", [(0, "0%  ░"), (.42, "42% ▍"), (1, "100%█")])
+@pytest.mark.parametrize("fraction,suffix", [(0, " ░░░░"), (.42, " █▋░░"), (1, " ████")])
 def test_single_cell_markers_keep_allocation_time_distinct_from_completion(basis, marker, fraction, suffix):
     assert L.vlen(marker) == 1
     assert P.Observation(fraction, basis).text == marker + suffix
@@ -217,7 +217,7 @@ def test_missing_and_invalid_limits_are_not_application_progress(limit):
 
 
 def test_pending_without_reported_progress_is_waiting_not_zero_done(dashboard):
-    assert P.observation(dashboard.store.jobs[1], source(dashboard)).text == " wait "
+    assert P.observation(dashboard.store.jobs[1], source(dashboard)).text == "⧗ wait"
 
 
 @pytest.mark.parametrize("key,data", [((0, "experiment", "901"), {"job_id": "900", "progress": {"completed": 1, "total": 2}}),

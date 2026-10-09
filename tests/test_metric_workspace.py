@@ -63,7 +63,7 @@ def test_docked_graph_drag_zooms_exact_source_and_remains_inside_data(dashboard,
     rows, hits = draw(dashboard, 200, 62)
     plot = next(plot for plot in C.initialize(app)["plots"] if plot.key[0] == "resource-series")
     y, x = plot.visible.top + 1, plot.visible.left + 4
-    app.click(y, x, hits, button="press")
+    app.click(y, x, hits, button="press", shift=True)
     assert C.active(app)
     app.click(y + 3, x + 12, hits, button="drag")
     app.click(y + 3, x + 12, hits, button="release")

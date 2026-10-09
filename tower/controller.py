@@ -328,7 +328,8 @@ class App:
                 and self.cursor["history"] == previous.index(self.selected_id)):
             self.cursor["history"] = ids.index(self.selected_id)
         self.last_history_ids, self.last_history_options = ids, options
-        self.selected_id = ids[self.clamp_cursor("history", len(ids))] if ids else None
+        from .job_selection import selected
+        self.selected_id = selected(self, "history", ids[self.clamp_cursor("history", len(ids))] if ids else None)
         return fin
 
     def recent_jobs(self, snap=None):
@@ -357,7 +358,8 @@ class App:
                     ids = self.visible_ids + self.recent_ids
                 if selected in ids:
                     self.cursor["jobs"] = ids.index(selected)
-                self.selected_id = ids[self.clamp_cursor("jobs", len(ids))] if ids else None
+                from .job_selection import selected as selection_value
+                self.selected_id = selection_value(self, "jobs", ids[self.clamp_cursor("jobs", len(ids))] if ids else None)
                 self.last_jobs_ids, self.jobs_selection_options = ids, self.jobs_options()
             elif active == "history":
                 ids = [record.id for record in self.history_jobs(snap)]
@@ -546,6 +548,9 @@ class App:
         if self.marks:
             return sorted(self.marks)
         if self.tab == "history":
+            from .job_selection import selected
+            if selected(self, "history", True) is None:
+                return []
             ids = [f.id for f in self.history_jobs()]
             return [ids[self.clamp_cursor("history", len(ids))]] if ids else []
         return [self.selected_id] if self.selected_id else []
@@ -574,7 +579,8 @@ class App:
                 self.recent_ids = [f.id for f in self.recent_jobs(snap)]
                 self.jobs_selection_options = self.jobs_options()
             ids = self.visible_ids + self.recent_ids
-            self.selected_id = ids[self.clamp_cursor("jobs", len(ids))] if ids else None
+            from .job_selection import selected
+            self.selected_id = selected(self, "jobs", ids[self.clamp_cursor("jobs", len(ids))] if ids else None)
         elif self.tab == "history":
             self.sync_history_selection()
         elif self.tab == "log" and self.log_job:
@@ -592,12 +598,20 @@ class App:
 
     def handle(self, key: str) -> None:
         """``key`` is a name: a-z A-Z 0-9 punctuation, or up down pgup pgdn home end tab btab enter esc space backspace."""
+        from .history_log_export import active as export_active, handle_key as export_key
+        if export_active(self):
+            export_key(self, key)
+            return
         binding_test = self.mode == "bindings_editor" and self.navigation_tools_state.get("test")
         if key == "ctrl-c" and self.mode != "terminal_probe" and not binding_test and key not in self.keymap:
             self.quit = True
             return
         from .startup import handle_key as startup_key
         startup_key(self, key)
+        if (self.mode == "main" and self.tab in ("jobs", "history") and
+                self.keymap.get(key) in ("up", "down", "page_up", "page_down", "home", "end")):
+            from .job_selection import resume
+            resume(self)
         self.sync_selection()
         toolbar_state = getattr(self, "toolbar_state", {})
         if key == "f10" or toolbar_state.get("menu") is not None or toolbar_state.get("panel") or toolbar_state.get("focus") == "rate":
@@ -969,6 +983,9 @@ class App:
             self.handle(key)
 
     def move(self, action: str):
+        from .job_selection import resume
+        if self.tab in ("jobs", "history"):
+            resume(self)
         self.click_row = None
         scoped = getattr(self, "history_browser_state", {}).get("views", {}).get("deps", {})
         if self.tab == "deps" and scoped.get("explicit"):
@@ -1045,7 +1062,7 @@ class App:
         record(self, name)
         if name == "analytics" and self.tab == "jobs" and self.selected_id:
             self.analytics_job = self.selected_id
-        elif name == "analytics" and self.tab == "history":
+        elif name == "analytics" and self.tab == "history" and self.selected_id:
             ids = [f.id for f in self.history_jobs()]
             if ids:
                 self.analytics_job = ids[self.clamp_cursor("history", len(ids))]
@@ -1728,9 +1745,18 @@ class App:
         return f"no finished run of '{what}' in the window and no such running job"
 
     def click(self, y: int, x: int, hits: Sequence, button: str = "left", shift: bool = False) -> None:
-        """A mouse click: on the tab bar switches tabs, on a row selects it; a right or shift click extends the
-        line selection from the last click to this row."""
+        """Select rows and controls, route History exports, and consume Jobs right-click clearing.
+
+        Shift-click extends text selection; other pages retain right-click text selection.
+        """
         self.last_hits = list(hits)
+        from .history_log_export import active as export_active, handle_mouse as export_mouse
+        if export_active(self):
+            export_mouse(self, y, x, button=button, shift=shift)
+            return
+        from .job_selection import context_click
+        if context_click(self, y, x, button=button):
+            return
         from .startup import handle_mouse as startup_mouse
         startup_mouse(self, y, x, button=button, shift=shift)
         from .interaction import handle_mouse as pointer_mouse
@@ -1808,9 +1834,13 @@ class App:
             if hy == y:
                 if kind == "job":
                     if key in self.visible_ids:
+                        from .job_selection import resume
+                        resume(self, "jobs")
                         self.cursor["jobs"] = self.visible_ids.index(key)
                 elif kind == "recent":
                     if key in self.recent_ids:
+                        from .job_selection import resume
+                        resume(self, "jobs")
                         self.cursor["jobs"] = len(self.visible_ids) + self.recent_ids.index(key)
                 elif kind == "log_file":
                     ids = [entry["id"] for entry in self.log_entries()]
@@ -1832,6 +1862,8 @@ class App:
                 elif kind == "fin":
                     ids = [f.id for f in self.history_jobs()]
                     if key in ids:
+                        from .job_selection import resume
+                        resume(self, "history")
                         self.cursor["history"] = ids.index(key)
                 elif kind == "source":
                     names = self.ordered_source_ids()

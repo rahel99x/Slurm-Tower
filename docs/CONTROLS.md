@@ -294,6 +294,9 @@ Drag through visible job rows to mark a range in the current table order.
 Hold Shift to add that range to existing marks.
 Press Esc during capture to cancel the drag and restore earlier marks.
 Release the mouse button to complete the range before opening a job action.
+Right-click anywhere on Jobs to clear the selected job and marks without activating the surface beneath the pointer.
+In History, right-click inside the job list to open the selected jobs' log-export menu.
+Right-click outside that list to clear the selection without activating another surface.
 Inspect the complete target list in the action review.
 Use Tab to choose Cancel or Confirm.
 Press Enter to activate the selected review control.
@@ -307,8 +310,10 @@ Use `:sortby [TABLE] clear` to remove every rule in that table.
 See [Tables](guides/tables.md) for sort editing, column controls, filters, marks, and drill-down.
 The six-cell Progress column precedes JOBID and supports `:sortby jobs progress asc\|desc\|off`.
 The marking and fold gutter remains separate to its left.
-`▸` identifies a published application completion fraction; `◷` identifies time-limit usage.
-ASCII uses `p` and `t` for those same states.
+The field contains one narrow symbol, a space, and four fractional block cells.
+`▸` identifies a published application completion fraction; an animated clock identifies time-limit usage.
+Pending jobs show an animated narrow hourglass and `wait`.
+ASCII uses static `p`, `t`, and `w` symbols.
 See [Job progress](guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for exact source fields and unknown states.
 
 ### Jobs Details buttons
@@ -369,6 +374,30 @@ Its choices target the exact available active, recent, or completed job.
 Use the panel's divider to change its share of the page.
 Each page retains its own dock preference when normal UI state is enabled.
 See [Job history panels](guides/adaptive-workspaces.md#keep-job-history-beside-the-data) for compact layouts and source identity.
+
+### History log exports
+
+| Control | Function |
+| --- | --- |
+| Press, drag, and release through History rows | Mark exact jobs in the current table order |
+| Right-click inside the History job list | Open the clipboard, directory, and Cancel menu for marked or selected jobs |
+| `:historylogs` | Open that export menu without a mouse |
+| `:historylogs clipboard` | Discover and copy complete selected jobs' log outputs to the clipboard |
+| `:historylogs directory` | Open the confined project-directory picker |
+| `:historylogs cancel` | Cancel the open log-export procedure |
+| Picker Up / Down, page keys, Home / End | Select a listed directory or control |
+| Picker Tab / Shift-Tab, then Enter | Select and activate a picker control |
+| Picker Backspace / Left, or **Parent folder** | Return toward the configured projects root |
+| **New folder...**, type a name, Enter | Create one child folder in the current directory |
+| **Open named folder...**, type a name, Enter | Open an existing child by its exact name, including one omitted by a listing limit |
+| **Save here** | Export all discovered complete raw sources and their manifest to a unique bundle |
+| **Cancel** / Esc | Cancel the dialog or active export; Esc in the folder-name prompt returns to the picker |
+
+The picker root is `exports.projects_root`, then the registered native project root, then `~/projects`.
+Missing expected sources produce a per-job alert before publication.
+**Export available logs** explicitly permits the listed omissions and records them in the manifest.
+Clipboard transport limits preserve the raw bundle and produce a stated result.
+See [History log exports](guides/log-view.md#export-logs-for-history-jobs) for source scope, directory procedures, and limits.
 
 ### Table commands
 
@@ -642,8 +671,10 @@ Use `e` to open observed events.
 Use `s` to change shared-scale mode.
 Click a visible time-preset or axis control for the corresponding chart operation.
 Move the pointer inside a metric plot for its cyan dotted crosshair.
-Press, drag, and release inside the same plot to zoom both axes to a rectangle.
-The rectangle must span at least two columns and one row.
+Press, drag, and release inside the same plot to select a time interval and fit its visible curve to both axes.
+The interval must span at least two columns.
+Hold Shift before pressing to retain an explicit two-axis rectangle instead; this also requires at least one row.
+Selected time intervals show relative offsets in adaptive `s`, `ms`, or `us` units, with a start timestamp and span note.
 Press `u` or `0` while pointing at that graph to undo or reset rectangular zoom.
 Esc before release discards the preview; an outside release or changed job/layout also cancels it.
 Menus, dialogs, and startup previews prevent capture of hidden graphs.

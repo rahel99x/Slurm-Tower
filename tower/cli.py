@@ -48,6 +48,8 @@ class Session:
         self.backend, self.files, self.api = backend, files, api
 
     def close(self):
+        from .history_log_export import cancel as cancel_log_export
+        cancel_log_export(self.app, close=True)
         from .execution_ui import close
         close(self.app)
         self.app.save()

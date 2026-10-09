@@ -61,12 +61,12 @@ def test_progress_stays_six_cells_when_sorted_and_updates_from_published_data(da
     header = next(value for _, kind, value in hits if kind == "sort_header" and value[:2] == ("jobs", "progress"))
     assert header[3] - header[2] == 6
     data = {row["id"]: row for row in views.job_rows(snap, app)}
-    assert "30%" in data["1"]["progress"] and data["1"]["_progress_value"] == .3
+    assert data["1"]["progress"] == ("p =>--" if ascii_ else "▸ █▎░░") and data["1"]["_progress_value"] == .3
     assert all(L.vlen(row["progress"]) == 6 for row in data.values())
     assert data["2"]["progress"].startswith("t" if ascii_ else "◷")
     snap["progress"]["1"]["progress"]["completed"] = 9
     updated = {row["id"]: row for row in views.job_rows(snap, app)}
-    assert "90%" in updated["1"]["progress"] and updated["1"]["_progress_value"] == .9
+    assert updated["1"]["progress"] == ("p ===>" if ascii_ else "▸ ███▋") and updated["1"]["_progress_value"] == .9
     assert updated["2"]["progress"] == data["2"]["progress"]
 
 

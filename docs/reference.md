@@ -77,9 +77,13 @@ Charts use collected measurements. Unavailable metrics and gaps remain unknown,
 and time-series detail grows as samples arrive. ASCII `--report` exports remain
 portable plain text regardless of the live dashboard's glyph preference.
 
-Visible metric plots have a cyan dotted pointer crosshair and rectangular XY zoom.
-Press and drag inside the plot, then release inside it, to apply both axis bounds.
-The rectangle must span two columns and one row; labels and buttons are outside capture.
+Visible metric plots have a thin cyan dotted pointer crosshair with the graph's background.
+Press and drag inside the plot, then release inside it, to select a time interval.
+The time selection must span two columns; labels and buttons are outside capture.
+Tower fits its vertical scale to the known curve in that interval.
+Hold Shift before pressing to select explicit horizontal and vertical bounds instead.
+That rectangle must also span one row.
+Selected intervals use relative `s`, `ms`, or `us` labels with a start-time anchor.
 Use `u` or `0` while pointing at the graph to undo or reset, or use
 `:chartzoom undo|reset` for the last selected or zoomed graph.
 The inspector provides `:chart undo|reset` and corresponding buttons.
@@ -330,7 +334,7 @@ without motion or pulses. One-frame reports are static as well.
 | `s` `S` | resume a single-column sort: cycle the tab's legacy sort keys (jobs: state, name, id, time, priority; history: end, name, state, elapsed, cpu eff, mem eff); reverse |
 | `/` `Esc` | filter by name, id, partition or info; clear the filter (or the marks) |
 | `n` `b` `r` `x` | GPU sampling on/off; bell on start on/off; sample every source now; Sources tab: enable / disable the selected source |
-| `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys extend a selection; right-click or shift-click extends to a row. |
+| `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys or Shift-click extend a selection. In Logs, right-click also extends it. Jobs and History use the right-click actions below. |
 | `Y` | Logs: copy the entire exact selected file, independent of displayed lines, search, scrolling, or wrapping |
 | `I` | structured job inspector for the exact active, recent, or historical job; Tab changes sections, `l` opens logs, `e` opens Evidence |
 | `Ctrl-W` / F6, `z` | focus Main/Details; maximize the focused panel (`:maximize` supplies this action on Logs) |
@@ -345,7 +349,13 @@ without motion or pulses. One-frame reports are static as well.
 
 The mouse works too: a click selects a row or switches tabs, a double-click opens the details (Jobs) or the series
 (History), or opens the selected file in the Logs browser. The wheel scrolls,
-and a right-click or shift-click extends a line selection from the last click.
+and Shift-click extends a line selection from the last click.
+Right-click anywhere on Jobs clears selected and marked jobs without activating the surface beneath it.
+In History, drag through rows to mark a range; right-click inside the list for the clipboard or directory log-export menu.
+Right-click outside the History list clears its job selection.
+In Logs, right-click retains its original line-selection function.
+Use `:historylogs [clipboard|directory|cancel]` for History export commands.
+See [Export History logs](guides/log-view.md#export-logs-for-history-jobs) for full-source copying, expected missing-file alerts, folder creation, and receipts.
 Drag through visible job rows to mark a range in the current table order.
 Shift adds the dragged range to existing marks.
 Esc during capture restores the earlier marks.
@@ -389,10 +399,13 @@ See [Launch deduction](guides/adaptive-workspaces.md#fold-related-launches) for 
 
 Jobs has a six-cell progress field before JOBID and the sort identifier `progress`.
 Its marking and fold gutter remains separate to the left.
-The `▸` marker, percentage, and right-side fractional block use the exact job's published application progress.
+The `▸` marker and four-cell fractional block bar use the exact job's published application progress.
 ASCII uses a `p` prefix.
 Without application progress, `◷` in Unicode or `t` in ASCII distinguishes elapsed/time-limit usage from completed work.
-Pending jobs show `wait`; unavailable progress and limits show `--`.
+The six-cell field contains a narrow symbol, a space, and four block-bar cells.
+Running time symbols animate; pending jobs show an animated hourglass and `wait`.
+ASCII uses static `p`, `t`, and `w` labels.
+Unavailable progress and limits show `--`.
 Sources include the standard metric-stream `progress.completed`/`progress.total`, or valid `progress_fraction`, `progress_pct`, and `completed_steps`/`total_steps` numeric metrics.
 These values update from job-bound, current published results without renderer I/O.
 See [Progress column](guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for interpretation and project publication.
@@ -660,7 +673,7 @@ See [Update rate](guides/live-workbench.md#set-the-update-rate) for controls and
 
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
 commented defaults without replacing an existing config (JSON on Python 3.10, TOML on 3.11+).  Sections: top level (`user`, `account`, `ascii`, `color`, `history_days`, `log_lines`,
-`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`, `startup_animation`, `smooth_scrolling`), `[research]`, `[logs]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
+`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`, `startup_animation`, `smooth_scrolling`), `[research]`, `[logs]`, `[exports]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
 (`command` runs through the shell on the configured `events` with `TOWER_EVENT`, `TOWER_JOBID`, `TOWER_JOBNAME`
 and `TOWER_TEXT` in the environment: a Slack webhook, an e-mail, anything), `[keys]` (action = list of key names).
 
@@ -673,6 +686,13 @@ their source-machine meaning after copying a run. See the
 [project log-index standard](PROJECT_STANDARD.md#log-locations-logsjson) and
 [schema](schemas/logs.v1.schema.json). Tower caches bounded catalog work on its
 shared background worker and does not recursively scan directories.
+
+Set `exports.projects_root` to the existing local directory used by the History log destination picker.
+For example, use `"exports": {"projects_root": "/home/alex/projects"}` in JSON.
+An empty value uses the registered native project root, then `~/projects`.
+The picker confines traversal and folder creation to this root.
+Sources can reside at other registered locations; exported files are saved on the machine running Tower.
+See [History log exports](guides/log-view.md#export-logs-for-history-jobs) for controls, missing-output alerts, and bundle format.
 
 State lives in `~/.local/state/tower/`: `ui.json` (tab, sort, log lines, toggles) and `events.jsonl`, the append-only
 log of every transition and every action (an audit trail: what was cancelled, held or requeued, when, and whether
@@ -783,12 +803,14 @@ tower/
   controller.py  the application state and every key, mouse click and confirmation; no curses, so tests drive it;
                  the line selection, the command palette, exports and the clipboard
   charts.py      connected quadrant curves, eight-level area bars, axes, histograms, heatmaps, and Gantt rows
-  chart_interaction.py final plot geometry, cyan crosshairs, exact-source XY zoom, cancellation, undo, and reset
+  chart_interaction.py final plot geometry, thin cyan crosshairs, exact-source time or XY zoom, cancellation, undo, and reset
   metric_live.py per-running-metric logarithmic display windows and captured mouse or keyboard sliders
   analytics_document.py bounded native Job Series document scrolling and visible metric cards
   logs.py        bounded incremental log buffers, logical keyboard cursors, raw line ranges, and selection
   log_catalog.py bounded grouped file discovery and explicit tower.logs/v1 manifests on the selected backend
   log_copy.py    background exact-byte full-file snapshots and selected ranges, private exports, clipboard handoff
+  log_bundle.py  exact-job multi-source full-file bundles, source hashes, confined destination listings and folder creation
+  history_log_export.py asynchronous History export menus, directory picker, missing-source alerts and receipts
   research.py    the shared bounded worker for research inspections, log catalogs, and full-log copies
   clipboard.py   complete OSC 52 requests, streamed local clipboard tools, and private atomic text fallbacks
   export.py      text / CSV / JSON exports

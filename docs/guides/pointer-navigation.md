@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Live workbench](live-workbench.md)
 
-Use this guide for Tower 4.5.0's mouse feedback, button navigation, scrolling, and startup display.
+Use this guide for Tower's mouse feedback, button navigation, scrolling, and startup display.
 All controls remain inside the terminal.
 
 ## Check terminal mouse support
@@ -77,13 +77,16 @@ The existing `:timeline seek EVENT_NUMBER` command remains the replay-seeking op
 ## Point at and zoom a graph
 
 Move the pointer inside a metric plot to show its cyan dotted crosshair.
-Press the left button, drag to the opposite corner of an area, and release inside the plot to zoom both axes.
-The dotted rectangle previews the selected area.
+Press the left button, drag across a time interval, and release inside the plot.
+Tower fits the selected interval across the plot and calculates the vertical scale from its visible curve.
+The thin dotted guide preserves the graph background.
+Hold Shift before pressing to select explicit horizontal and vertical bounds instead.
+Time labels use `s`, `ms`, or `us` as required and identify the selected start timestamp.
 Use `u` or `0` while pointing at the same graph to undo or reset rectangular zoom.
 Esc before release discards the preview.
 An outside release or changed job, page, plot bounds, layout, menu, or terminal size also cancels it.
 The operation changes display bounds and preserves measured values.
-See [Graph interaction](charts.md#zoom-a-rectangular-area) for keyboard commands, source scope, logarithmic axes, and limits.
+See [Graph interaction](charts.md#zoom-a-time-interval) for keyboard commands, source scope, logarithmic axes, and limits.
 
 ## Adjust the update slider by dragging
 
@@ -154,6 +157,15 @@ Supported group actions use the existing marked IDs and their normal review.
 Range dragging is available for job rows in Jobs, Recents, History, Group, and Dependencies.
 The terminal must report mouse press, movement, and release for a drag.
 Use Space to mark individual jobs when those events are unavailable.
+
+Right-click anywhere on Jobs to clear the selected job and all marks.
+The click does not activate a page label, button, link, or other control beneath it.
+The cleared state remains until you select a row or move with a row-navigation key.
+
+In History, drag through visible job rows to mark a range.
+Right-click inside its job list to open the log-export menu for the marked jobs, or for the selected job when there are no marks.
+Right-click outside that list to clear the selection without activating another control.
+See [Export History logs](log-view.md#export-logs-for-history-jobs) for clipboard and directory procedures.
 
 ## Scroll without delayed input
 

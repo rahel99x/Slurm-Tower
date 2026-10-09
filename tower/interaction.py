@@ -406,6 +406,10 @@ def _toolbar_controls(app):
 
 def _modal_controls(app, rows, width, height, spans):
     mode = getattr(app, "mode", "main")
+    from .history_log_export import active, controls
+    if active(app):
+        yield from controls(app)
+        return
     state_names = {"analysis": "analysis_state", "project_runs": "project_state",
                    "project_outputs": "project_state", "project_preview": "project_state",
                    "log_compare": "log_workbench_state", "log_diff": "log_workbench_state",
@@ -735,6 +739,8 @@ def _bind_row(app, control):
         return False
     index = ids.index(control.label) + (len(getattr(app, "visible_ids", ())) if control.group == "recent" else 0)
     changed = getattr(app, "selected_id", None) != control.label or app.cursor.get("jobs") != index
+    from .job_selection import resume
+    resume(app, "jobs")
     app.cursor["jobs"], app.selected_id = index, control.label
     layout = getattr(app, "layout_state", None)
     if layout:

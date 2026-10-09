@@ -1,5 +1,6 @@
 """Native series scrolling exposes every card without rasterizing hidden cards."""
 import copy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -114,6 +115,40 @@ def test_visible_band_raster_budget_and_no_phantom_live_controls(native, monkeyp
     assert all(name.startswith("gpu-trace:3:") for name in calls)
     assert all(plot.key[2].startswith("gpu-trace:3:") for plot in plots)
     assert all(record.key[2].startswith("gpu-trace:3:") for record in M.initialize(app)["records"])
+
+
+@pytest.mark.parametrize("width", [40, 120, 180])
+def test_selected_time_notes_are_counted_for_hidden_bands_and_all_metrics_remain_reachable(native, width):
+    app, _, _ = native
+    seen = {}
+    _, plots = draw(native, width)
+    original_count = D.initialize(app)["frame"]["count"]
+    while True:
+        seen.update({item.key[2]: item for item in plots})
+        before = D.initialize(app)["top"]
+        app.handle("pgdn")
+        if D.initialize(app)["top"] == before:
+            break
+        _, plots = draw(native, width)
+    assert set(seen) == expected()
+    for item in seen.values():
+        C._apply(app, replace(item), {"x": (1., 4.), "y": item.y_bounds, "fit_y": True})
+    app.run_command("series-scroll home")
+    _, plots = draw(native, width)
+    new_count = D.initialize(app)["frame"]["count"]
+    assert new_count == original_count + (9 if width >= 140 else 18)
+    selected_seen = set()
+    while True:
+        selected_seen.update(item.key[2] for item in plots)
+        assert all(item.x_bounds == (1., 4.) for item in plots)
+        before = D.initialize(app)["top"]
+        app.handle("pgdn")
+        if D.initialize(app)["top"] == before:
+            break
+        _, plots = draw(native, width)
+    assert selected_seen == expected()
+    frame = D.initialize(app)["frame"]
+    assert D.initialize(app)["top"] == frame["count"] - frame["page"]
 
 
 def test_native_ordinary_arrow_home_end_keys_keep_job_navigation(native):

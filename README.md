@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.5.0 |
+| Release | Tower 4.6.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -333,8 +333,10 @@ Use `:jobgroups off` when you need individual rows.
 Collapsed groups retain a real representative job ID; hidden members do not become action targets automatically.
 
 The six-cell Progress column appears before JOBID and uses the job's published application progress when available.
-Unicode uses `▸` for reported progress and `◷` for elapsed time against the Slurm limit.
-ASCII uses `p` and `t`. Time usage does not report completed work.
+It contains a narrow symbol, a space, and four fractional block cells.
+Unicode uses `▸` for reported progress and a rotating clock for elapsed time against the Slurm limit.
+Pending jobs show an animated hourglass and `wait`.
+ASCII uses `p`, `t`, and `w`. Time usage does not report completed work.
 Projects can publish `progress.completed` and `progress.total` in their linked `metrics.jsonl`.
 See [Job progress](docs/guides/adaptive-workspaces.md#read-the-six-cell-progress-column) for display states, alternate numeric keys, and sorting.
 
@@ -343,12 +345,21 @@ Hold Shift to add the dragged range to existing marks.
 Press Esc during a drag to restore the earlier marks.
 Press `c` after the drag to review cancellation of the marked jobs.
 Check every job ID before you confirm the action.
+Right-click anywhere on Jobs to clear the job selection and marks.
+That click does not activate the control beneath the pointer.
 
 In History, select the completed or failed job.
 Press `I` for its inspector or `l` for its full Logs page.
 In Logs, press `O` for the grouped file list.
 Select a file with arrow keys and press Enter.
 Press Esc to return to that list.
+
+To collect several completed jobs' outputs, drag through their History rows.
+Right-click inside the History job list, then choose **Copy all logs to clipboard** or **Copy logs to directory**.
+The directory picker can open folders and create a new folder beneath the configured projects root.
+Select **Save here** to export, or **Cancel** to return.
+Tower checks all registered job outputs and reports each missing source before it publishes an export.
+See [Export History logs](docs/guides/log-view.md#export-logs-for-history-jobs) for the complete procedure.
 
 When a job leaves the active queue, Recents shows it as awaiting accounting.
 Tower requests a bounded accounting refresh.
