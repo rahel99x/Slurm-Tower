@@ -69,7 +69,7 @@ def test_axes_margins_and_unrelated_surfaces_do_not_reset_a_chart(app, point):
     assert C.bounds(app, item.key) == {"x": (10., 60.), "y": (20., 70.)}
 
 
-@pytest.mark.parametrize("change", ["menu", "panel", "mode", "width", "job", "generation"])
+@pytest.mark.parametrize("change", ["menu", "panel", "mode", "width", "job"])
 def test_modal_covered_and_stale_plot_geometry_cannot_be_reset(app, change):
     item = publish(app)
     C._apply(app, item, {"x": (10., 60.), "y": (20., 70.)})
@@ -77,10 +77,42 @@ def test_modal_covered_and_stale_plot_geometry_cannot_be_reset(app, change):
     elif change == "panel": app.toolbar_state["panel"] = "help"
     elif change == "mode": app.mode = "confirm"
     elif change == "width": app.width = 121
-    elif change == "job": app.selected_id = "102"
-    else: app.research.generation += 1
+    elif change == "job": app.analytics_job = "102"
     assert not C.handle_mouse(app, 5, 30, button="right")
     assert C.bounds(app, item.key) is not None
+
+
+def test_unrelated_reader_generation_keeps_native_capture_and_right_reset_valid(app):
+    identity = C.key(app, "CPU", "%", "101", scope="resource-series", attempt="first")
+    item = publish(app, identity=identity)
+    C._apply(app, item, {"x": (10., 60.), "y": (20., 70.)})
+    assert C.handle_mouse(app, 3, 15, button="press")
+    app.research.generation += 1
+    assert C.key(app, "CPU", "%", "101", scope="resource-series", attempt="first") == identity
+    assert C.handle_mouse(app, 8, 45, button="drag") and C.active(app)
+    assert C.handle_mouse(app, 5, 30, button="right")
+    assert not C.active(app) and C.bounds(app, identity) is None
+    assert C.handle_mouse(app, 8, 45, button="release")
+    assert C.bounds(app, identity) is None
+
+
+def test_reported_source_generation_invalidates_stale_reset_and_capture(app):
+    options = {"scope": "reported-metric", "attempt": "first"}
+    identity = C.key(app, "loss", "/project/job-101/metrics.jsonl", "101", **options)
+    item = publish(app, identity=identity)
+    C._apply(app, item, {"x": (10., 60.), "y": (20., 70.)})
+    assert C.handle_mouse(app, 3, 15, button="press")
+    app.research.generation += 1
+    current_key = C.key(app, "loss", "/project/job-101/metrics.jsonl", "101", **options)
+    assert current_key != identity
+    assert not C.handle_mouse(app, 5, 30, button="right")
+    assert not C.active(app) and C.bounds(app, identity) is not None
+    C.begin_frame(app, 120, 40)
+    current = publish(app, identity=current_key)
+    assert current.rect == item.rect and current.x_bounds == item.x_bounds
+    assert C.handle_mouse(app, 8, 45, button="release")
+    assert C.bounds(app, current_key) is None
+    assert C.bounds(app, identity) == {"x": (10., 60.), "y": (20., 70.)}
 
 
 def test_only_clicked_source_resets_while_duplicate_views_share_the_same_exact_zoom(app):
@@ -113,16 +145,23 @@ def test_empty_zoom_interval_is_reset_only_and_recovers_without_new_capture(app)
     assert C.publish(app, 120, 40) == ()
 
 
-def test_empty_transition_cancels_a_held_gesture_even_if_geometry_is_unchanged(app):
+def test_empty_retention_preserves_held_axes_until_right_reset_cancels_and_recovers(app):
     item = publish(app)
     C._apply(app, item, {"x": (10., 60.), "y": (20., 70.)})
     C.handle_mouse(app, 3, 15, button="press")
     C.begin_frame(app, 120, 40)
     empty = publish(app, empty=True)
     assert empty.rect == item.rect and empty.x_bounds == item.x_bounds
-    assert not C.active(app)
+    assert C.active(app) and empty.kind == "metric-empty"
+    assert C.captured_bounds(app, item.key) == {"x": item.x_bounds, "y": item.y_bounds}
     assert C.handle_mouse(app, 5, 30, button="right")
+    assert not C.active(app) and C.bounds(app, item.key) is None
+    assert C.handle_mouse(app, 8, 45, button="release")
     assert C.bounds(app, item.key) is None
+    C.begin_frame(app, 120, 40)
+    recovered = publish(app)
+    assert recovered.kind == "metric" and recovered.x_bounds == item.x_bounds
+    assert app.selected_id == "101" and app.marks == {"101", "102"}
 
 
 def test_empty_unzoomed_or_different_scale_chart_never_becomes_a_reset_target(app):

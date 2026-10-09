@@ -37,9 +37,16 @@ source line number.
 | Left / Right | Move the horizontal display position by eight columns. |
 | `[` / `]` | Read the previous or next file page in the background. |
 | `v` | Start or stop a raw-line selection at the keyboard cursor. |
-| `y` or `:copy selection` | Copy the selected raw lines; without a selection, copy the cursor line. |
+| `y` or `:copy selection` | Copy the selected raw lines, or the explicitly selected cursor line. |
 | `Y` or `:copy all` | Copy the complete source file, including content outside the page. |
+| Right-click | Clear the local selection and cursor highlight. Keep the dialog and exact source open. |
 | Esc | Return to the previous results, bookmark list, or original log view. |
+
+After right-click clearing, click a line or use navigation keys before copying a cursor line.
+Shift-click extends a source-page line selection.
+Right-click has the same local clearing behavior in search results and named-bookmark lists.
+It does not open a result or remove a bookmark.
+Select a row again before opening or deleting it.
 
 An orange mark at the right edge identifies selected rows. The ASCII fallback
 uses `*`. Copy operations retain CRLF, tabs, invalid UTF-8 bytes, and an
@@ -208,6 +215,7 @@ These methods preserve the selected source and report incomplete search coverage
 | `log_scan.locate(files, source, kind, value, ...)` | Resolve an absolute line, byte, percentage, or timestamp to a source page. |
 | `log_tools.before_source_change(app)` | Capture the old source's cursor and following state before a source reset. |
 | `log_tools.observe_buffer(app, buffer)` | Restore a compatible published reading position. |
+| `log_tools.handle_mouse(app, y, x, button, shift)` | Select a local row, or clear local selection on right-click without closing its dialog. |
 | `log_tools.find_retained(app, buffer, backwards)` | Apply the retained-log search mode safely and return a handled flag plus the matched index. |
 | `log_tools.count_retained(app, buffer)` | Read the cached match count; check `retained_pending` before treating it as complete. |
 | `log_tools.retained_matches(app, line, pattern, source_bytes)` | Test one displayed line with the validated search mode and regex line limit. |

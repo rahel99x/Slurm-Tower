@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.6.1 |
+| Release | Tower 4.6.2 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -28,6 +28,17 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.6.2
+
+- Graph drags retain their painted axes while new samples arrive. The capture margin extends three terminal cells beyond the axis labels and ticks.
+- Thin selectors use themed Braille positions and 80 ms visual easing. Mouse events still resolve to whole terminal cells.
+- Right-click clears job and line selections on the main pages. It preserves the open log source and does not activate another control.
+
+Graph right-click still resets that graph. History-list right-click still opens the log-export menu.
+Log Tools right-click clears only its local selection and keeps its dialog open.
+Help, Details, and analysis dialogs clear local text or row selections and retain job marks.
+See [graph interaction](docs/guides/charts.md#point-at-a-metric-graph) and [selection clearing](docs/guides/pointer-navigation.md#clear-selections-with-right-click) for controls and limits.
 
 ## 1. Install on CARC
 
@@ -168,7 +179,7 @@ Theme changes update the canvas, text, menus, information strips, and chart colo
 The `mono`, `high`, `cb`, and `reader` themes provide additional display options.
 The `reader` theme uses plain ASCII text and static notices.
 Set `animations` to `false` for immediate scrolling and static completion notices.
-This setting also suppresses the startup display.
+This setting also disables selector easing and suppresses the startup display.
 Use View → Disable startup animation or `:startup off` to disable only the welcome.
 Use `:startup preview` to inspect it without changing the preference.
 
@@ -346,8 +357,10 @@ Press Esc during a drag to restore the earlier marks.
 Press `c` after the drag to review cancellation of the marked jobs.
 Check every job ID before you confirm the action.
 Right-click a metric graph to restore its full view and keep the selected job and marks.
-Right-click elsewhere on Jobs to clear the job selection and marks.
+Right-click elsewhere on a main page to clear job selections, marks, and line selections.
 That click does not activate the control beneath the pointer.
+An open log source remains open, including alternate views and file browsers.
+Click a job or line, or use its navigation keys, to select again.
 Click a Jobs or Recents row to return arrow navigation from Details to that list.
 Press Esc from Details control navigation to return to Main, or use F6 to switch panes.
 
@@ -378,6 +391,8 @@ Completion notices do not require an application restart.
 
 Selected lines show an orange marker on the right.
 The ASCII display uses `*` for that marker.
+Shift-click extends the line selection. Right-click clears it and keeps the same file open.
+In a Log Tools dialog, right-click clears only the dialog's local selection.
 
 Press `Y`, or run `:copy all`, to copy the entire selected log file.
 This operation runs in a background worker.

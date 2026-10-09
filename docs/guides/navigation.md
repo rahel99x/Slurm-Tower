@@ -101,7 +101,7 @@ The editor provides these settings:
 | Theme | Change colors and contrast. The reader theme uses ASCII and static feedback. |
 | Density | Select comfortable, compact, or focused panel spacing. |
 | Terminal colors | Enable or disable color. |
-| Completion animation | Enable or disable the existing completion motion. |
+| Interface animations | Enable or disable completion motion and graph-selector easing. |
 | Terminal bell | Enable or disable the configured start bell. |
 | Mouse input | Enable or disable clicks and wheel input. |
 | GPU sampling | Enable or disable the existing GPU sampler. |

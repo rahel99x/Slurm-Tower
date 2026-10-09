@@ -447,6 +447,8 @@ def _plot_metadata(metadata: Optional[dict], width: int, chart_w: int, height: i
     left = min(max(0, width), vlen(indent) + axis_w)
     metadata.clear()
     metadata.update(plot_rect=(top, left, top + height, left + chart_w),
+                    axis_rect=(top, min(max(0, width), vlen(indent)),
+                               top + height + 1 + int(times is not None), left + chart_w),
                     x_bounds=times if timestamped else None,
                     y_bounds=(lo, hi), raster=raster,
                     valid=bool(chart_w and height), has_data=has_data)

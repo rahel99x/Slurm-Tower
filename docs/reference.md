@@ -78,7 +78,11 @@ Charts use collected measurements. Unavailable metrics and gaps remain unknown,
 and time-series detail grows as samples arrive. ASCII `--report` exports remain
 portable plain text regardless of the live dashboard's glyph preference.
 
-Visible metric plots have a thin dotted pointer crosshair in the active theme's accent color, with the graph's background.
+Visible metric plots have a thin pointer crosshair in the active theme's accent color, with the graph's background.
+Unicode selectors use two horizontal and four vertical Braille positions per cell.
+Visual easing lasts 80 ms. Mouse coordinates still resolve to whole terminal cells.
+ASCII and reader modes use static dots and `+` intersections.
+Set `animations = false` to disable easing and keep the Unicode selector static.
 Press and drag inside the plot, then release inside it, to select a time interval.
 The time selection must span two columns; labels and buttons are outside capture.
 Tower fits its vertical scale to the known curve in that interval.
@@ -91,9 +95,10 @@ Right-click inside a plot to restore its full view and turn off its Live window.
 This keeps the selected job and marks in Jobs Details.
 The inspector provides `:chart undo|reset` and corresponding buttons.
 Zoom belongs to the exact metric/source/job/attempt and remains session display state.
-An active drag has a two-cell buffer around each visible edge, confined to its pane.
-Movement and release inside the buffer use the nearest plot edge; the initial press must remain inside the plot.
-Esc, movement beyond the buffer, changed source or geometry, menu/dialog/startup, or a
+An active drag has a three-cell margin beyond the axis labels and tick row, clipped to the actual visible pane.
+Movement and release inside the margin use the nearest plot edge; the initial press must remain inside the plot.
+The drag retains both painted axes while sampling continues. New samples do not cancel it.
+Esc, movement beyond the margin, changed source or geometry, menu/dialog/startup, or a
 15-second missing-release timeout cancels an unfinished preview.
 See [Graph interaction](guides/charts.md#zoom-a-rectangular-area) for controls and bounds.
 
@@ -341,7 +346,7 @@ without motion or pulses. One-frame reports are static as well.
 | `s` `S` | resume a single-column sort: cycle the tab's legacy sort keys (jobs: state, name, id, time, priority; history: end, name, state, elapsed, cpu eff, mem eff); reverse |
 | `/` `Esc` | filter by name, id, partition or info; clear the filter (or the marks) |
 | `n` `b` `r` `x` | GPU sampling on/off; bell on start on/off; sample every source now; Sources tab: enable / disable the selected source |
-| `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys or Shift-click extend a selection. In Logs, right-click also extends it. Jobs and History use the right-click actions below. |
+| `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys or Shift-click extend a selection. Right-click clears selections, subject to the graph, History-list, and dialog controls below. |
 | `Y` | Logs: copy the entire exact selected file, independent of displayed lines, search, scrolling, or wrapping |
 | `I` | structured job inspector for the exact active, recent, or historical job; Tab changes sections, `l` opens logs, `e` opens Evidence |
 | `Ctrl-W` / F6, `z` | focus Main/Details; maximize the focused panel (`:maximize` supplies this action on Logs) |
@@ -358,10 +363,17 @@ The mouse works too: a click selects a row or switches tabs, a double-click open
 (History), or opens the selected file in the Logs browser. The wheel scrolls,
 and Shift-click extends a line selection from the last click.
 Right-click inside a metric plot restores its full view and keeps selected and marked jobs.
-Right-click elsewhere on Jobs clears selected and marked jobs without activating the surface beneath it.
+Right-click elsewhere on a main page clears job selections, marks, and line selections without activating the surface beneath it.
 In History, drag through rows to mark a range; right-click inside the list for the clipboard or directory log-export menu.
 Right-click outside the History list clears its job selection.
-In Logs, right-click retains its original line-selection function.
+In Logs, clearing keeps the same source open, including raw, alternate, and browser views.
+Click a job or line, or use navigation keys, to select again.
+In a Log Tools page, results list, or bookmarks list, right-click clears only the local selection.
+The dialog and its source remain open. Cursor-line copies and result actions require a new explicit selection.
+Help, Details, and analysis dialogs clear local text or row selections on right-click.
+They preserve the selected job, marks, source, and dialog.
+Analysis graphs retain their right-click reset control.
+Select a cleared sample or event again before a row action.
 Use `:historylogs [clipboard|directory|cancel]` for History export commands.
 See [Export History logs](guides/log-view.md#export-logs-for-history-jobs) for full-source copying, expected missing-file alerts, folder creation, and receipts.
 Drag through visible job rows to mark a range in the current table order.

@@ -300,13 +300,14 @@ def test_marked_jobs_arrows_resume_after_explicit_return_from_details(dashboard,
 
 
 @pytest.mark.parametrize("tab", ["jobs", "analytics"])
-@pytest.mark.parametrize("distance", [1, 2])
-def test_graph_drag_tolerates_two_cells_without_changing_its_source(dashboard, tab, distance):
+@pytest.mark.parametrize("distance", [1, 2, 3])
+def test_graph_drag_tolerates_three_cells_beyond_axis_labels_without_changing_source(dashboard, tab, distance):
     d, app = dashboard, dashboard.app
     d.draw(tab)
     chosen = _plots(d)[0]
     start = (chosen.visible.top + 1, chosen.visible.left + 4)
-    endpoint = (chosen.visible.bottom - 1, chosen.visible.left - distance)
+    assert chosen.axes is not None and chosen.axes.left < chosen.visible.left
+    endpoint = (chosen.visible.bottom - 1, chosen.axes.left - distance)
     assert C.capture_bounds(chosen).contains(*endpoint)
     selected = app.selected_id
     app.marks = {"7", "8"}
@@ -339,7 +340,7 @@ def test_graph_drag_beyond_buffer_cannot_resume_or_activate_delayed_release(dash
     app.marks = {"7", "8"}
     app.click(*start, app.last_hits, button="press")
     assert C.active(app)
-    app.click(chosen.visible.bottom - 1, chosen.visible.left - 3, app.last_hits, button="drag")
+    app.click(chosen.visible.bottom - 1, C.capture_bounds(chosen).left - 1, app.last_hits, button="drag")
     assert not C.active(app)
     app.click(*start, app.last_hits, button="motion")
     app.click(chosen.visible.bottom - 1, chosen.visible.right - 1, app.last_hits, button="release")

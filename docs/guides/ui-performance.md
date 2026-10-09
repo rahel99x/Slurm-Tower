@@ -37,6 +37,11 @@ Continuous pointer movement does not postpone background-result publication.
 
 Metric crosshairs read the frozen, final plot geometry.
 Moving a pointer does not recompute a curve or read its source.
+Unicode selectors use an 80 ms visual transition over cached plot feedback.
+Mouse coordinates remain whole terminal cells despite the finer Braille stroke positions.
+ASCII and reader modes keep static feedback. Disabling `animations` also disables selector easing.
+During a graph drag, both painted axis mappings stay fixed while new sampler results remain available.
+Automatic sample updates do not cancel capture.
 A valid rectangular release changes display bounds and requests a fresh document.
 Each zoom belongs to the exact metric, source, job, and attempt.
 Live advances the visible time window at a bounded display rate; a one-millisecond window does not request one-millisecond scheduler samples.

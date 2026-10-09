@@ -109,12 +109,15 @@ Jobs and Recents retain separate filters and cascading sorts.
 ## Read metric graphs inside Details
 
 Open **Analytics → Job series** or an available **Research** metric view for the selected job.
-Point inside a plot for a dotted crosshair in the active theme's accent color.
+Point inside a plot for a thin Braille crosshair in the active theme's accent color.
+ASCII and reader modes use static dots and `+` intersections.
 Drag across a time interval and release inside that plot to fit its horizontal extent and visible curve.
 Hold Shift before pressing to set explicit horizontal and vertical bounds instead.
 Selected intervals use adaptive `s`, `ms`, or `us` axis labels and identify their start timestamp.
-After pressing inside the plot, a two-cell buffer around its edges permits a small overshoot within the visible pane.
-Movement and release in that buffer use the nearest plot edge. Moving beyond it cancels the preview.
+After pressing inside the plot, the capture margin includes the axis labels and tick row.
+It extends three terminal cells beyond them, clipped to the actual visible pane.
+Movement and release in that margin use the nearest plot edge. Moving beyond it cancels the preview.
+Both painted axes stay fixed during the drag while the sampler continues to publish new data.
 Use `u` while pointing at the plot to undo, or `0` to reset rectangular zoom.
 Right-click inside the plot to restore its full view and turn off that metric's Live window.
 The graph keeps the exact selected job and source.

@@ -240,7 +240,7 @@ def test_mouse_selection_matches_visible_logical_rows(tmp_path):
         assert app.log_tools_state['page_cursor'] == 1
         y2 = next(y for y, hit in hits.items() if hit[0] == 2)
         assert tools.handle_mouse(app, y2, x, shift=True)
-        assert app.log_tools_state['selection'] == (2, 2)
+        assert app.log_tools_state['selection'] == (1, 2)
     finally: app.research.close()
 
 

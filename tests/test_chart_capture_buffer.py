@@ -1,4 +1,4 @@
-"""Captured chart gestures tolerate two cells without changing any hit target."""
+"""Captured chart gestures tolerate three cells beyond axes, without new hit targets."""
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +18,7 @@ def app():
     return value
 
 
-def publish(app, *, clip=(2, 9, 18, 75), rect=(4, 12, 14, 70), identity=("source", "7", "CPU")):
+def publish(app, *, clip=(1, 8, 18, 75), rect=(4, 12, 14, 70), identity=("source", "7", "CPU")):
     first = C.mark(app)
     C.record(app, identity, {"plot_rect": rect, "x_bounds": (0., 100.), "y_bounds": (0., 200.)})
     if clip is not None:
@@ -26,15 +26,15 @@ def publish(app, *, clip=(2, 9, 18, 75), rect=(4, 12, 14, 70), identity=("source
     return C.publish(app, 100, 30)[-1]
 
 
-INSIDE = [(2, 60), (15, 60), (12, 10), (12, 71), (2, 10), (2, 71), (15, 10), (15, 71)]
-OUTSIDE = [(1, 60), (16, 60), (12, 9), (12, 72), (1, 9), (1, 72), (16, 9), (16, 72)]
+INSIDE = [(1, 60), (16, 60), (12, 9), (12, 72), (1, 9), (1, 72), (16, 9), (16, 72)]
+OUTSIDE = [(0, 60), (17, 60), (12, 8), (12, 73), (0, 8), (0, 73), (17, 8), (17, 73)]
 
 
 @pytest.mark.parametrize("point", INSIDE)
 @pytest.mark.parametrize("shift", [False, True])
 def test_drag_and_release_inside_margin_clamp_to_original_plot_on_every_side_and_corner(app, point, shift):
     plot = publish(app)
-    assert C.capture_bounds(plot) == Rect(2, 10, 16, 72)
+    assert C.capture_bounds(plot) == Rect(1, 9, 17, 73)
     assert C.handle_mouse(app, 8, 40, button="press", shift=shift)
     assert C.handle_mouse(app, *point, button="drag") and C.active(app)
     expected_y = min(13, max(4, point[0]))
@@ -114,6 +114,31 @@ def test_screen_edges_clip_buffer_and_malformed_reports_cannot_escape(app):
     assert C.handle_mouse(app, 12, 60, button="release")
 
 
+@pytest.mark.parametrize("point", [(1, 40), (18, 40), (8, 4), (8, 72),
+                                  (1, 4), (1, 72), (18, 4), (18, 72)])
+def test_margin_includes_three_cells_beyond_y_and_x_axis_labels(app, point):
+    first = C.mark(app)
+    C.record(app, ("with-labels", "7"), {
+        "plot_rect": (4, 12, 14, 70), "axis_rect": (4, 7, 16, 70),
+        "x_bounds": (0., 100.), "y_bounds": (0., 200.)})
+    C.place_since(app, first, clip=(0, 0, 25, 90))
+    plot = C.publish(app, 100, 30)[0]
+    assert C.capture_bounds(plot) == Rect(1, 4, 19, 73)
+    assert not C.hover(app, *point) and not C.handle_mouse(app, *point, button="press")
+    assert C.handle_mouse(app, 8, 40, button="press")
+    assert C.handle_mouse(app, *point, button="drag") and C.active(app)
+    clamped_y, clamped_x = min(13, max(4, point[0])), min(69, max(12, point[1]))
+    assert C.initialize(app)["capture"]["current"] == (clamped_y, clamped_x)
+    assert C.handle_mouse(app, *point, button="release") and not C.active(app)
+    if clamped_x == 40:
+        # Leaving vertically is still an owned release, but its zero time
+        # range must remain a harmless no-op.
+        assert C.bounds(app, plot.key) is None
+    else:
+        assert C.bounds(app, plot.key)["x"] == pytest.approx(tuple(sorted((
+            100 * 28 / 57, 100 * (clamped_x - 12) / 57))))
+
+
 def test_captured_plot_retains_ownership_when_its_margin_overlaps_a_different_graph(app):
     first = publish(app)
     second = publish(app, identity=("source", "7", "Memory"), rect=(14, 12, 24, 70), clip=None)
@@ -146,7 +171,7 @@ def test_margin_does_not_weaken_context_source_or_clip_change_cancellation(app, 
 def test_fresh_press_elsewhere_supersedes_cancelled_release_marker(app):
     publish(app)
     C.handle_mouse(app, 8, 40, button="press")
-    C.handle_mouse(app, 16, 60, button="drag")
+    C.handle_mouse(app, 17, 60, button="drag")
     assert C.initialize(app)["cancelled_release"]
     assert not C.handle_mouse(app, 20, 80, button="press")
     assert not C.initialize(app)["cancelled_release"]

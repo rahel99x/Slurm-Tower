@@ -39,13 +39,13 @@ def drag(app, start=(2, 15), end=(8, 45), *, shift=False):
     assert C.handle_mouse(app, *end, button="release")
 
 
-def test_crosshair_has_cell_accurate_plus_dotted_axes_and_cyan_tone(app):
+def test_crosshair_has_cell_accurate_thin_braille_axes_and_theme_accent(app):
     plot = publish(app)
     assert C.hover(app, 5, 30)
     overlay = C.feedback(app)
-    assert (5, 30, [("+", "accent")]) in overlay
+    assert (5, 30, [("⢼", "accent")]) in overlay
     assert all(plot.visible.contains(y, x) for y, x, _ in overlay)
-    assert all(char in ("·", "+") for _, _, row in overlay for char, _ in row)
+    assert {char for _, _, row in overlay for char, _ in row} == {"⠤", "⢸", "⢼"}
     assert any(y == 5 and x != 30 for y, x, _ in overlay)
     assert any(x == 30 and y != 5 for y, x, _ in overlay)
     assert len(overlay) == (plot.visible.right - plot.visible.left) + (plot.visible.bottom - plot.visible.top) - 1
@@ -92,7 +92,7 @@ def test_drag_is_a_preview_until_release_and_crosshair_never_modifies_source(app
     assert C.bounds(app, plot.key)
 
 
-@pytest.mark.parametrize("end", [(2,15),(8,15),(8,16),(-1,40),(13,40),(8,5),(8,65)])
+@pytest.mark.parametrize("end", [(2,15),(8,15),(8,16),(-1,40),(14,40),(8,5),(8,65)])
 def test_tiny_and_outside_release_cancel_without_accidental_zoom(app,end):
     plot = publish(app)
     assert C.handle_mouse(app,2,15,button="press")

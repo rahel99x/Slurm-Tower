@@ -160,6 +160,7 @@ def test_topmost_nested_overlay_and_wide_cells_choose_the_painted_background(app
 @pytest.mark.parametrize("dragging", [False, True])
 def test_all_selector_marks_use_the_current_theme_accent_and_retain_their_background(app, theme, dragging):
     app.theme = theme
+    app.animations_enabled = False
     plot(app)
     rows = [[(" " * 120, "bg:surface-sunken")]] * 40
     C.hover(app, 5, 30)
@@ -167,7 +168,8 @@ def test_all_selector_marks_use_the_current_theme_accent_and_retain_their_backgr
         C.handle_mouse(app, 4, 20, button="press")
         C.handle_mouse(app, 9, 45, button="drag")
     feedback = C.feedback(app, rows=rows)
-    assert {char for _, _, row in feedback for char, _ in row} == {"·", "+"}
+    assert {char for _, _, row in feedback for char, _ in row} == (
+        {".", "+"} if theme == "reader" else {"⠤", "⢸", "⢼"})
     accent = P.resolve("accent", theme).foreground
     background = P.resolve(P.cell_style("bg:surface-sunken", theme), theme).background
     for _, _, row in feedback:
@@ -196,7 +198,7 @@ def test_republished_graph_selector_changes_its_accent_and_background_on_theme_s
     changed = C.feedback(app, rows=rows, ascii_=ascii_)
     assert current.rect == item.rect and current.key == item.key
     assert len(changed) == len(original)
-    assert {char for _, _, row in changed for char, _ in row} == ({".", "+"} if ascii_ else {"·", "+"})
+    assert {char for _, _, row in changed for char, _ in row} == ({".", "+"} if ascii_ else {"⠤", "⢸", "⢼"})
     old_style = P.resolve(P.cell_style(original[0][2][0][1], before), before)
     new_style = P.resolve(P.cell_style(changed[0][2][0][1], after), after)
     assert old_style.foreground != new_style.foreground

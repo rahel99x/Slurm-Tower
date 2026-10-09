@@ -479,6 +479,7 @@ class App:
                 fingerprint(self, "jobs"), fingerprint(self, "recent"))
 
     def open_log(self, jid=None):
+        selects_job = jid is not None or self.tab != "log"
         self.sync_selection()
         jid = jid or (self.log_job if self.tab == "log" else self.selected_id)
         record = self.job_record(jid)
@@ -487,6 +488,9 @@ class App:
         if record is None:
             self.fail("no job selected for logs")
             return
+        if selects_job:
+            from .job_selection import resume
+            resume(self, "log")
         from .navigation_ui import record as remember
         remember(self, "log", force=self.tab == "log" and jid != self.log_job)
         from .project_ui import selected_binding, clear_binding
@@ -505,6 +509,8 @@ class App:
             self.logs.browser_cursor, self.logs.browser_top, self.logs.file_filter = 0, 0, ""
         self.log_job, self.log_record, self.logs.top = jid, record, None
         self.enter_tab("log")
+        from .job_selection import selected
+        self.selected_id = selected(self, "log", jid)
         if self.sampler:
             self.sampler.select(jid)
 
@@ -520,6 +526,8 @@ class App:
         if not entries:
             self.say("no log file selected")
             return False
+        from .job_selection import resume_lines
+        resume_lines(self)
         from .navigation_ui import record
         record(self, "log", force=True)
         self.logs.browser_cursor = max(0, min(self.logs.browser_cursor, len(entries) - 1))
@@ -547,6 +555,9 @@ class App:
         """Marked ids, else the selected one (on the History tab the row under the cursor)."""
         if self.marks:
             return sorted(self.marks)
+        from .job_selection import cleared
+        if cleared(self):
+            return []
         if self.tab == "history":
             from .job_selection import selected
             if selected(self, "history", True) is None:
@@ -583,8 +594,10 @@ class App:
             self.selected_id = selected(self, "jobs", ids[self.clamp_cursor("jobs", len(ids))] if ids else None)
         elif self.tab == "history":
             self.sync_history_selection()
-        elif self.tab == "log" and self.log_job:
-            self.selected_id = self.log_job
+        elif self.tab in ("log", "analytics", "research"):
+            from .job_selection import selected
+            field = {"log": "log_job", "analytics": "analytics_job", "research": "research_job_id"}[self.tab]
+            self.selected_id = selected(self, self.tab, getattr(self, field, None))
         elif self.tab == "deps":
             browser = getattr(self, "history_browser_state", {})
             view = browser.get("views", {}).get("deps", {})
@@ -592,7 +605,8 @@ class App:
             if scoped and self.selected_id == scoped:
                 return
             cur = self.clamp_cursor("deps", len(self.dep_ids))
-            self.selected_id = self.dep_ids[cur] if self.dep_ids else None
+            from .job_selection import selected
+            self.selected_id = selected(self, "deps", self.dep_ids[cur] if self.dep_ids else None)
         elif self.tab == "group":
             self.selected_id = self.group_selected()
 
@@ -608,10 +622,6 @@ class App:
             return
         from .startup import handle_key as startup_key
         startup_key(self, key)
-        if (self.mode == "main" and self.tab in ("jobs", "history") and
-                self.keymap.get(key) in ("up", "down", "page_up", "page_down", "home", "end")):
-            from .job_selection import resume
-            resume(self)
         self.sync_selection()
         toolbar_state = getattr(self, "toolbar_state", {})
         if key == "f10" or toolbar_state.get("menu") is not None or toolbar_state.get("panel") or toolbar_state.get("focus") == "rate":
@@ -759,11 +769,15 @@ class App:
             self.set_days(self.days_index + (1 if action == "days_more" else -1))
         elif action == "visual":
             if self.tab == "log" and not self.logs.browser:
+                from .job_selection import resume_lines
+                resume_lines(self)
                 self.log_selection_expected = self.logs.begin_selection(self.prepare_log())
             else:
                 self.start_selection(self.cursor_row())
         elif action == "visual_all":
             if self.tab == "log" and not self.logs.browser:
+                from .job_selection import resume_lines
+                resume_lines(self)
                 self.log_selection_expected = self.logs.select_all(self.prepare_log())
             else:
                 self.sel_anchor, self.sel_end = 0, max(0, len(self.last_rows) - 1)
@@ -809,15 +823,18 @@ class App:
             if self.tab == "log" and self.logs.browser:
                 self.select_log_file()
             elif self.tab == "research" and self.research_view == "arrays":
+                from .job_selection import cleared
+                if cleared(self, "research"):
+                    self.say("Select an array cohort before opening its tasks")
+                    return
                 self.research_array_open = not self.research_array_open
                 self.research_task_offset = 0
             elif self.tab in ("jobs", "group", "deps") and self.selected_id:
                 self.open_details()
             elif self.tab == "history":
-                ids = [f.id for f in self.history_jobs()]
-                cur = self.clamp_cursor("history", len(ids))
+                ids = self.target_ids()
                 if ids:
-                    self.analytics_job, self.analytics_view = ids[cur], "job"
+                    self.analytics_job, self.analytics_view = ids[0], "job"
                     self.enter_tab("analytics")
         elif action in ("cancel", "hold", "requeue", "top"):
             self.start_confirm(action)
@@ -956,6 +973,10 @@ class App:
 
     def open_details(self):
         """The details overlay of the selected job: scontrol and the steps of a running job, sacct -j of a finished one."""
+        from .job_selection import cleared
+        if cleared(self):
+            self.say("Select a job before opening its inspector")
+            return
         if self.tab == "history":
             ids = [f.id for f in self.history_jobs()]
             if not ids:
@@ -974,7 +995,8 @@ class App:
 
     def group_selected(self) -> Optional[str]:
         ids = getattr(self, "group_ids", [])
-        return ids[self.clamp_cursor("group", len(ids))] if ids else None
+        from .job_selection import selected
+        return selected(self, "group", ids[self.clamp_cursor("group", len(ids))] if ids else None)
 
     def handle_action(self, action: str):
         """Run one key action by name (what the palette's wrap / bookmark commands do)."""
@@ -984,8 +1006,6 @@ class App:
 
     def move(self, action: str):
         from .job_selection import resume
-        if self.tab in ("jobs", "history"):
-            resume(self)
         self.click_row = None
         scoped = getattr(self, "history_browser_state", {}).get("views", {}).get("deps", {})
         if self.tab == "deps" and scoped.get("explicit"):
@@ -998,7 +1018,9 @@ class App:
             return
         if self.tab == "research":
             if action in ("page_up", "page_down", "home", "end"):
-                if self.research_view == "arrays" and self.research_array_open and action in ("page_up", "page_down"):
+                from .job_selection import cleared
+                if (self.research_view == "arrays" and self.research_array_open
+                        and not cleared(self, "research") and action in ("page_up", "page_down")):
                     self.research_task_offset = max(0, self.research_task_offset + (-24 if action == "page_up" else 24))
                 else:
                     self.research_scroll = max(0, {"page_up": self.research_scroll - 12, "page_down": self.research_scroll + 12,
@@ -1016,6 +1038,7 @@ class App:
                     select_job(self, ids[max(0, min(len(ids) - 1, cur + delta))])
                 self.research_scroll = 0
             elif self.research_view == "arrays":
+                resume(self)
                 self.cursor["research"] = max(0, min(len(self.research_groups) - 1, self.cursor.get("research", 0) + delta))
                 self.research_task_offset = 0
                 self.research_array_focus = True
@@ -1029,11 +1052,14 @@ class App:
                     if i not in ids:
                         ids.append(i)
                 if ids:
+                    resume(self)
                     cur = ids.index(self.analytics_job) if self.analytics_job in ids else 0
                     step = {"up": -1, "down": 1, "page_up": -5, "page_down": 5, "home": -len(ids), "end": len(ids)}[action]
                     self.analytics_job = ids[max(0, min(len(ids) - 1, cur + step))]
             return
         if self.tab == "log":
+            from .job_selection import resume_lines
+            resume_lines(self)
             if self.logs.browser:
                 n = len(self.log_entries())
                 cur = self.logs.browser_cursor
@@ -1044,6 +1070,8 @@ class App:
             self.logs.move_cursor(action, self.prepare_log())
             return
         tab = self.tab
+        if tab in ("jobs", "history", "group", "deps"):
+            resume(self)
         n = len(self.history_jobs()) if tab == "history" else {"jobs": len(self.visible_ids) + len(self.recent_ids),
              "sources": len(self.ordered_source_ids()), "group": len(getattr(self, "group_ids", [])), "deps": len(self.dep_ids)}.get(tab, 0)
         from .table_tools import page_size
@@ -1073,7 +1101,8 @@ class App:
             binding = selected_binding(self)
             if binding and chosen and binding.get("job_id") != chosen:
                 clear_binding(self)
-            self.research_job_id = chosen
+            if chosen:
+                self.research_job_id = chosen
         self.tab = name
         self.sel_anchor = None
         self.click_row = None
@@ -1112,6 +1141,8 @@ class App:
         n = len(self.last_rows)
         if n == 0:
             return
+        from .job_selection import resume_lines
+        resume_lines(self)
         self.sel_anchor = self.sel_end = max(0, min(n - 1, row))
 
     def extend_selection(self, row: int):
@@ -1516,6 +1547,8 @@ class App:
                     if buf is None or max(map(int, args)) > buf.total:
                         self.fail("copy line range is outside the loaded log")
                         return
+                    from .job_selection import resume_lines
+                    resume_lines(self)
                     self.log_selection_expected = self.logs.begin_selection(buf, int(args[0]) - 1)
                     self.logs.selection_end = self.logs.cursor = int(args[1]) - 1
                 else:
@@ -1745,9 +1778,9 @@ class App:
         return f"no finished run of '{what}' in the window and no such running job"
 
     def click(self, y: int, x: int, hits: Sequence, button: str = "left", shift: bool = False) -> None:
-        """Select rows, reset graphs, route History exports, and clear Jobs selections.
+        """Select rows, reset graphs, route History exports, and clear selections.
 
-        Shift-click extends text selection; other pages retain right-click text selection.
+        Shift-click extends text selection; other right-clicks clear selections.
         """
         self.last_hits = list(hits)
         from .history_log_export import active as export_active, handle_mouse as export_mouse
@@ -1818,7 +1851,9 @@ class App:
                     self.log_selection_expected = True
                     self.fail("Log changed since that row was drawn; select a line in the current display")
                     return
-                if button == "right" or shift:
+                from .job_selection import resume_lines
+                resume_lines(self)
+                if shift:
                     if not self.logs.selection_active:
                         self.logs.begin_selection(buf)
                     self.logs.selection_end = self.logs.cursor = line
@@ -1828,7 +1863,7 @@ class App:
                     self.logs.begin_selection(buf, line)
                 self.log_selection_expected = self.logs.selection_active
                 return
-        if button == "right" or shift:
+        if shift:
             self.extend_selection(y)
             return
         self.click_row = y
@@ -1851,6 +1886,8 @@ class App:
                 elif kind == "log_file":
                     ids = [entry["id"] for entry in self.log_entries()]
                     if key in ids:
+                        from .job_selection import resume_lines
+                        resume_lines(self)
                         self.logs.browser_cursor = ids.index(key)
                 elif kind == "log_group":
                     from .log_workbench import run_command
@@ -1859,6 +1896,8 @@ class App:
                 elif kind == "research_evidence":
                     ids = self.analysis_state.get("evidence_ids", [])
                     if key in ids:
+                        from .job_selection import resume_lines
+                        resume_lines(self)
                         self.analysis_state["evidence_cursor"] = ids.index(key)
                         from .analysis_ui import handle_key
                         handle_key(self, "enter")
@@ -1878,13 +1917,19 @@ class App:
                 elif kind == "group":
                     ids = getattr(self, "group_ids", [])
                     if key in ids:
+                        from .job_selection import resume
+                        resume(self, "group")
                         self.cursor["group"] = ids.index(key)
                 elif kind == "dep":
                     if key in self.dep_ids:
+                        from .job_selection import resume
+                        resume(self, "deps")
                         self.cursor["deps"] = self.dep_ids.index(key)
                 elif kind == "research_array":
                     ids = [g["id"] for g in self.research_groups]
                     if key in ids:
+                        from .job_selection import resume
+                        resume(self, "research")
                         self.cursor["research"] = ids.index(key)
                         self.research_task_offset = 0
                         self.research_array_focus = True

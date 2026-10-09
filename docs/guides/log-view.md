@@ -11,6 +11,21 @@ The file name and path identify the source. A source can be stdout, stderr, a wo
 
 For full-file search, older pages, named bookmarks, and saved reading positions, use the [log search guide](log-search.md).
 
+## Clear a selection without changing files
+
+Right-click in the main Logs page to clear job selections, marks, and line selections.
+The same rule applies to raw text, split streams, diffs, structured records, folded messages, and the file browser.
+The exact source, display mode, and visible location remain open.
+The click does not open a file or activate another control.
+Click a line or file row, or use navigation keys, to select again.
+Shift-click still extends a line selection.
+
+In a Log Tools source page, results list, or bookmarks list, right-click clears only that dialog's local selection.
+It leaves the dialog and its source open.
+Select a row again before copying a cursor line, opening a result, or deleting a bookmark.
+`Y` remains the explicit complete-file copy control in a source page.
+See [Right-click priorities](pointer-navigation.md#clear-selections-with-right-click) for graph reset and History export.
+
 ## Export logs for History jobs
 
 Use History to collect the complete outputs for one or more exact job IDs.
@@ -204,6 +219,7 @@ Enter `:logunread` to visit the first unread retained source line. Press End to 
 | Esc | Return to original source lines |
 | `v` / `y` in a presentation | Return to the original view for source selection |
 | `Y` | Copy the complete selected original file |
+| Right-click | Clear selections and keep the exact source and presentation open |
 
 Each presentation inspects at most 64 KiB and 240 original lines per source. The header states whether that inspection covers the complete source or a bounded tail. Line labels are relative when earlier data is omitted. Use full-file search and older pages for other content.
 

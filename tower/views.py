@@ -182,21 +182,28 @@ class Views:
                                 if charts._finite(timestamp) is not None and timestamp <= live_window[1]]
                 values = [value for value, _ in observations]
                 options["sample_times"] = [timestamp for _, timestamp in observations]
+        captured = chart_interaction.captured_bounds(app, plot_key, scale="linear")
         zoom = chart_interaction.bounds(app, plot_key, scale="linear")
         if zoom:
             options.update(times=zoom["x"], lo=zoom["y"][0], hi=zoom["y"][1])
             options["time_units"] = True
             if chart_interaction.autofit(app, plot_key, scale="linear") and options.get("sample_times") is not None:
-                options["lo"], options["hi"] = charts.fit_time_bounds(
-                    values, options["sample_times"], zoom["x"], zoom["y"], options.get("sample_interval"))
+                if not captured:
+                    options["lo"], options["hi"] = charts.fit_time_bounds(
+                        values, options["sample_times"], zoom["x"], zoom["y"], options.get("sample_interval"))
                 options["fitted"] = True
+        # Publications keep flowing during a drag. Freeze its coordinate
+        # system so a new timestamp or resource peak cannot move the pointer's
+        # mapping, while painting the latest observations in that system.
+        if captured:
+            options.update(times=captured["x"], lo=captured["y"][0], hi=captured["y"][1])
         visible_values = None
         bounds = options.get("times")
         sample_times = options.get("sample_times")
-        if bounds and sample_times is not None and (live_window or zoom):
+        if bounds and sample_times is not None and (live_window or zoom or captured):
             visible_values = [charts._finite(value) for value, timestamp in zip(values, sample_times)
                               if charts._finite(timestamp) is not None and bounds[0] <= timestamp <= bounds[1]]
-            if not zoom and options.get("hi") is None:
+            if not zoom and not captured and options.get("hi") is None:
                 options["lo"], options["hi"] = charts._bounds(visible_values, options.get("lo", 0.0), None)
         metadata = {}
         painter = charts.vbar_chart if filled else charts.braille_chart
@@ -1337,6 +1344,7 @@ class Views:
                   Column("prio", "PRIO", 4, 7, ">"), Column("info", "INFO", 10, 40, flex=True)]
 
     def group_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
+        from .job_selection import selected as selection_value
         from .table_ui import columns
         from .table_tools import record_page
         from .table_sort import chain, describe, header_hits, sort_rows
@@ -1414,9 +1422,7 @@ class Views:
             app.cursor["group"] = ids.index(selected)
         app.group_ids = ids
         cur = app.clamp_cursor("group", n)
-        app.selected_id = None
-        if n:
-            app.selected_id = app.group_ids[cur]
+        app.selected_id = selection_value(app, "group", app.group_ids[cur] if n else None)
         if height is None:
             trows, _ = table(columns(app, "group", self.GROUP_COLS), rows, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"))
             return out + [rule(g, width, "jobs")] + trows, []
@@ -1424,7 +1430,7 @@ class Views:
         top = app.scroll_to("group", cur, vis, n)
         shown = rows[top:top + vis]
         cells = []
-        trows, _ = table(columns(app, "group", self.GROUP_COLS), shown, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"), cursor=cur - top, header_cells=cells)
+        trows, _ = table(columns(app, "group", self.GROUP_COLS), shown, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"), cursor=cur - top if app.selected_id is not None else None, header_cells=cells)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
         base = len(out) + 1
         sort_label = describe(app, "group") if chain(app, "group") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
@@ -1437,6 +1443,7 @@ class Views:
     # ---- deps tab ---------------------------------------------------------------------------------
     def deps_tab(self, snap: dict, app, width: int, height: Optional[int]) -> Tuple[List[Row], List]:
         """Dependency chains as trees; the cursor selects a job, and the actions apply to it and everything downstream."""
+        from .job_selection import selected
         g = self.g
         browser = getattr(app, "history_browser_state", {})
         view = browser.get("views", {}).get("deps", {})
@@ -1444,10 +1451,10 @@ class Views:
         if scoped:
             record = app.job_record(scoped, snap)
             if record is None:
-                app.selected_id = scoped
+                app.selected_id = selected(app, "deps", scoped)
                 return [rule(g, width, "dependencies / " + scoped), [(" This job is no longer in the current observations. Select another job in history.", "dim")]], []
             if record is not None:
-                app.selected_id = scoped
+                app.selected_id = selected(app, "deps", scoped)
                 out = [rule(g, width, "dependencies / " + scoped)]
                 if isinstance(record, Job):
                     graph = DepGraph(snap["jobs"], {f.id: f.name for f in snap["finished"]})
@@ -1520,7 +1527,7 @@ class Views:
                 row: Row = [("   " + branch, "dim"), (kind_t, "magenta"), (f"{jid} ", "cyan"), (pad(cut(name, 20, g.ascii), 20), "bold"), ("  " + desc, style)]
                 if jid in app.marks:
                     row.insert(0, (" " + g.mark, "magenta"))
-                if k == cur and height is not None:
+                if k == cur and height is not None and selected(app, "deps", True):
                     row = [(t, "rev") for t, _ in row]
                 out.append(row)
                 hits.append((len(out) - 1, "dep", jid))
@@ -1529,8 +1536,9 @@ class Views:
             out.append([("", "")])
         app.selected_id = None
         if app.dep_ids and cur < len(app.dep_ids):
-            sel = app.dep_ids[cur]
-            app.selected_id = sel
+            app.selected_id = selected(app, "deps", app.dep_ids[cur])
+        if app.selected_id is not None:
+            sel = app.selected_id
             down, up = graph.downstream(sel), graph.upstream(sel)
             out.append([(f"   selected {sel}: {len(up)} upstream, {len(down)} downstream" + (f" ({', '.join(down[:8])})" if down else ""), "dim")])
             j = jobs.get(sel)
@@ -2042,6 +2050,7 @@ class Views:
         return out
 
     def analytics_job(self, snap: dict, app, width: int, avail: Optional[int]) -> List[Row]:
+        from .job_selection import selected
         g = self.g
         ids = self.analytics_jobs(snap, app)
         if app.analytics_job and app.analytics_job not in ids:
@@ -2049,7 +2058,9 @@ class Views:
         if not ids:
             return [rule(g, width, "job series"), [("   no running job and no recorded series yet (series accumulate while the dashboard runs)", "dim")]]
         if app.analytics_job not in ids:
-            app.analytics_job = app.selected_id if app.selected_id in ids else ids[0]
+            app.analytics_job = selected(app, "analytics", app.selected_id if app.selected_id in ids else ids[0])
+        if app.analytics_job is None:
+            return [rule(g, width, "job series"), [(" Select a job in the history browser to show its recorded series.", "dim")]]
         jid = app.analytics_job
         pos = ids.index(jid)
         job = next((j for j in snap["jobs"] if j.id == jid), None)
@@ -2552,7 +2563,7 @@ class Views:
                     (f"{k('sort')} {k('reverse')}", "cycle the sort of the tab; reverse it"), (k("filter"), "filter by name, id, partition or info (Enter applies, Esc clears)"),
                     (k("gpu_toggle"), "GPU sampling on / off"), (k("bell_toggle"), "bell on start on / off"), (k("source_toggle"), "Sources tab: enable / disable the selected source"),
                     (k("refresh"), "sample every source now"),
-                    (f"{k('visual')} {k('visual_all')} {k('yank')}", "select screen lines from the cursor row (arrows extend; right-click or shift-click extends to a row), all lines; copy them"),
+                    (f"{k('visual')} {k('visual_all')} {k('yank')}", "select screen lines from the cursor row (arrows or Shift-click extend; right-click clears), all lines; copy them"),
                     (f"{k('export_text')} {k('export_csv')} {k('export_json')}", "export the tab as text; its table as CSV; the marked or selected jobs with their series as JSON (:export report: the whole dashboard as a terminal report)"),
                     (k("palette"), "command palette: cancel <ids>, hold, release, requeue, top, filter, sort, days, tab, export, profile, eval, advise, compare, tag, pin, note, chain ..."),
                     (f"{k('view_prev')} {k('view_next')} {k('days_more')} {k('days_less')}", "Analytics: previous / next view (job series, history, timeline, advisor, compare); a longer / shorter window.  Nodes: my nodes / the cluster map"),

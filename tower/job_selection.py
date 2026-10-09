@@ -4,12 +4,14 @@ from __future__ import annotations
 MAX_SELECTION = 50000
 ROW_KINDS = {"jobs": {"job", "recent"}, "history": {"fin"},
              "group": {"group"}, "deps": {"dep"}}
+JOB_SCOPES = ("jobs", "history", "group", "deps", "analytics", "research", "log")
 
 
 def initialize(app):
     if not isinstance(getattr(app, "job_selection_state", None), dict):
         app.job_selection_state = {"capture": None}
     app.job_selection_state.setdefault("deselected", {})
+    app.job_selection_state.setdefault("lines_deselected", False)
     return app.job_selection_state
 
 
@@ -22,13 +24,49 @@ def resume(app, tab=None):
     initialize(app)["deselected"][tab or getattr(app, "tab", "")] = False
 
 
+def cleared(app, tab=None):
+    return bool(initialize(app)["deselected"].get(tab or getattr(app, "tab", ""), False))
+
+
+def lines_cleared(app):
+    return bool(initialize(app)["lines_deselected"])
+
+
+def resume_lines(app):
+    """A deliberate line gesture restores its cursor without selecting a job."""
+    initialize(app)["lines_deselected"] = False
+
+
+def clear_lines(app):
+    """Clear text and log cursors without changing job or dialog ownership."""
+    state = initialize(app)
+    state["lines_deselected"] = True
+    app.sel_anchor = app.click_row = None
+    app.sel_end = 0
+    app.log_selection_expected = False
+    logs = getattr(app, "logs", None)
+    if logs is not None:
+        logs.clear_selection(reset_cursor=True)
+        logs.match = None
+    session = getattr(app, "job_panel_state", {}).get("session")
+    if session is not None and session is not logs:
+        session.clear_selection(reset_cursor=True)
+        session.match = None
+    log_workbench = getattr(app, "log_workbench_state", None)
+    if isinstance(log_workbench, dict):
+        log_workbench["citation"] = None
+    log_tools = getattr(app, "log_tools_state", None)
+    if isinstance(log_tools, dict):
+        log_tools.update(selection=None, cursor_deselected=True)
+
+
 def clear(app):
     state = initialize(app)
     state["capture"] = None
-    state["deselected"][app.tab] = True
+    state["deselected"].update(dict.fromkeys(JOB_SCOPES, True))
     app.marks.clear()
     app.selected_id = None
-    app.sel_anchor = app.click_row = None
+    clear_lines(app)
     pointer = getattr(app, "interaction_state", {})
     pointer.update(active=False, focused=None, frame_required=True)
     getattr(app, "job_panel_state", {})["focus"] = ""
@@ -44,31 +82,53 @@ def clear(app):
         toolbar.update(dragging=False, pressed=False, drag_width=None)
     history = getattr(app, "history_browser_state", None)
     if isinstance(history, dict):
-        history["drag"] = None
-    app.say("Job selection cleared; click a job or use the arrows to select")
+        history.update(drag=None, focused=False, last_selected=None)
+        for view in history.get("views", {}).values():
+            if isinstance(view, dict):
+                view.update(selected=None, explicit=False)
+    app.say("Selections cleared; click a job or line to select again")
 
 
 def context_click(app, y, x, button="left"):
-    """Route graph resets before clearing jobs or opening History exports."""
-    if button != "right" or getattr(app, "mode", "main") != "main":
+    """A graph or History export owns right-click; all other pages clear."""
+    if button != "right":
+        return False
+    if any(type(value) is not int for value in (y, x)):
         return False
     if not (0 <= x < getattr(app, "width", 120)
             and 0 <= y < getattr(app, "height", 100000)):
         return False
-    tab = getattr(app, "tab", "")
-    if tab in ("jobs", "history"):
-        from .chart_interaction import handle_mouse as chart_mouse
-        if chart_mouse(app, y, x, button=button):
+    mode = getattr(app, "mode", "main")
+    if mode in ("log_tools_page", "log_tools_results", "log_tools_marks"):
+        # The modal keeps its own source and control ownership. Its clear must
+        # precede the global toolbar so even a top-row right-click is inert.
+        from .log_tools import handle_mouse
+        return handle_mouse(app, y, x, button=button)
+    if mode in ("help", "details", "analysis"):
+        from . import chart_interaction
+        if mode == "analysis" and chart_interaction.handle_mouse(app, y, x, button=button):
             return True
+        clear_lines(app)
+        chart_interaction.cancel(app)
+        if mode == "analysis":
+            from .analysis_ui import context_click as analysis_context
+            if analysis_context(app, y, x, button=button):
+                return True
+        app.say("Text selection cleared; dialog remains open")
+        return True
+    if mode != "main":
+        return False
+    tab = getattr(app, "tab", "")
+    from .chart_interaction import handle_mouse as chart_mouse
+    if chart_mouse(app, y, x, button=button):
+        return True
     if tab == "history":
         rect = getattr(app, "history_jobs_rect", None)
         if rect is not None and rect.contains(y, x):
             from .history_log_export import handle_mouse
             return handle_mouse(app, y, x, button=button)
-    if tab in ("jobs", "history"):
-        clear(app)
-        return True
-    return False
+    clear(app)
+    return True
 
 
 def publish(app, rows, hits, width, height):

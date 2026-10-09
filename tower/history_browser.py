@@ -128,6 +128,9 @@ def _records(snap, state):
 
 
 def _selected(app, view):
+    from .job_selection import cleared
+    if cleared(app):
+        return None
     field = {"analytics": "analytics_job", "log": "log_job", "research": "research_job_id", "deps": "selected_id"}
     current = getattr(app, field.get(getattr(app, "tab", ""), "selected_id"), None)
     if getattr(app, "tab", "") == "deps":
@@ -181,6 +184,9 @@ def activate(app, job_id):
     if record is None:
         _say(app, "That job is no longer available in the current snapshot", failure=True)
         return False
+    from .job_selection import resume
+    resume(app)
+    app.selected_id = job_id
     _view(app).update(selected=job_id, explicit=True)
     state["focused"] = True
     if app.tab == "analytics":

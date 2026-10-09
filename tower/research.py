@@ -38,6 +38,10 @@ def select_job(app, jid, *, view=None, record_back=True):
         # Restore the pre-project settings before assigning the new identity.
         clear_binding(app)
     app.research_job_id = jid
+    from .job_selection import resume
+    resume(app, "research")
+    if getattr(app, "tab", "") == "research":
+        app.selected_id = jid
     if view is not None:
         app.research_view = view
     app.research_scroll = 0
@@ -148,7 +152,8 @@ class ResearchHub:
         jid = binding.get("job_id") if isinstance(binding, dict) else getattr(app, "research_job_id", None) or app.selected_id
         jobs = snap.get("jobs", []) + snap.get("finished", []) + list(snap.get("departed_jobs", {}).values())
         job = next((j for j in jobs if j.id == jid), None)
-        if job is None and not jid and jobs and not binding:
+        from .job_selection import cleared
+        if job is None and not jid and jobs and not binding and not cleared(app, "research"):
             job = jobs[0]
             jid = job.id
         project_logs = None

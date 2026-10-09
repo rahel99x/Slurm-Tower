@@ -79,19 +79,27 @@ The existing `:timeline seek EVENT_NUMBER` command remains the replay-seeking op
 
 ## Point at and zoom a graph
 
-Move the pointer inside a metric plot to show its dotted crosshair in the active theme's accent color.
+Move the pointer inside a metric plot to show its thin crosshair in the active theme's accent color.
 Press the left button, drag across a time interval, and release inside the plot.
 Tower fits the selected interval across the plot and calculates the vertical scale from its visible curve.
-The thin dotted guide preserves the graph background.
+The guide preserves the graph background.
+Unicode strokes use two horizontal and four vertical Braille positions per cell, with 80 ms visual easing.
+Mouse events and selected bounds still use whole terminal cells.
+ASCII and reader modes use static dots and `+` intersections.
+Disable **Interface animations** in `:settings` to keep the Unicode selector static.
 Hold Shift before pressing to select explicit horizontal and vertical bounds instead.
 Time labels use `s`, `ms`, or `us` as required and identify the selected start timestamp.
 Use `u` or `0` while pointing at the same graph to undo or reset rectangular zoom.
 Right-click inside the plot to restore its full view and turn off that metric's Live window.
-An active drag has a two-cell buffer on each side, confined to the visible pane.
-Movement and release in that buffer use the nearest plot edge.
+An active drag includes the axis labels and tick row, then extends three cells beyond them.
+This capture margin is clipped to the actual visible pane.
+Movement and release in the margin use the nearest plot edge.
+The initial press must be inside the plot.
+Both painted axis mappings remain fixed while the sampler publishes new data.
+Automatic sample updates do not cancel the gesture.
 Moving beyond it cancels the preview, and a later release has no effect.
 Esc before release discards the preview.
-A changed job, page, plot bounds, layout, menu, or terminal size also cancels it.
+A changed job, source, page, axis mode, layout, menu, or terminal size also cancels it.
 The operation changes display bounds and preserves measured values.
 See [Graph interaction](charts.md#zoom-a-time-interval) for keyboard commands, source scope, logarithmic axes, and limits.
 
@@ -165,15 +173,42 @@ Range dragging is available for job rows in Jobs, Recents, History, Group, and D
 The terminal must report mouse press, movement, and release for a drag.
 Use Space to mark individual jobs when those events are unavailable.
 
-Right-click a metric graph to restore its full view and keep the selected job and marks.
-Right-click elsewhere on Jobs to clear the selected job and all marks.
-The click does not activate a page label, button, link, or other control beneath it.
-The cleared state remains until you select a row or move with a row-navigation key.
-
 In History, drag through visible job rows to mark a range.
 Right-click inside its job list to open the log-export menu for the marked jobs, or for the selected job when there are no marks.
 Right-click outside that list to clear the selection without activating another control.
 See [Export History logs](log-view.md#export-logs-for-history-jobs) for clipboard and directory procedures.
+
+## Clear selections with right-click
+
+Right-click on a main page to clear job selections, all marks, and line selections.
+This works in raw Logs, alternate log views, file browsers, and docked history browsers.
+The viewed log source and its display mode remain open.
+The click does not activate a page label, button, link, or other control beneath it.
+Clearing cancels unfinished drags and prevents their delayed releases from committing an action.
+The cleared state remains through ordinary display and sampler updates.
+Click a job or line, or use its navigation keys, to select again.
+
+Two main-page targets retain their specific right-click controls:
+
+| Target | Right-click result |
+| --- | --- |
+| Metric plot | Reset that graph to its full view and turn off its Live window. Keep the selected job and marks. |
+| History job list | Open the log-export menu for the exact marked or selected jobs. |
+
+Right-click elsewhere in History clears selections without opening that menu.
+In a Log Tools page, results list, or bookmarks list, right-click clears only the local selection.
+That dialog and its exact source stay open.
+Cursor-line copies, result opening, and bookmark deletion require a new explicit selection.
+Click a row or use navigation keys to select again.
+Use `Y` for an explicit complete-file copy from a source page.
+
+Help, Details, and analysis dialogs also keep their own right-click clearing scope.
+They clear carried text or row selections and retain the selected job, marks, source, and dialog.
+Analysis graphs still use right-click for full-view reset.
+Outside those plots, analysis clears sample, Timeline, and Chart Events row selections.
+Select a row again before opening an event or starting a sample interval.
+Use its arrow keys or click the row.
+Research Evidence uses the shared line-selection state on its main page.
 
 ## Scroll without delayed input
 
@@ -248,6 +283,26 @@ Press a key, click, or use the wheel to dismiss the display immediately.
 Tower then performs that input's normal action.
 Pointer movement alone leaves the display running.
 The welcome does not change sampler intervals or delay job actions behind an animation queue.
+
+## Selection integration methods
+
+The `tower.job_selection` methods operate on published job identities and terminal display state.
+They do not read log files or send scheduler actions.
+
+| Method | Purpose and result |
+| --- | --- |
+| `initialize(app)` | Create bounded drag and explicit-clearing state. |
+| `selected(app, tab, identifier)` | Keep an explicitly cleared job table deselected during maintenance frames. |
+| `resume(app, tab=None)` | Restore job selection after a deliberate row gesture. |
+| `cleared(app, tab=None)` | Report whether job selection is explicitly cleared for that page. |
+| `lines_cleared(app)` | Report whether line selection is explicitly cleared. |
+| `resume_lines(app)` | Restore a line cursor without implicitly selecting a job. |
+| `clear_lines(app)` | Clear text and log cursors while preserving job marks, source, and dialog ownership. |
+| `clear(app)` | Clear job marks and line selections, cancel captures, and preserve the viewed source. |
+| `context_click(app, y, x, button="left")` | Preserve graph and History-export priority; apply main-page clearing or supported dialog-local clearing. |
+| `publish(app, rows, hits, width, height)` | Publish the clipped History job-list rectangle for its export priority. |
+| `active(app)`, `tick(app)`, `handle_key(app, key)` | Check, validate, or cancel an unfinished job-range drag. |
+| `handle_mouse(app, y, x, button="left", shift=False)` | Select exact visible job IDs during a range drag. |
 
 ## Resolve an input problem
 

@@ -376,13 +376,13 @@ def _activate_jump(app, entry):
 
 SETTING_CHOICES = {"theme": THEME_NAMES,
                    "workspace.density": ("comfortable", "compact", "focused")}
-SETTING_LABELS = {"theme": "Theme", "workspace.density": "Density", "color": "Terminal colors", "animations": "Completion animation",
+SETTING_LABELS = {"theme": "Theme", "workspace.density": "Density", "color": "Terminal colors", "animations": "Interface animations",
                   "bell": "Terminal bell", "mouse": "Mouse input", "gpu_sampling": "GPU sampling",
                   "clipboard.osc52": "Terminal clipboard (OSC 52)", "clipboard.tools": "Local clipboard tools"}
 SETTING_HELP = {"theme": "Preview colors and contrast. Reader uses ASCII and static feedback.",
                 "color": "Allow terminal colors; disable for a plain display.",
                 "workspace.density": "Preview panel spacing. Compact shows more rows; focused enlarges the active panel.",
-                "animations": "Use short completion movement and History indicators.", "bell": "Ring the terminal bell for configured start notices.",
+                "animations": "Use short completion movement, History indicators, and graph selector easing.", "bell": "Ring the terminal bell for configured start notices.",
                 "mouse": "Allow mouse clicks and wheel input. Keyboard controls remain available.",
                 "gpu_sampling": "Enable existing GPU observations; this can use a small allocation step.",
                 "clipboard.osc52": "Copy through the terminal escape sequence when supported.",

@@ -30,6 +30,10 @@ They are not characters to type unless the guide explicitly describes a key.
 
 An overlay uses its own controls while it is open.
 Its visible instructions take priority over page shortcuts.
+In Help, Details, and analysis dialogs, right-click clears local text or row selections.
+It preserves the selected job, marks, source, and dialog.
+Right-click on an analysis graph retains its graph-reset priority.
+Cleared sample and event rows require deliberate navigation before a row action.
 Use `Esc` to return from an overlay.
 Key bindings in configuration can replace the defaults below.
 
@@ -297,7 +301,10 @@ Hold Shift to add that range to existing marks.
 Press Esc during capture to cancel the drag and restore earlier marks.
 Release the mouse button to complete the range before opening a job action.
 Right-click a metric graph to restore its full view and keep the selected job and marks.
-Right-click elsewhere on Jobs to clear the selected job and marks without activating the surface beneath the pointer.
+Right-click elsewhere on a main page to clear job selections, marks, and line selections.
+It keeps the viewed log source open and does not activate the surface beneath the pointer.
+This also applies to raw Logs, alternate log views, and browser panes.
+Click a job or line, or use its navigation keys, to select again.
 Click a Jobs or Recents row to return arrow navigation from Details to that list.
 When Details controls have focus, one Esc returns to Main; F6 or Ctrl-W switches panes.
 Focus changes preserve marks. Right-click clearing cancels unfinished drags and consumes their later releases.
@@ -509,7 +516,11 @@ Use `l` to open the selected marked job's exact logs.
 | `'` | Visit the next basic bookmark |
 | `+` / `-` | Increase or decrease the inline job log preview |
 
-Shift-click or right-click extends a line selection.
+Shift-click extends a line selection.
+Right-click clears job and line selections without changing the open source or log view.
+In a Log Tools page, results list, or bookmarks list, right-click clears only the local selection.
+That dialog stays open. Click a line or use navigation keys to select again.
+After clearing, copying a cursor line or opening a result requires an explicit new selection.
 The far-right marker identifies selected lines.
 Display transformations do not replace original copy content.
 Use `:copy all` for a full-file copy through a background worker.
@@ -676,7 +687,11 @@ Use `r` to set the start and end of a sample interval.
 Use `e` to open observed events.
 Use `s` to change shared-scale mode.
 Click a visible time-preset or axis control for the corresponding chart operation.
-Move the pointer inside a metric plot for its dotted crosshair in the active theme's accent color.
+Move the pointer inside a metric plot for its thin crosshair in the active theme's accent color.
+Unicode selectors use two horizontal and four vertical Braille positions per cell.
+An 80 ms visual transition smooths the selector; mouse coordinates remain whole terminal cells.
+ASCII and reader modes use static dots and `+` intersections.
+Set `animations` to `false` to disable easing while keeping the Unicode selector.
 Press, drag, and release inside the same plot to select a time interval and fit its visible curve to both axes.
 The interval must span at least two columns.
 Hold Shift before pressing to retain an explicit two-axis rectangle instead; this also requires at least one row.
@@ -684,13 +699,18 @@ Selected time intervals show relative offsets in adaptive `s`, `ms`, or `us` uni
 Press `u` or `0` while pointing at that graph to undo or reset rectangular zoom.
 Right-click inside the plot to restore its full view. This also turns off that metric's Live window.
 The reset applies only to that graph's exact metric and source.
-An active drag has a two-cell buffer around each visible edge, confined to its pane.
-Movement and release inside that buffer use the nearest plot edge.
-Esc, movement beyond the buffer, or changed job/layout cancels the preview. A later release cannot commit it.
+An active drag has a three-cell margin beyond the axis labels and tick row.
+The margin is clipped to the actual visible pane. The initial press must be inside the plot.
+Movement and release inside that margin use the nearest plot edge.
+The painted horizontal and vertical axes stay fixed while new samples arrive during the drag.
+Sampling continues. Automatic sample updates do not cancel the gesture.
+Esc, movement beyond the margin, or changed job/layout cancels the preview. A later release cannot commit it.
 Menus, dialogs, and startup previews prevent capture of hidden graphs.
 
 In Diff, `s` changes the comparison scale lock.
 In the event picker, Enter opens the selected citation or job.
+Right-click outside an analysis plot clears its sample or event selection and keeps the dialog open.
+Use arrows or click a row to select again before opening an event or starting a sample interval.
 Click an event's visible text or source row to open that exact painted citation.
 Chart Events and Timeline links also support F8 navigation and Enter activation.
 Display labels and precision do not change recorded values.

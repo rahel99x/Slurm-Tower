@@ -104,21 +104,24 @@ def render(views, snap, app, width, height):
         if result.get("truncated"):
             rows.append(row(" Bounded tail: earlier records are outside this inspection window.", "yellow"))
     elif view == "arrays":
+        from .job_selection import selected, cleared
         groups = result.get("groups", [])
         app.research_groups = groups
         index = app.clamp_cursor("research", len(groups))
+        selected_index = selected(app, "research", index)
         rows.append(row(" Array cohorts  |  solid cells are sampled task identities; unseen tasks stay unknown", "dim"))
         if not groups:
             rows.append(row(" No array records in this snapshot.", "dim"))
         for i, group in enumerate(groups):
+            selected_ = i == selected_index
             hits.append((len(rows), "research_array", group["id"]))
             total = group.get("total") if group.get("total_known") else "?"
-            rows.append(row(f" {'>' if i == index else ' '} {group['id']}  {group.get('name', '')}  total {total}  observed {group.get('observed', 0)}",
-                            "rev+bold" if i == index else "bold"))
+            rows.append(row(f" {'>' if selected_ else ' '} {group['id']}  {group.get('name', '')}  total {total}  observed {group.get('observed', 0)}",
+                            "rev+bold" if selected_ else "bold"))
             rows.extend(charts.stacked_bar(g, [(k, n, STATES.get(k, "magenta")) for k, n in group.get("states", {}).items()], width))
             cells = group.get("cells", [])[:max(0, width - 4)]
             rows.append([("   ", "")] + [(g.full if cell.get("observed") else g.empty, STATES.get(cell.get("state"), "dim")) for cell in cells])
-            if i == index:
+            if selected_:
                 duration = group.get("duration", {})
                 rows.append(row(f" Failed {group.get('failures') or 'none'}  |  duration samples {duration.get('samples', 0)}  p95 {short_duration(duration.get('p95')) if duration.get('p95') is not None else '?'}", "yellow"))
                 if group.get("outliers"):
@@ -172,7 +175,7 @@ def render(views, snap, app, width, height):
             rows.append(heading("evidence sources / arrows select, Enter opens cited log"))
             for i, e in enumerate(evidence.values()):
                 hits.append((len(rows), "research_evidence", e["id"]))
-                selected_ = i == analysis["evidence_cursor"]
+                selected_ = analysis_ui.rows_selected(app, "evidence") and i == analysis["evidence_cursor"]
                 position = f" line {e['line']}" if e.get("line") is not None else ""
                 if e.get("line_basis") == "tail-relative":
                     position += " (tail-relative)"
@@ -230,14 +233,16 @@ def render(views, snap, app, width, height):
         return nav + rows, nav_hits + [(y + len(nav), kind, key) for y, kind, key in hits]
     avail = max(0, height - len(nav)) if height is not None else len(rows)
     offset = max(0, min(app.research_scroll, max(0, len(rows) - avail)))
-    if view == "arrays" and hits and height is not None and app.research_array_focus:
+    if (view == "arrays" and hits and height is not None and app.research_array_focus
+            and not cleared(app, "research")):
         selected = hits[app.cursor.get("research", 0)][0]
         if avail and selected < offset:
             offset = selected
         elif avail and selected >= offset + avail:
             offset = max(0, selected - max(0, avail - 1))
         app.research_array_focus = False
-    if view == "evidence" and height is not None and analysis.get("evidence_focus"):
+    if (view == "evidence" and height is not None and analysis.get("evidence_focus")
+            and analysis_ui.rows_selected(app, "evidence")):
         sources = [hit for hit in hits if hit[1] == "research_evidence"]
         if sources and avail:
             selected = sources[min(analysis["evidence_cursor"], len(sources) - 1)][0]

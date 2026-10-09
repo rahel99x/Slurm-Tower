@@ -39,17 +39,28 @@ When a slider or directional button focus owns the keys, its controls take prior
 ## Point at a metric graph
 
 Move the pointer inside a visible metric plot with recorded data.
-Tower draws a thin dotted crosshair with `+` at the pointer.
-The dots, center marker, and selection outline use the active theme's accent color.
+Tower draws a thin crosshair at the pointer.
+The crosshair and selection outline use the active theme's accent color.
 They update when you change the theme.
-Unicode uses `·` for the dots; ASCII uses `.`.
-Every cell along the guide can contain a dot.
+Unicode selectors use a Braille lattice with two horizontal positions and four vertical positions per terminal cell.
+Crossing strokes combine their Braille dots in the same cell.
+Their exact appearance depends on the terminal font.
 The guide preserves the graph's background and has no black outline.
 The crosshair stays inside the measured plot, outside its labels and controls.
 It marks the pointer's coordinates and does not turn a missing sample into a measurement.
 
+The Unicode selector eases between reported pointer positions over 80 ms.
+This transition is visual only. Mouse events and selected bounds still use whole terminal cells.
+The lattice does not increase mouse accuracy or measurement precision.
+ASCII and reader modes use static `.` strokes with `+` intersections.
+Set `"animations": false` in JSON, or `animations = false` in TOML, to disable easing.
+The Unicode selector remains available without motion.
+You can also open `:settings`, disable **Interface animations**, and apply the settings.
+That setting controls selector easing as well as completion motion.
+
 Hover uses the published graph geometry.
 It does not reload the source, change the selected job, or rasterize the curve again.
+Easing repaints the cached overlay instead of replaying queued mouse events.
 The terminal must report mouse movement.
 Use `:terminaltest` when movement reports are missing.
 
@@ -98,7 +109,9 @@ Current resource captures retain their timestamp precision.
 Older saved captures can retain the earlier 0.1-second rounding.
 A precise capture timestamp does not establish equally frequent source measurements.
 
-During a rectangular selection, Tower holds that plot's painted time mapping fixed.
+During a rectangular selection, Tower holds both painted axis mappings fixed.
+The sampler continues to publish new observations.
+Automatic sample updates and changing data limits do not cancel the drag.
 Cancelling the selection resumes Live.
 Committing a valid time selection turns Live off and keeps its selected interval.
 Enabling Live again clears that metric's completed rectangular zoom.
@@ -109,17 +122,20 @@ Enabling Live again clears that metric's completed rectangular zoom.
 
 1. Press the left mouse button inside the required metric plot.
 2. Keep the button pressed and move horizontally across the required time interval.
-3. Check the thin dotted preview.
-4. Release inside the same plot.
+3. Check the thin selection preview.
+4. Release inside the same plot or its capture margin.
 
 **Expected result:** The selected interval fills the graph's horizontal extent.
 Tower calculates the vertical limits from the complete known curve inside that interval.
 Both axes update to the new view.
 The selection must span at least two columns.
 A click without that width leaves the view unchanged.
-After the drag starts inside the plot, a two-cell buffer surrounds each visible edge.
-Moving or releasing inside that buffer uses the nearest plot edge.
-The buffer stays inside the visible pane and does not extend the initial clickable area.
+After the drag starts inside the plot, its capture margin includes the axis labels and tick row.
+It extends three terminal cells beyond that axis rectangle.
+The margin is clipped to the actual visible pane.
+Moving or releasing inside the margin uses the nearest plot edge.
+The margin does not extend hover, initial presses, or right-click targets.
+It cannot switch the captured source to a neighboring graph.
 The operation changes the display bounds and preserves the original measurements.
 Between adjacent known samples, a zoom can show their connected line even when
 the selected interval contains no original sample. The sample count still
@@ -132,7 +148,7 @@ Very small finite spans can use scientific notation.
 Display precision does not imply a finer measurement cadence.
 
 Hold Shift before pressing the mouse button to select an explicit two-axis rectangle.
-Move to the opposite corner and release inside the same plot.
+Move to the opposite corner and release inside the same plot or its capture margin.
 This mode requires at least two columns and one row.
 It keeps the selected vertical limits instead of fitting them to the visible data.
 
@@ -146,14 +162,21 @@ In the chart inspector, use the Undo zoom and Reset zoom buttons, or
 `:chart undo` and `:chart reset`, for the current metric.
 The existing `+`, `-`, time presets, and axis commands remain available.
 
+In an analysis dialog, right-click outside the plot to clear its selected sample or event row.
+This also clears the sample interval when the chart inspector is open.
+The job, marks, metric, source, and dialog remain open.
+Use the arrows or click a row to select again.
+An event action or sample-interval anchor requires that explicit selection.
+Right-click inside the plot still resets the graph.
+
 Each zoom belongs to an exact metric, source, job, and run attempt.
 Another job cannot inherit it.
 Zooms are session display state; they do not change files or sampler intervals.
 Tower retains at most 128 zoom entries and 16 undo steps per entry.
 
 Press Esc before release to discard the preview.
-Moving beyond the buffer discards the preview. A later release cannot commit it.
-Changing the page, job, source, graph bounds, panel geometry, or terminal size cancels capture.
+Moving beyond the margin discards the preview. A later release cannot commit it.
+Changing the page, job, source, axis mode, panel geometry, or terminal size cancels capture.
 Opening a menu, dialog, or startup preview cancels it too.
 A missing release times out after 15 seconds.
 Cancellation keeps the previous completed zoom.
@@ -410,19 +433,32 @@ Zoom bounds use plotted coordinates; logarithmic vertical bounds remain base-10 
 | `publish(app, width=None, height=None)` | Freeze the final visible geometry and validate capture. |
 | `hover(app, y, x)` | Update cosmetic pointer feedback from the published plots. |
 | `active(app)` | Report whether a rectangular drag is active. |
-| `capture_bounds(plot)` | Return the active drag's two-cell tolerance, clipped to the plot's visible pane. |
+| `capture_bounds(plot)` | Extend the axis rectangle by three cells, then clip it to the actual visible pane. |
 | `tick(app, now=None)` | Cancel stale, blocked, or timed-out capture. |
 | `cancel(app)` | Discard an unfinished preview without changing completed zoom. |
 | `handle_mouse(app, y, x, button="left", shift=False)` | Apply plot press, motion, valid-release zoom, and right-click full-view reset. |
 | `bounds(app, identity, scale=None)` | Return completed source-specific display bounds. |
+| `captured_bounds(app, identity, scale=None)` | Return both painted axis mappings while the exact source has an active drag. |
 | `autofit(app, identity, scale=None)` | Identify a time-only zoom that requires an observed-data vertical fit. |
 | `undo(app, identity=None)` | Restore the previous rectangular view. |
 | `reset(app, identity=None)` | Remove rectangular zoom for the selected source. |
 | `handle_key(app, key)` | Apply cancellation, undo, and reset controls in plot context. |
 | `command_names()` | Return the interaction command names. |
 | `run_command(app, args)` | Apply `chartzoom undo` or `chartzoom reset`. |
-| `feedback(app, ascii_=None, rows=None, overlays=())` | Return thin theme-colored dotted feedback with each underlying plot cell's actual background. |
+| `feedback(app, ascii_=None, rows=None, overlays=())` | Return themed Braille selector strokes or ASCII fallback, preserving each painted cell's background. |
+| `next_deadline(app, now=None)` | Schedule the next cached selector frame during its bounded 80 ms transition. |
 | `overlay(views, snap, app, width, height)` | Return no full modal overlay; feedback belongs to the current plot. |
+
+### `tower.selector_glyphs`
+
+These pure helpers place visual strokes on the two-by-four Braille lattice.
+They do not change event coordinates, measured values, or source sampling.
+
+| Method | Purpose and result |
+| --- | --- |
+| `locate(y, x)` | Map finite visual coordinates to a terminal cell and its Braille positions. |
+| `glyph(y_slot, x_slot, horizontal=False, vertical=False, ascii_=False, fine=True)` | Return a thin stroke, combined intersection, or portable fallback glyph. |
+| `interpolate(start, target, elapsed, duration=0.08)` | Ease the visual position without overshoot; use at most 200 ms for a custom duration. |
 
 ### `tower.metric_live`
 
@@ -458,6 +494,9 @@ A filled companion uses the same canonical identity as its resource curve.
 | Method | Purpose and result |
 | --- | --- |
 | `initialize(app)` | Create bounded analysis state. |
+| `rows_selected(app, kind)` | Report whether the current sample, Timeline, Chart Events, or Evidence cursor is explicitly selected. |
+| `resume_rows(app, kind)` | Restore row selection after deliberate navigation. |
+| `context_click(app, y, x, button="left")` | Preserve graph-reset priority; clear local analysis row selection and keep the exact dialog source. |
 | `restore(app, ui)` | Restore preferences and reject malformed saved values. |
 | `save(app)` | Return persistent preferences without a live modal or job selection. |
 | `command_names()` | Return the analysis command names for the command palette. |

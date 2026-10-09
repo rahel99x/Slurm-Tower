@@ -535,6 +535,7 @@ def _scoped_app(app, job, state):
     if "analysis" not in retained:
         retained["analysis"] = _analysis_settings(app)
     proxy = copy.copy(app)
+    proxy._chart_owner = app
     proxy.tab, proxy.mode = state["mode"], "main"
     proxy.selected_id = proxy.research_job_id = proxy.analytics_job = job.id
     proxy.research_view, proxy.analytics_view = state["research_view"], state["analytics_view"]

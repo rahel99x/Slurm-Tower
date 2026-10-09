@@ -730,6 +730,7 @@ class _FrameCache:
         self.geometry = None
         self.next_maintenance = self.next_animation = 0.0
         self.next_live = float("inf")
+        self.next_selector = float("inf")
         self.live_revision = 0
         self.toolbar_token = None
 
@@ -809,6 +810,8 @@ class _FrameCache:
         from .chart_interaction import feedback as chart_feedback
         overlays += chart_feedback(app, ascii_=bool(getattr(getattr(views, "g", None), "ascii", False)),
                                    rows=rows, overlays=overlays)
+        from .chart_interaction import next_deadline
+        self.next_selector = next_deadline(app)
         from .metric_live import feedback as live_feedback
         glyphs = getattr(views, "g", None) or L.Glyphs(bool(getattr(app, "ascii", False)))
         overlays += live_feedback(app, glyphs)
@@ -817,7 +820,8 @@ class _FrameCache:
 
     def wait_ms(self, now=None):
         now = time.monotonic() if now is None else now
-        return max(1, min(200, round(1000 * (min(self.next_maintenance, self.next_animation, self.next_live) - now))))
+        return max(1, min(200, round(1000 * (min(self.next_maintenance, self.next_animation,
+                                              self.next_live, self.next_selector) - now))))
 
 
 def _mouse_reporting(enabled):

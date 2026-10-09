@@ -25,6 +25,7 @@ def initialize(app):
                                "active_key": None, "active_buffer": None, "restored": None,
                                "search_mode": {"regex": True, "case": False, "word": False},
                                "retained_explicit": False, "retained_cache": None, "retained_omitted": 0, "retained_matcher_cache": None, "page_pan_cache": OrderedDict(), "page_pan_page": None, "retained_index": None, "retained_target": None, "retained_target_buffer": None, "retained_token": None, "retained_pending": False, "retained_processed": 0, "retained_total": 0, "retained_known_count": None}
+    app.log_tools_state.setdefault("cursor_deselected", False)
     return app.log_tools_state
 
 
@@ -98,7 +99,8 @@ def observe_buffer(app, buf):
     saved = state["positions"].get(key)
     if saved and saved["identity"] == (buf.ident, buf.reloads, buf.skipped_bytes):
         app.logs.top = None if saved["follow"] else saved["top"]
-        app.logs.cursor = None if saved["follow"] else saved["cursor"]
+        from .job_selection import lines_cleared
+        app.logs.cursor = None if saved["follow"] or lines_cleared(app) else saved["cursor"]
         app.logs.sync_buffer(buf)
     elif saved:
         state["positions"].pop(key, None)
@@ -192,7 +194,7 @@ def _show_page(app, source, offset=0, *, line=None, expected=None, return_mode=N
     def complete(page):
         if app.mode != "log_tools_page":
             state["page_history"] = []
-        state.update(page=page, page_source=dict(source), page_files=files, page_cursor=0, page_top=0, page_pan=0,
+        state.update(page=page, page_source=dict(source), page_files=files, page_cursor=0, page_top=0, page_pan=0, cursor_deselected=False,
                      selection=None, page_return=back)
         if (app.mode, app.tab, getattr(app, "log_job", None), app.logs.path) == origin:
             app.mode = "log_tools_page"
@@ -299,7 +301,7 @@ def run_command(app, args):
                 raise ValueError("Percentage must be between 0 and 100")
             origin = (app.mode, app.tab, getattr(app, "log_job", None), app.logs.path)
             def complete(page):
-                state.update(page=page, page_source=dict(source), page_files=files, page_cursor=0, page_top=0, page_pan=0,
+                state.update(page=page, page_source=dict(source), page_files=files, page_cursor=0, page_top=0, page_pan=0, cursor_deselected=False,
                              selection=None, page_return="main")
                 if (app.mode, app.tab, getattr(app, "log_job", None), app.logs.path) == origin:
                     app.mode = "log_tools_page"
@@ -484,6 +486,9 @@ def _copy_page(app, *, all_file=False):
     if not page or not source:
         app.fail("No published source page to copy")
         return
+    if not all_file and state["cursor_deselected"] and state["selection"] is None:
+        app.fail("Select a source line before copying; Y copies the entire source")
+        return
     from .log_copy import copy_full_log, copy_log_selection
     files, cb = state.get("page_files") or app.logs.files, dict(app.cfg.get("clipboard", {}))
     if source.get("target", _target(files)) != _target(files):
@@ -559,6 +564,7 @@ def handle_key(app, key):
                 elif previous is not None:
                     state["page_history"].pop()
         elif key in ("up", "down", "pgup", "pgdn", "home", "end"):
+            state["cursor_deselected"] = False
             step = {"up": -1, "down": 1, "pgup": -max(1, visible - 1), "pgdn": max(1, visible - 1), "home": -n, "end": n}[key]
             state["page_cursor"] = max(0, min(max(0, n - 1), state["page_cursor"] + step))
             if state["selection"] is not None:
@@ -566,6 +572,7 @@ def handle_key(app, key):
         elif key in ("left", "right"):
             state["page_pan"] = max(0, min(log_scan.PAGE_BYTES, state["page_pan"] + (-8 if key == "left" else 8)))
         elif key == "v":
+            state["cursor_deselected"] = False
             state["selection"] = None if state["selection"] is not None else (state["page_cursor"], state["page_cursor"])
         elif key == "y": _copy_page(app)
         elif key == "Y": _copy_page(app, all_file=True)
@@ -573,13 +580,20 @@ def handle_key(app, key):
     collection = (state["results"] or {}).get("matches", []) if mode == "log_tools_results" else state["marks"]
     field = "result_cursor" if mode == "log_tools_results" else "mark_cursor"
     if key in ("up", "down", "pgup", "pgdn", "home", "end"):
+        state["cursor_deselected"] = False
         step = {"up": -1, "down": 1, "pgup": -max(1, getattr(app, "height", 24) - 10), "pgdn": max(1, getattr(app, "height", 24) - 10), "home": -len(collection), "end": len(collection)}[key]
         state[field] = max(0, min(max(0, len(collection) - 1), state[field] + step))
     elif key == "enter" and collection:
+        if state["cursor_deselected"]:
+            app.say("Select a log result or mark with arrows or a click before opening it")
+            return True
         row = collection[state[field]]
         identity = row["snapshot"]["ident"] if mode == "log_tools_results" else row["identity"]
         _show_page(app, row["source"], row["offset"], line=row.get("line"), expected=identity, return_mode=mode, fragment=bool(row.get("fragment")))
     elif key in ("delete", "d") and mode == "log_tools_marks" and collection:
+        if state["cursor_deselected"]:
+            app.say("Select a log mark with arrows or a click before deleting it")
+            return True
         collection.pop(state[field])
         state[field] = min(state[field], max(0, len(collection) - 1))
         app.say("Log mark removed")
@@ -590,15 +604,21 @@ def handle_mouse(app, y, x, button="left", shift=False):
     if app.mode not in MODES:
         return False
     state = initialize(app)
+    if button == "right":
+        from .job_selection import clear_lines
+        clear_lines(app)
+        app.say("Log line selection cleared; click a line or use arrows to select again")
+        return True
     hit = state["mouse_rows"].get(y)
     if hit is None or not hit[1] <= x < hit[2] or button not in ("left", "double"):
         return True
     index = hit[0]
+    state["cursor_deselected"] = False
     if app.mode == "log_tools_page":
-        state["page_cursor"] = index
         if shift:
-            anchor = state["selection"][0] if state["selection"] else index
+            anchor = state["selection"][0] if state["selection"] else state["page_cursor"]
             state["selection"] = (anchor, index)
+        state["page_cursor"] = index
     else:
         state["result_cursor" if app.mode == "log_tools_results" else "mark_cursor"] = index
         if button == "double": handle_key(app, "enter")
@@ -657,7 +677,7 @@ def overlay(views, snap, app, width, height):
             text = L.cut(clean(f" {label} {presented}", g.ascii, limit=max(256, width * 8)), max(0, width - 7), g.ascii)
             indices[len(rows)] = index
             pad = " " * max(0, width - 6 - L.vlen(text))
-            rows.append([(text + pad, "sel" if index == cursor else ""), (" " + marker if chosen else "  ", "orange+bold")])
+            rows.append([(text + pad, "sel" if index == cursor and not state["cursor_deselected"] else ""), (" " + marker if chosen else "  ", "orange+bold")])
         if not n: rows.append([("Empty source page", "dim")])
         rows += [[("Arrows/PgUp/PgDn move | Left/Right pan | [/] previous/next file page", "dim")],
                  [("v select | y copy selected raw lines | Y copy entire source | Esc back", "dim")]]
@@ -684,7 +704,7 @@ def overlay(views, snap, app, width, height):
             location = f"L{row['line']}" if row.get("line") else f"B{row['offset']}"
             text = f" {label} {location}: " + (row["text"] if is_results else row["name"])
             indices[len(rows)] = index
-            rows.append([(clean(text, g.ascii), "sel" if index == cursor else "")])
+            rows.append([(clean(text, g.ascii), "sel" if index == cursor and not state["cursor_deselected"] else "")])
         if collection and is_results:
             current = collection[cursor]
             rows.append([(clean(current["source"]["path"], g.ascii), "cyan")])

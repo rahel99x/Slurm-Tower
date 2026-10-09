@@ -247,6 +247,8 @@ def handle_key(app, key):
         state["generation"] += 1
     if app.logs.browser:
         if key in ("up", "down", "pgup", "pgdn", "home", "end"):
+            from .job_selection import resume_lines
+            resume_lines(app)
             state["current_group"] = ""
         if key == "space":
             _toggle_group(app, _selected_group(app))
@@ -258,6 +260,8 @@ def handle_key(app, key):
             app.say("Original log lines")
             return True
         if movement in ("up", "down", "pgup", "pgdn", "home", "end"):
+            from .job_selection import resume_lines
+            resume_lines(app)
             page = state.get("viewport_page", max(1, getattr(app, "height", 24) - 14))
             count = len(state["rows"])
             step = {"up": -1, "down": 1, "pgup": -max(1, page - 1), "pgdn": max(1, page - 1), "home": -count, "end": count}[movement]
@@ -267,6 +271,10 @@ def handle_key(app, key):
                 state["scroll"] = state["cursor"] - page + 1
             return True
         if key in ("enter", "space") and state["view"] in ("json", "fold"):
+            from .job_selection import lines_cleared
+            if lines_cleared(app):
+                app.say("Select a log row with arrows or a click before expanding it")
+                return True
             rows = state["rows"]
             item = rows[min(state["cursor"], len(rows) - 1)] if rows else {}
             if item.get("expandable"):
@@ -286,6 +294,10 @@ def handle_key(app, key):
             app.say("Original source view for bookmarks and source search")
             return False
         if key == "o" and state["view"] in ("json", "fold", "diff"):
+            from .job_selection import lines_cleared
+            if lines_cleared(app):
+                app.say("Select a log row with arrows or a click before opening its source")
+                return True
             rows = state["rows"]
             item = rows[min(state["cursor"], len(rows) - 1)] if rows else {}
             source = item.get("original", item.get("left"))
@@ -338,6 +350,8 @@ def handle_mouse(app, y, x, button="left", shift=False):
     if button in ("left", "double") and not shift and y in state["mouse_rows"]:
         left, right, index = state["mouse_rows"][y]
         if left <= x < right:
+            from .job_selection import resume_lines
+            resume_lines(app)
             state["cursor"] = index
             if button == "double":
                 handle_key(app, "enter")
@@ -550,7 +564,8 @@ def render_browser(views, snap, app, width, height, legacy_rows, hits):
     filtered = [entry for entry in entries if not app.logs.file_filter or any(app.logs.file_filter.casefold() in str(entry.get(k, "")).casefold() for k in ("label", "group", "path", "description"))]
     selected_entries = app.log_entries() if hasattr(app, "log_entries") else visible_entries(app, filtered)
     cursor = max(0, min(app.logs.browser_cursor, len(selected_entries) - 1)) if selected_entries else 0
-    selected_id = selected_entries[cursor]["id"] if selected_entries else None
+    from .job_selection import lines_cleared
+    selected_id = selected_entries[cursor]["id"] if selected_entries and not lines_cleared(app) else None
     grouped = OrderedDict()
     for entry in filtered:
         grouped.setdefault(entry.get("group", "Application"), []).append(entry)
@@ -770,6 +785,8 @@ def overlay(views, snap, app, width, height):
             split_right = split_extent - split_left
             sep = " | " if views.g.ascii else " │ "
             body_start = len(rows)
+            from .job_selection import lines_cleared
+            cursor_visible = not lines_cleared(app)
             for index, item in enumerate(body[state["scroll"]:state["scroll"] + page], state["scroll"]):
                 if "pair" in item:
                     values = [source["lines"][line] if line is not None else "" for source, line in zip(sources, item["pair"])]
@@ -779,8 +796,8 @@ def overlay(views, snap, app, width, height):
                 else:
                     text = display_line(app, clean(item["text"], views.g.ascii, VIEW_BYTES))
                 marker = ">" if views.g.ascii else "›"
-                rows.append([(" " + (marker if index == state["cursor"] else " ") + " " + text,
-                              "rev+bold" if index == state["cursor"] else item.get("style", ""))])
+                rows.append([(" " + (marker if cursor_visible and index == state["cursor"] else " ") + " " + text,
+                              "rev+bold" if cursor_visible and index == state["cursor"] else item.get("style", ""))])
     rendered = L.box(views.g, rows, width, height, "Log workbench / " + state["view"], min_width=max(1, width - 4))
     rendered = [(y + origin_y, x + origin_x, row) for y, x, row in rendered]
     from .control_rows import place_hits
@@ -884,6 +901,8 @@ def apply_citation(app, buf):
     if index is None or index < 0 or index >= buf.total:
         app.say("Citation is outside the retained log window or changed; the exact source file is open.")
         return
+    from .job_selection import resume_lines
+    resume_lines(app)
     app.logs.goto(index, buf)
     app.logs.match = index
     app.say(f"Cited {citation.get('id', 'source')} at retained line {index + 1}; original bytes remain selectable")

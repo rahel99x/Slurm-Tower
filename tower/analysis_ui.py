@@ -38,6 +38,59 @@ def initialize(app):
     return app.analysis_state
 
 
+def rows_selected(app, kind):
+    """A cleared local row cursor stays hidden until deliberate selection."""
+    if kind == "evidence":
+        from .job_selection import lines_cleared
+        return not lines_cleared(app)
+    cleared = initialize(app).get("rows_deselected", {})
+    return not isinstance(cleared, dict) or not cleared.get(kind, False)
+
+
+def resume_rows(app, kind):
+    if kind == "evidence":
+        from .job_selection import resume_lines
+        resume_lines(app)
+    elif kind in ("chart", "timeline", "chart_events"):
+        state = initialize(app)
+        cleared = state.get("rows_deselected", {})
+        state["rows_deselected"] = {scope: bool(cleared.get(scope, False))
+                                   for scope in ("chart", "timeline", "chart_events")} if isinstance(cleared, dict) else {}
+        state["rows_deselected"][kind] = False
+
+
+def context_click(app, y, x, button="left"):
+    """Clear modal row selection without changing its job, source, or view."""
+    if (button != "right" or getattr(app, "mode", "main") != "analysis"
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in (y, x))
+            or not 0 <= x < getattr(app, "width", 120)
+            or not 0 <= y < getattr(app, "height", 100000)):
+        return False
+    toolbar = getattr(app, "toolbar_state", {})
+    if isinstance(toolbar, dict) and (toolbar.get("menu") is not None or toolbar.get("panel")):
+        return False
+    # This also makes direct handler callers preserve graph-reset precedence.
+    if chart_interaction.handle_mouse(app, y, x, button="right"):
+        return True
+    state = initialize(app)
+    modal = state.get("modal")
+    if modal in ("chart", "timeline", "chart_events"):
+        chart_interaction.cancel(app)
+        pointer = getattr(app, "interaction_state", {})
+        graph = pointer.get("graph") if isinstance(pointer, dict) else None
+        focused = graph.get(pointer.get("focused")) if graph is not None else None
+        if focused is not None and focused.group in ("timeline_events", "chart_events"):
+            pointer.update(active=False, focused=None, pending_focus=None)
+        resume_rows(app, modal)
+        state["rows_deselected"][modal] = True
+        if modal == "chart":
+            state.pop("chart_range", None)
+        app.say("Row selection cleared; use the arrows or click a row to select")
+    # Inspector and comparison controls express the current view. They keep
+    # their state when there is no selected job, sample, or event row to clear.
+    return True
+
+
 def restore(app, ui):
     state = initialize(app)
     saved = ui.get("analysis", {}) if isinstance(ui, dict) else {}
@@ -167,6 +220,8 @@ def _resource_series(app, jid):
 def _analysis_jid(app):
     if getattr(app, "tab", "") == "research":
         return getattr(app, "research_job_id", None) or getattr(app, "selected_id", None)
+    if getattr(app, "tab", "") == "analytics":
+        return getattr(app, "analytics_job", None) or getattr(app, "selected_id", None)
     return getattr(app, "selected_id", None)
 
 
@@ -412,11 +467,14 @@ def chart_rows(g, app, points, width, height, name, source, *, interactive=True,
     # invalidate the raster even when its source values remain unchanged.
     zone = (os.environ.get("TZ"), time.tzname, time.timezone, time.daylight)
     glyphs = (g.ascii, g.spark, g.box, g.dot, g.rule)
-    box = chart_interaction.bounds(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
-    auto_fit = chart_interaction.autofit(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
+    scale = "log" if axis.get("mode") == "log" else "linear"
+    box = chart_interaction.bounds(app, zoom_key, scale=scale)
+    auto_fit = chart_interaction.autofit(app, zoom_key, scale=scale)
+    captured = chart_interaction.captured_bounds(app, zoom_key, scale=scale)
     key = (name, width, height, glyphs, label, unit, (type(precision), precision), color,
            axis.get("mode"), repr(axis.get("low")), repr(axis.get("high")), zone, content,
-           (box["x"], box["y"], auto_fit) if box else None, live_window)
+           (box["x"], box["y"], auto_fit) if box else None, live_window,
+           (captured["x"], captured["y"]) if captured else None)
     cache = state.setdefault("chart_card_cache", OrderedDict())
     entry = cache.get(key)
     if entry is not None:
@@ -449,8 +507,13 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
     state = initialize(app)
     full = _points(points) if normalized_points is None else normalized_points
     axis = state["axes"].get(name, {"mode": "auto"})
-    box = chart_interaction.bounds(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
-    if box:
+    scale = "log" if axis.get("mode") == "log" else "linear"
+    box = chart_interaction.bounds(app, zoom_key, scale=scale)
+    captured = chart_interaction.captured_bounds(app, zoom_key, scale=scale)
+    if captured:
+        times = captured["x"]
+        visible = [point for point in full if times[0] <= point["t"] <= times[1]]
+    elif box:
         times = box["x"]
         visible = [point for point in full if times[0] <= point["t"] <= times[1]]
     elif live_window:
@@ -479,9 +542,11 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
     auto_fit = chart_interaction.autofit(app, zoom_key, scale="log" if axis.get("mode") == "log" else "linear")
     if box:
         low, high = box["y"]
-        if auto_fit:
+        if auto_fit and not captured:
             low, high = charts.fit_time_bounds(plotted, [point["t"] for point in raster_points],
                                                times, box["y"], cadence)
+    if captured:
+        low, high = captured["y"]
     def axis_label(value):
         if axis["mode"] == "log":
             try:
@@ -507,7 +572,7 @@ def _render_chart_rows(g, app, points, width, height, name, source, *, interacti
         if precision is not None and known:
             summary = f" {label}  last {chart_tools.format_value(values[-1], preference)}  mean {chart_tools.format_value(charts._mean(known), preference)}  max {chart_tools.format_value(max(known), preference)}"
             rows[0] = L.clip_row([(clean(summary, g.ascii), "cyan+bold")], width)
-    if interactive and visible:
+    if interactive and visible and rows_selected(app, "chart"):
         state["cursor"] = max(0, min(len(visible) - 1, int(state.get("cursor", 0))))
         selected = visible[state["cursor"]]
         state["cursor_t"] = selected["t"]
@@ -693,6 +758,7 @@ def _chart_control(app, args, series):
                     raise ValueError("chart events [on|off]")
                 state["chart_events"] = parameters == ["on"]
             else:
+                resume_rows(app, "chart_events")
                 state.update(modal="chart_events", cursor=0, scroll=0)
                 app.mode = "analysis"
                 return True
@@ -844,6 +910,7 @@ def run_command(app, args):
                 elif args[0] == "pan" and 0 <= value <= 1:
                     state["pan"] = value
                 elif args[0] == "cursor" and value >= 1 and value == int(value):
+                    resume_rows(app, "chart")
                     state["cursor"] = min(MAX_POINTS - 1, int(value) - 1)
                 elif args[0] == "window" and 0 < value <= 365 * 86400:
                     state.update(window=value, pan=1.0, cursor=0)
@@ -858,6 +925,7 @@ def run_command(app, args):
                 app.fail("chart METRIC (load metrics in Experiment first)")
                 return True
             state.update(metric=args[0], cursor=0, zoom=1.0, pan=0.0)
+            resume_rows(app, "chart")
             state.pop("window", None)
             state["preset"] = "all"
         state.update(modal="chart", scroll=0)
@@ -880,6 +948,7 @@ def run_command(app, args):
         if len(args) > 1:
             app.fail("timeline [events|open EVENT_NUMBER|seek EVENT_NUMBER]")
             return True
+        resume_rows(app, "timeline")
         state.update(modal="timeline", cursor=max(0, len(events) - 1), scroll=0)
         app.mode = "analysis"
         return True
@@ -941,11 +1010,14 @@ def handle_key(app, key):
         if getattr(app, "mode", "main") == "main" and getattr(app, "tab", "") == "research" and getattr(app, "research_view", "") == "evidence":
             ids = state.get("evidence_ids", [])
             if key in ("up", "down", "home", "end") and ids:
+                resume_rows(app, "evidence")
                 current = state.get("evidence_cursor", 0)
                 state["evidence_cursor"] = 0 if key == "home" else len(ids) - 1 if key == "end" else max(0, min(len(ids) - 1, current + (-1 if key == "up" else 1)))
                 state["evidence_focus"] = True
                 return True
             if key == "enter" and ids:
+                if not rows_selected(app, "evidence"):
+                    return True
                 from . import log_workbench
                 citation = getattr(app, "research_evidence", {}).get(ids[min(state.get("evidence_cursor", 0), len(ids) - 1)])
                 if citation and citation.get("path"):
@@ -973,6 +1045,7 @@ def handle_key(app, key):
         name = state.get("metric") if state.get("metric") in names else names[0] if names else ""
         points = _chart_visible_points(app, series, name)
         if key in ("left", "right", "up", "down", "home", "end"):
+            resume_rows(app, "chart")
             change = -1 if key in ("left", "up") else 1
             state["cursor"] = 0 if key == "home" else max(0, len(points) - 1) if key == "end" else max(0, min(max(0, len(points) - 1), state.get("cursor", 0) + change))
         elif key in ("+", "=", "-", "_"):
@@ -1004,6 +1077,9 @@ def handle_key(app, key):
         elif key in ("a", "g"):
             _chart_control(app, ["axis", "auto" if key == "a" else "log"], series)
         elif key == "r" and points:
+            if not rows_selected(app, "chart"):
+                app.say("Select a sample with the arrows before selecting a range")
+                return True
             selected = points[min(state.get("cursor", 0), len(points) - 1)]
             existing = state.get("chart_range", {})
             if existing.get("selecting") and existing.get("metric") == name:
@@ -1034,15 +1110,23 @@ def handle_key(app, key):
         app.enter_tab("research")
         select_job(app, state.get("job"), view="evidence", record_back=False)
     elif modal == "timeline":
+        if key in ("enter", "s") and not rows_selected(app, "timeline"):
+            return True
         events = timeline_events(app, app.store.snapshot())
         if key in ("up", "down", "home", "end", "pgup", "pgdn"):
+            if events:
+                resume_rows(app, "timeline")
             delta = -1 if key == "up" else 1 if key == "down" else -10 if key == "pgup" else 10
             state["cursor"] = 0 if key == "home" else max(0, len(events) - 1) if key == "end" else max(0, min(max(0, len(events) - 1), state.get("cursor", 0) + delta))
         elif key in ("enter", "s") and events:
             _open_timeline_event(app, events[min(state.get("cursor", 0), len(events) - 1)], seek=key == "s")
     elif modal == "chart_events":
+        if key == "enter" and not rows_selected(app, "chart_events"):
+            return True
         events = chart_events(app, app.store.snapshot())
         if key in ("up", "down", "home", "end", "pgup", "pgdn"):
+            if events:
+                resume_rows(app, "chart_events")
             delta = -1 if key == "up" else 1 if key == "down" else -10 if key == "pgup" else 10
             state["cursor"] = 0 if key == "home" else max(0, len(events) - 1) if key == "end" else max(0, min(max(0, len(events) - 1), state.get("cursor", 0) + delta))
         elif key == "enter" and events:
@@ -1196,8 +1280,9 @@ def _job_diff_rows(g, snap, app, width):
                                               scope="comparison-elapsed", attempt=t0)
             scale = "log" if axis.get("mode") == "log" else "linear"
             box = chart_interaction.bounds(app, identity, scale=scale)
+            captured = chart_interaction.captured_bounds(app, identity, scale=scale)
             elapsed_points = [dict(point, t=point["t"] - t0) for point in points]
-            curve_times = box["x"] if box else (0, span)
+            curve_times = captured["x"] if captured else box["x"] if box else (0, span)
             curve_points = [p for p in elapsed_points if curve_times[0] <= p["t"] <= curve_times[1]]
             values = [p["value"] for p in curve_points]
             visible_plotted, lo, hi, undefined = chart_tools.axis_values(values, axis)
@@ -1210,9 +1295,11 @@ def _job_diff_rows(g, snap, app, width):
             auto_fit = chart_interaction.autofit(app, identity, scale=scale)
             if box:
                 lo, hi = box["y"]
-                if auto_fit:
+                if auto_fit and not captured:
                     lo, hi = charts.fit_time_bounds(plotted, [point["t"] for point in raster_points],
                                                     curve_times, box["y"], _cadence(points))
+            if captured:
+                lo, hi = captured["y"]
             def axis_label(value):
                 if axis["mode"] == "log":
                     try:
@@ -1306,7 +1393,7 @@ def overlay(views, snap, app, width, height):
         state["cursor"] = max(0, min(max(0, len(events) - 1), state.get("cursor", 0)))
         rows = []
         for i, event in enumerate(events):
-            selected = i == state["cursor"]
+            selected = rows_selected(app, "chart_events") and i == state["cursor"]
             first_row = len(rows)
             rows.append(row(f" {'>' if selected else ' '} {event['number']:3} {_time(event['t'])} {event.get('kind', '')} | job {event.get('job') or 'global'}", "rev+bold" if selected else "cyan"))
             rows.append(row("      " + str(event.get("text", "")), "bold" if selected else "dim"))
@@ -1317,17 +1404,19 @@ def overlay(views, snap, app, width, height):
                     "label": f"Open chart event {i + 1}", "left": 0,
                     "right": min(inner, L.vlen(L.row_text(rows[line]))),
                     "action": ("click", line, 0), "group": "chart_events",
+                    "event_index": i,
                     "event": dict(event), "event_context": (modal, state.get("chart_job"))}))
         if not rows:
             rows = [row(" No timestamped events observed for this chart job. Historical phases remain unknown.", "dim")]
-        state["scroll"] = max(0, state["cursor"] * 3 - page // 2)
+        if rows_selected(app, "chart_events"):
+            state["scroll"] = max(0, state["cursor"] * 3 - page // 2)
         title, footer = "Chart events / " + str(state.get("chart_job") or _analysis_jid(app)), row(" Arrows: event | Enter: exact job or cited file | Esc: chart", "dim")
     elif modal == "timeline":
         events = timeline_events(app, snap)
         state["cursor"] = max(0, min(max(0, len(events) - 1), state.get("cursor", 0)))
         rows = []
         for i, event in enumerate(events):
-            selected = i == state["cursor"]
+            selected = rows_selected(app, "timeline") and i == state["cursor"]
             first_row = len(rows)
             rows.append(row(f" {'>' if selected else ' '} {i + 1:3} {_time(event['t'])} {event.get('kind', '')} {event.get('job') or ''}", "rev+bold" if selected else "cyan"))
             rows.append(row("      " + str(event.get("text", "")), "bold" if selected else "dim"))
@@ -1336,10 +1425,12 @@ def overlay(views, snap, app, width, height):
                     "label": f"Open timeline event {i + 1}", "left": 0,
                     "right": min(inner, L.vlen(L.row_text(rows[line]))),
                     "action": ("click", line, 0), "group": "timeline_events",
+                    "event_index": i,
                     "event": dict(event), "event_context": (modal, state.get("chart_job"))}))
         if not rows:
             rows = [row(" No timestamped events observed yet.", "dim")]
-        state["scroll"] = max(0, state["cursor"] * 2 - page // 2)
+        if rows_selected(app, "timeline"):
+            state["scroll"] = max(0, state["cursor"] * 2 - page // 2)
         title, footer = "Observed event timeline", row(" Arrows: event  Enter: job / cited log  s: seek replay  Esc: back", "dim")
     elif modal == "diff":
         if state.get("diff_kind") == "passport":
@@ -1384,6 +1475,8 @@ def handle_mouse(app, y, x, button="left", shift=False):
         if row == y and value["left"] <= x < value["right"]:
             if "event" in value:
                 if value["event_context"] == (state.get("modal"), state.get("chart_job")):
+                    resume_rows(app, state.get("modal"))
+                    state["cursor"] = value.get("event_index", state.get("cursor", 0))
                     _open_timeline_event(app, value["event"])
                 return True
             action, argument = value["action"]
