@@ -268,8 +268,7 @@ def run_command(app, args):
 
 def _copy_path(app, value):
     from . import clipboard
-    cb = app.cfg["clipboard"]
-    app.say(clipboard.copy(value, app.state_dir, use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True))))
+    app.say(clipboard.copy(value, app.state_dir, **clipboard.options(app)))
 
 
 def handle_key(app, key):
@@ -352,41 +351,51 @@ def handle_key(app, key):
         if notices:
             from . import clipboard
             notice = notices[min(app.activity.cursor, len(notices) - 1)]
-            cb = app.cfg["clipboard"]
             app.say(clipboard.copy(notice["path"] or notice["text"], app.state_dir,
-                                   use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True))))
+                                   **clipboard.options(app)))
     return True
 
 
 def overlay(views, snap, app, width, height):
+    from . import modal_scrollbars as B
     activity = app.activity
     activity.mouse_rows = {}
     activity.mouse_mode = app.mode
     if app.mode == "export_preview":
         preview = activity.export_preview or {"lines": [], "scroll": 0, "label": ""}
+        page = max(1, height - 7)
+        context = ("export_preview", activity.export_generation, preview.get("path"), width)
+        logical, painted = B.window(app, "modal:export-preview", preview["scroll"], len(preview["lines"]), page, context=context)
+        preview["scroll"] = logical
         rows = [[(" " + clean(preview["label"], views.g.ascii), "accent+bold")], [(" " + clean(preview.get("path", ""), views.g.ascii), "dim")]]
-        rows += [[(L.cut(clean(line, views.g.ascii), max(1, width - 8), views.g.ascii), "")] for line in preview["lines"][preview["scroll"]:preview["scroll"] + max(1, height - 7)]]
+        rows += [[(L.cut(clean(line, views.g.ascii), max(1, width - 8), views.g.ascii), "")] for line in preview["lines"][painted:painted + page]]
         rows.append([(" Preview: at most 64 KiB / 256 lines | arrows/pages scroll | y copy path | Esc exports", "dim")])
-        return L.box(views.g, rows, width, height, "Export preview")
+        rendered = L.box(views.g, rows, width, height, "Export preview")
+        return B.boxed(app, "modal:export-preview", rendered, start=2, count=len(preview["lines"]), page=page,
+                       target=logical, painted=painted, setter=lambda value: preview.update(scroll=value), context=context)
     if app.mode == "exports":
         entries = export_items(app)
         _selected_export(app, entries)
         logical_hits = {}
         rows = [[(f" {len(entries)} export records | filter: {clean(activity.export_query, views.g.ascii) or 'none'}", "accent")]]
         cursor = min(activity.export_cursor, max(0, len(entries) - 1))
-        start = max(0, cursor - max(1, height - 7) // 2)
-        for index, item in enumerate(entries[start:start + max(1, height - 7)], start):
+        page = max(1, height - 7)
+        start = max(0, cursor - page // 2)
+        context = ("exports", activity.export_query)
+        logical, start = B.window(app, "modal:exports", start, len(entries), page, context=context, focus=cursor)
+        for index, item in enumerate(entries[start:start + page], start):
             logical_hits[len(rows)] = item["id"]
             rows.append([(L.cut(clean(f" {index + 1:3} {item['label']}  {item['path']}", views.g.ascii), max(1, width - 8), views.g.ascii), "sel" if index == cursor else "")])
         if not entries:
             rows.append([(" No export records match. Copy or export a file to register its path.", "dim")])
         rows.append([(" / filter | arrows/pages browse | Enter preview | y copy path | d forget record | Esc back", "dim")])
         rendered = L.box(views.g, rows, width, height, "Exports")
-        for logical, identity in logical_hits.items():
-            if logical + 1 < len(rendered) - 1:
-                y, x, row = rendered[logical + 1]
+        for row_index, identity in logical_hits.items():
+            if row_index + 1 < len(rendered) - 1:
+                y, x, row = rendered[row_index + 1]
                 activity.mouse_rows[y] = (identity, x + 1, x + L.vlen(L.row_text(row)) - 1)
-        return rendered
+        return B.boxed(app, "modal:exports", rendered, start=1, count=len(entries), page=page,
+                       target=logical, painted=start, setter=lambda value: None, context=context)
     if app.mode != "activity":
         return None
     notices, task = app.activity.snapshot()
@@ -406,6 +415,9 @@ def overlay(views, snap, app, width, height):
     cursor = min(app.activity.cursor, max(0, len(ordered) - 1))
     available = max(1, height - len(rows) - 6)
     start = max(0, cursor - available // 2)
+    context = ("activity", activity.query, bool(activity.expanded), width)
+    logical, start = B.window(app, "modal:activity", start, len(ordered), available, context=context, focus=cursor)
+    data_start = len(rows)
     for index, notice in enumerate(ordered[start:start + available], start):
         timestamp = time.strftime("%H:%M:%S", time.localtime(notice["time"]))
         style = "sel" if index == cursor else {"error": "red", "warning": "yellow"}.get(notice["level"], "")
@@ -415,9 +427,18 @@ def overlay(views, snap, app, width, height):
     if ordered and app.activity.expanded:
         value = clean(ordered[cursor]["text"], views.g.ascii)
         w = max(1, width - 10)
-        rows = rows[:max(1, height // 3)] + [[(value[i:i+w], "")] for i in range(0, min(len(value), w * max(1, height // 2)), w)]
+        text_rows = [[(value[i:i+w], "")] for i in range(0, len(value), w)] or [[("", "")]]
+        rows = rows[:data_start]
+        context = ("activity-expanded", ordered[cursor]["time"], ordered[cursor]["text"], width)
+        logical, start = B.window(app, "modal:activity-expanded", 0, len(text_rows), available, context=context)
+        rows += text_rows[start:start + available]
+        key, total = "modal:activity-expanded", len(text_rows)
+    else:
+        key, total = "modal:activity", len(ordered)
     rows.append([(" / filter | f clear filter | e exports | arrows/pages browse | Enter expand | y copy | c cancel | Esc back", "dim")])
-    return L.box(views.g, rows, width, height, "Activity")
+    rendered = L.box(views.g, rows, width, height, "Activity")
+    return B.boxed(app, key, rendered, start=data_start, count=total, page=available,
+                   target=logical, painted=start, setter=lambda value: None, context=context)
 
 
 def handle_mouse(app, y, x, button="left", shift=False):

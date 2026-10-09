@@ -194,20 +194,22 @@ def test_preview_paints_below_open_dropdown_without_closing_it(terminal, monkeyp
 
 
 def test_actual_screen_retains_footer_selection_and_pristine_copy(terminal):
+    terminal.store.jobs.append(Job('2', 'second selectable job', 'cpu', 'RUNNING'))
     startup.restore(terminal.app, {"enabled": False})
     terminal.app.say("FOOTER_ONLY_NOTICE")
     terminal.run([("v", None), ("down", None), ("y", None), ("ctrl-c", None)])
     frames = terminal.window.frames
     assert "FOOTER_ONLY_NOTICE" in frames[0]["rows"][-1]
-    assert any(any(row.endswith("◆") for row in frame["rows"]) for frame in frames)
+    assert any(any("▏" in row for row in frame["rows"]) for frame in frames)
     assert any("copied 2 lines" in frame["rows"][-1] for frame in frames)
     clipboard = Path(terminal.app.state_dir) / "clipboard.txt"
     content = clipboard.read_text()
     assert content.count("\n") == 2
     assert "◆" not in content
+    assert "▏" not in content
     assert "FOOTER_ONLY_NOTICE" not in content
-    # Pristine rows retain the structural splitter diamond, but exclude the
-    # selection diamond inserted in the last screen cell.
+    # Pristine rows retain the structural splitter diamond and exclude the
+    # pane-local text selection feedback.
     divider = terminal.app.pane_drag_state["dividers"]["workspace:jobs"]
     structural_y = divider.y + (divider.height - 1) // 2
     for y, row in enumerate(terminal.app.last_rows):

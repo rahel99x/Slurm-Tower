@@ -56,7 +56,7 @@ DEFAULTS: Dict[str, Any] = {
     "profiles": {},                      # named sets of these keys: [profiles.mycluster] host = "...", account = "..."; tower --profile mycluster
     "plugins": [],                       # extra plugin files or directories besides ~/.config/tower/plugins/
     "record": "",                        # record every command and answer to this file (also --record PATH)
-    "clipboard": {"osc52": True, "tools": True},   # where y sends the selection besides the clipboard file
+    "clipboard": {"osc52": True, "tools": True, "destination": "copy"},
     "gpu_types": ["a100", "a40", "a30", "v100", "l40s", "p100"],
     "keys": {                            # action: keys (names as screen.py reports them)
         "quit": ["q"], "help": ["?"], "refresh": ["r"],
@@ -177,6 +177,7 @@ events = ["started", "finished", "failed", "alert"]
 # partitions = ["gpu", "main"]
 
 [clipboard]
+destination = "copy"             # copy to clipboard, or yank to a running local Vim/Neovim server
 osc52 = true                    # y also sends the selection to the terminal's clipboard (works over ssh in most terminals)
 tools = true                    # and to pbcopy / wl-copy / xclip / xsel / clip.exe when one can reach a display
 

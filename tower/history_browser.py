@@ -12,6 +12,7 @@ import shlex
 from . import layout as L
 from .log_text import display_text
 from .model import stamp
+from . import scrollbars
 
 TABS = ("analytics", "deps", "log", "research")
 DOCKS = ("auto", "right", "bottom", "left", "top")
@@ -252,15 +253,17 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
     if not height or not width:
         return rows, hits, 0, 1
     handle = "::" if ascii_ else "⠿"
+    jump_space = 4 if width >= 10 else 0
     dock_label = " Dock " + dock.title() + " " if width >= 30 else " Dock " if width >= 24 else " D "
     close = " x "
-    fixed = L.vlen(handle + " " + dock_label + close)
+    fixed = L.vlen(handle + " " + dock_label + close) + jump_space
     title = L.cut("Jobs " + str(len(initialize(app)["records"])), max(0, width - fixed), ascii_)
-    header = handle + " " + title
+    header = " " * jump_space + handle + " " + title
     header = L.pad(header, max(0, width - len(dock_label) - len(close)))
     rows[0] = [(header, "cyan+bold"), (dock_label, "accent+bg:surface"), (close, "dim+bg:surface")]
     dock_x = width - len(dock_label) - len(close)
-    hits.append(_control(tab, "drag", "Drag job history to an edge", 0, 0, min(width, L.vlen(handle)), "history-focus"))
+    hits.append(_control(tab, "drag", "Drag job history to an edge", 0, jump_space,
+                         min(width, jump_space + L.vlen(handle)), "history-focus"))
     if dock_x >= 0:
         hits.append(_control(tab, "dock", "Change job-history dock", 0, dock_x, dock_x + len(dock_label), "history-dock next"))
         hits.append(_control(tab, "off", "Hide job history", 0, width - len(close), width, "history-browser off"))
@@ -277,11 +280,16 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
             top = max(0, index - page + 1)
     state["reveal"] = False
     view["top"] = top
-    cell_width = max(1, width // columns)
+    from .scrolling import viewport
+    painted = viewport(app, "history-browser:" + tab, top, len(items), page,
+                       context=(dock, width, height, columns))
+    logical_top, top = top, painted
+    content_width = max(1, width - 1)
+    cell_width = max(1, content_width // columns)
     for position, item in enumerate(items[top:top + page]):
         y, column = 1 + position // columns, position % columns
         x = column * cell_width
-        size = width - x if column == columns - 1 else cell_width
+        size = content_width - x if column == columns - 1 else cell_width
         group = _header(item)
         if group is not None:
             expanded = not getattr(item, "collapsed", False)
@@ -315,6 +323,10 @@ def _browser_rows(views, app, rect, items, selected, view, dock):
         if width >= 6:
             hits.extend([_control(tab, "previous", "Previous history page", height - 1, width - 6, width - 3, "history-scroll page-up"),
                          _control(tab, "next", "Next history page", height - 1, width - 3, width, "history-scroll page-down")])
+    if data_height and width >= 2:
+        scrollbars.register(app, "history-browser:" + tab, (1, 0, 1 + data_height, width),
+            len(items), page, logical_top, top, lambda value: view.__setitem__("top", value),
+            context=(tab, dock, width, height, columns), header=(0, 0, width) if jump_space else None)
     return [L.clip_row(row, width) for row in rows], hits, page, columns
 
 
@@ -362,7 +374,10 @@ def wrap_render(views, snap, app, width, height, content_renderer):
         page, columns = 0, 1
     else:
         dock, browser, content, divider = _geometry(width, height, view["dock"], view["ratio"])
+        browser_mark = scrollbars.mark(app)
         browser_rows, browser_hits, page, columns = _browser_rows(views, app, browser, items, selected, view, dock)
+        scrollbars.place_since(app, browser_mark, dy=browser.y, dx=browser.x,
+            clip=(browser.y, browser.x, browser.y + browser.height, browser.x + browser.width))
     state["frame"] = {"tab": app.tab, "mode": getattr(app, "mode", "main"), "width": width, "height": height,
         "origin": origin, "browser": browser, "content": content, "divider": divider, "dock": dock,
         "page": page, "columns": columns, "hits": browser_hits,
@@ -371,8 +386,11 @@ def wrap_render(views, snap, app, width, height, content_renderer):
     app.history_browser_rect = Rect(browser.x, browser.y + origin, browser.width, browser.height)
     from . import chart_interaction
     chart_mark = chart_interaction.mark(app)
+    scroll_mark = scrollbars.mark(app)
     rows, hits = content_renderer(content.width, content.height)
     chart_interaction.place_since(app, chart_mark, dy=content.y, dx=content.x,
+        clip=(content.y, content.x, content.y + content.height, content.x + content.width))
+    scrollbars.place_since(app, scroll_mark, dy=content.y, dx=content.x,
         clip=(content.y, content.x, content.y + content.height, content.x + content.width))
     canvas = [[(" " * width, "bg:canvas")] for _ in range(height)]
     for y in range(height):

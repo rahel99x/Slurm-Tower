@@ -39,6 +39,8 @@ def resume_lines(app):
 
 def clear_lines(app):
     """Clear text and log cursors without changing job or dialog ownership."""
+    from .text_selection import clear as clear_text
+    clear_text(app)
     state = initialize(app)
     state["lines_deselected"] = True
     app.sel_anchor = app.click_row = None

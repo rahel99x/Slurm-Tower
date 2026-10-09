@@ -14,7 +14,7 @@ import os
 import statistics
 import time
 
-from . import charts, chart_tools, chart_interaction, clock, layout as L
+from . import charts, chart_tools, chart_interaction, clock, layout as L, scrollbars as S
 from .model import human, secs, short_duration, stamp
 from .research import clean
 
@@ -333,7 +333,7 @@ def _crosshair(rows, width, height, points, selected, times, ascii_, plot_rect=N
     guide = "|" if ascii_ else "│"
     out = list(rows)
     for y in range(top, min(len(out), bottom)):
-        before, after, position = [], [], 0
+        before, after, position, ink = [], [], 0, None
         for text, style in out[y]:
             for ch in text:
                 size = L.vlen(ch)
@@ -341,8 +341,11 @@ def _crosshair(rows, width, height, points, selected, times, ascii_, plot_rect=N
                     before.append((ch, style))
                 elif position >= x + 1:
                     after.append((ch, style))
+                elif ch.strip():
+                    # An inspection guide must not erase measured curve ink.
+                    ink = (ch, style)
                 position += size
-        out[y] = before + [(guide, "yellow+bold")] + after
+        out[y] = before + [ink or (guide, "yellow+bold")] + after
     return out
 
 
@@ -1039,6 +1042,8 @@ def handle_key(app, key):
             app.mode, state["modal"] = "main", ""
         return True
     modal = state.get("modal")
+    if key in ("up", "down", "pgup", "pgdn", "home", "end"):
+        S.resume(app, "analysis:document")
     if modal == "chart":
         series = _chart_frame_series(app)
         names = list(series)
@@ -1334,6 +1339,8 @@ def overlay(views, snap, app, width, height):
         return None
     g = views.g
     modal = state.get("modal", "")
+    scroll_context = (modal, state.get("job"), state.get("chart_job"), state.get("section"),
+                      state.get("metric"), state.get("diff_kind"), tuple(state.get("diff_ids", ())), width)
     inner = max(1, min(160, width - 8))
     page = max(1, height - 6)
     state["chart_page"] = page
@@ -1408,7 +1415,7 @@ def overlay(views, snap, app, width, height):
                     "event": dict(event), "event_context": (modal, state.get("chart_job"))}))
         if not rows:
             rows = [row(" No timestamped events observed for this chart job. Historical phases remain unknown.", "dim")]
-        if rows_selected(app, "chart_events"):
+        if rows_selected(app, "chart_events") and S.manual(app, "analysis:document", context=scroll_context) is None:
             state["scroll"] = max(0, state["cursor"] * 3 - page // 2)
         title, footer = "Chart events / " + str(state.get("chart_job") or _analysis_jid(app)), row(" Arrows: event | Enter: exact job or cited file | Esc: chart", "dim")
     elif modal == "timeline":
@@ -1429,7 +1436,7 @@ def overlay(views, snap, app, width, height):
                     "event": dict(event), "event_context": (modal, state.get("chart_job"))}))
         if not rows:
             rows = [row(" No timestamped events observed yet.", "dim")]
-        if rows_selected(app, "timeline"):
+        if rows_selected(app, "timeline") and S.manual(app, "analysis:document", context=scroll_context) is None:
             state["scroll"] = max(0, state["cursor"] * 2 - page // 2)
         title, footer = "Observed event timeline", row(" Arrows: event  Enter: job / cited log  s: seek replay  Esc: back", "dim")
     elif modal == "diff":
@@ -1452,18 +1459,30 @@ def overlay(views, snap, app, width, height):
     state["row_count"] = len(rows)
     offset = max(0, min(state.get("scroll", 0), max(0, len(rows) - page)))
     state["scroll"] = offset
-    rows = [L.clip_row(line, inner) for line in rows[offset:offset + page]] + [L.clip_row(footer, inner)]
-    rendered = L.box(g, rows, width, height, title, min_width=min(max(1, inner), 100))
+    from .scrolling import viewport
+    count = len(rows)
+    painted = viewport(app, "analysis:document", offset, count, page, context=scroll_context)
+    rows = [L.clip_row(line, inner) for line in rows[painted:painted + page]] + [L.clip_row(footer, inner)]
+    rendered = L.box(g, rows, width, height, "   " + title, min_width=min(max(1, inner), 100))
     if modal in ("chart", "diff") and len(rendered) > 2:
         first_y, first_x, first_row = rendered[1]
-        chart_interaction.place_since(app, chart_mark, dy=first_y - offset, dx=first_x + 1,
+        chart_interaction.place_since(app, chart_mark, dy=first_y - painted, dx=first_x + 1,
                                      clip=(first_y, first_x + 1, rendered[-1][0],
                                            first_x + L.vlen(L.row_text(first_row)) - 1))
     from .control_rows import place_hits
-    state["control_hits"] = place_hits(button_hits, rendered[1:-1], offset=offset)
+    state["control_hits"] = place_hits(button_hits, rendered[1:-1], offset=painted)
     for y, _, value in state["control_hits"]:
         if "event" in value:
             value["action"] = ("click", y, value["left"])
+    if count > 0 and len(rendered) >= 3:
+        top, left, first = rendered[1]
+        right = left + L.vlen(L.row_text(first))
+        bottom = min(rendered[-1][0], top + page)
+        S.register(app, "analysis:document", (top, left + 1, bottom, right),
+                   count, page, offset, painted,
+                   lambda value: state.__setitem__("scroll", value),
+                   context=scroll_context, header=(rendered[0][0], left + 1, right - 1),
+                   layer=1, absolute=True)
     return rendered
 
 
@@ -1475,6 +1494,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
         if row == y and value["left"] <= x < value["right"]:
             if "event" in value:
                 if value["event_context"] == (state.get("modal"), state.get("chart_job")):
+                    S.resume(app, "analysis:document")
                     resume_rows(app, state.get("modal"))
                     state["cursor"] = value.get("event_index", state.get("cursor", 0))
                     _open_timeline_event(app, value["event"])

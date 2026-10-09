@@ -12,7 +12,7 @@ import json
 import math
 import time
 
-from . import layout as L
+from . import layout as L, scrollbars as S
 from .research import clean
 from .remote import LocalFiles
 from . import log_presentation as presentation
@@ -247,6 +247,7 @@ def handle_key(app, key):
         state["generation"] += 1
     if app.logs.browser:
         if key in ("up", "down", "pgup", "pgdn", "home", "end"):
+            S.resume(app, "logs:catalog")
             from .job_selection import resume_lines
             resume_lines(app)
             state["current_group"] = ""
@@ -260,6 +261,7 @@ def handle_key(app, key):
             app.say("Original log lines")
             return True
         if movement in ("up", "down", "pgup", "pgdn", "home", "end"):
+            S.resume(app, "logs:workbench")
             from .job_selection import resume_lines
             resume_lines(app)
             page = state.get("viewport_page", max(1, getattr(app, "height", 24) - 14))
@@ -599,14 +601,28 @@ def render_browser(views, snap, app, width, height, legacy_rows, hits):
                 if meta.get("truncated"):
                     body.append([("       Preview is a bounded tail; open the file for the original view.", "yellow")])
     available = len(body) if height is None else max(1, height - len(rows))
+    scroll_context = (getattr(app, "log_job", None), tuple((entry.get("id"), entry.get("path")) for entry in filtered),
+                      app.logs.file_filter, tuple(state["collapsed"]), state["preview"], width)
     top = max(0, min(app.logs.browser_top, max(0, len(body) - available)))
-    if selected_row < top:
-        top = selected_row
-    elif selected_row >= top + available:
-        top = max(0, selected_row - available + 1)
+    if S.manual(app, "logs:catalog", context=scroll_context) is None:
+        if selected_row < top:
+            top = selected_row
+        elif selected_row >= top + available:
+            top = max(0, selected_row - available + 1)
     app.logs.browser_top, app.logs.browser_page = top, max(1, available // 2)
+    from .scrolling import viewport
+    painted = viewport(app, "logs:catalog", top, len(body), available,
+                       context=scroll_context, immediate=height is None)
     prefix = len(rows)
-    return [L.clip_row(row, width) for row in rows + body[top:top + available]], [(y - top + prefix, kind, key) for y, kind, key in mapped if top <= y < top + available]
+    output = [L.clip_row(row, width) for row in rows + body[painted:painted + available]]
+    if height is not None and width >= 6:
+        if len(body) > available:
+            output[0] = L.clip_row([("    ", "")] + output[0], width)
+        S.register(app, "logs:catalog", (prefix, 0, prefix + available, width),
+                   len(body), available, top, painted,
+                   lambda value: setattr(app.logs, "browser_top", value),
+                   context=scroll_context, header=(0, 0, width))
+    return output, [(y - painted + prefix, kind, key) for y, kind, key in mapped if painted <= y < painted + available]
 
 
 def _split_entries(app):
@@ -730,6 +746,7 @@ def overlay(views, snap, app, width, height):
     data = _alternate(app)
     state["mouse_rows"] = {}
     body_start = None
+    body, painted, page, scroll_context = [], 0, 0, ()
     split_left, split_extent = None, None
     button_hits = []
     source_label_rows = []
@@ -780,6 +797,12 @@ def overlay(views, snap, app, width, height):
             state["viewport_page"] = page
             state["cursor"] = min(state["cursor"], max(0, len(body) - 1))
             state["scroll"] = min(state["scroll"], max(0, len(body) - page))
+            scroll_context = (state["view"], getattr(app, "log_job", None), app.logs.path,
+                              tuple((source.get("path"), source.get("file_identity")) for source in sources),
+                              state["align"], state["ignore_time"], tuple(state["json_filter"]), width)
+            from .scrolling import viewport
+            painted = viewport(app, "logs:workbench", state["scroll"], len(body), page,
+                               context=scroll_context)
             split_extent = max(2, width - 10)
             split_left = max(1, min(split_extent - 1, split_extent * state.get("split_ratio", 50) // 100))
             split_right = split_extent - split_left
@@ -787,7 +810,7 @@ def overlay(views, snap, app, width, height):
             body_start = len(rows)
             from .job_selection import lines_cleared
             cursor_visible = not lines_cleared(app)
-            for index, item in enumerate(body[state["scroll"]:state["scroll"] + page], state["scroll"]):
+            for index, item in enumerate(body[painted:painted + page], painted):
                 if "pair" in item:
                     values = [source["lines"][line] if line is not None else "" for source, line in zip(sources, item["pair"])]
                     columns = [display_line(app, clean(value, views.g.ascii, VIEW_BYTES)) for value in values]
@@ -798,7 +821,7 @@ def overlay(views, snap, app, width, height):
                 marker = ">" if views.g.ascii else "›"
                 rows.append([(" " + (marker if cursor_visible and index == state["cursor"] else " ") + " " + text,
                               "rev+bold" if cursor_visible and index == state["cursor"] else item.get("style", ""))])
-    rendered = L.box(views.g, rows, width, height, "Log workbench / " + state["view"], min_width=max(1, width - 4))
+    rendered = L.box(views.g, rows, width, height, "   Log workbench / " + state["view"], min_width=max(1, width - 4))
     rendered = [(y + origin_y, x + origin_x, row) for y, x, row in rendered]
     from .control_rows import place_hits
     state["control_hits"] = place_hits(button_hits, rendered[1:-1])
@@ -806,7 +829,7 @@ def overlay(views, snap, app, width, height):
         for relative, (y, x, row) in enumerate(rendered[1:-1]):
             if relative >= body_start:
                 state["mouse_rows"][y] = (x + 1, x + L.vlen(L.row_text(row)) - 1,
-                                           state["scroll"] + relative - body_start)
+                                           painted + relative - body_start)
         visible = rendered[1:-1][body_start:]
         if state["view"] == "split" and len(sources) == 2 and visible and split_left is not None:
             from . import pane_drag
@@ -829,6 +852,14 @@ def overlay(views, snap, app, width, height):
                     hit = pane_drag.control_hit(app, key)
                     if hit and isinstance(getattr(app, "interaction_state", None), dict):
                         state["control_hits"].append(hit)
+        if visible:
+            top, left, first = visible[0]
+            right = left + L.vlen(L.row_text(first))
+            S.register(app, "logs:workbench", (top, left + 1, visible[-1][0] + 1, right),
+                       len(body), page, state["scroll"], painted,
+                       lambda value: state.__setitem__("scroll", value),
+                       context=scroll_context,
+                       header=(rendered[0][0], left + 1, right - 1), layer=1, absolute=True)
     return rendered
 
 

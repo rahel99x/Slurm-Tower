@@ -143,7 +143,7 @@ def test_selector_inherits_resolved_plot_background_in_all_themes(app, theme, so
         assert "bold" not in row[0][1] and "rev" not in row[0][1]
 
 
-def test_topmost_nested_overlay_and_wide_cells_choose_the_painted_background(app):
+def test_topmost_nested_overlay_retains_ink_and_wide_cells_are_not_split(app):
     plot(app)
     C.hover(app, 5, 30)
     rows = [[(" " * 120, "bg:surface")]] * 40
@@ -152,8 +152,8 @@ def test_topmost_nested_overlay_and_wide_cells_choose_the_painted_background(app
     feedback = {(y, x): row for y, x, row in C.feedback(app, rows=rows, overlays=overlays)}
     expected = P.resolve(P.cell_style("bg:surface-raised", app.theme), app.theme).background
     assert P.resolve(feedback[(5, 30)][0][1], app.theme).background == expected
-    expected = P.resolve(P.cell_style("bg:surface-sunken", app.theme), app.theme).background
-    assert P.resolve(feedback[(5, 25)][0][1], app.theme).background == expected
+    assert feedback[(5, 30)] == [("X", "chart-3+bg:surface-raised")]
+    assert (5, 25) not in feedback
 
 
 @pytest.mark.parametrize("theme", P.THEME_NAMES + ("monokai", "gruvbox", "Gruvbox Dark", "Modnokai"))

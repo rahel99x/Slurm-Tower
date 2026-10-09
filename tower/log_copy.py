@@ -59,7 +59,7 @@ def _cancelled(cancel):
 
 
 def copy_full_log(path, state_dir=None, *, files=None, use_osc52=True, use_tools=True,
-                  tty_path="/dev/tty", cancel=None, progress=None) -> dict:
+                  tty_path="/dev/tty", cancel=None, progress=None, destination="copy", editor_context=None) -> dict:
     """Stream all initial bytes into a private unique export, then copy that file.
 
     Active logs may grow: the export is the initial byte range and says so. A
@@ -136,10 +136,11 @@ def copy_full_log(path, state_dir=None, *, files=None, use_osc52=True, use_tools
         temporary = None
         result["export_path"] = os.path.join(export_base, final_name)
         _cancelled(cancel)
-        if use_osc52 or use_tools:
+        if use_osc52 or use_tools or destination == "yank":
             try:
                 delivered = clipboard.copy_file(result["export_path"], tty_path=tty_path,
-                                                use_osc52=use_osc52, use_tools=use_tools, cancel=cancel)
+                                                use_osc52=use_osc52, use_tools=use_tools, cancel=cancel,
+                                                destination=destination, editor_context=editor_context)
             except Exception as exc:
                 delivered = {"methods": [], "warnings": ["Clipboard delivery failed: " + _clean(exc)],
                              "bytes": result["bytes"], "text": None}
@@ -185,7 +186,8 @@ def copy_full_log(path, state_dir=None, *, files=None, use_osc52=True, use_tools
 
 
 def copy_log_selection(chunks, state_dir=None, *, source_path="", use_osc52=True,
-                       use_tools=True, tty_path="/dev/tty", cancel=None, progress=None) -> dict:
+                       use_tools=True, tty_path="/dev/tty", cancel=None, progress=None,
+                       destination="copy", editor_context=None) -> dict:
     """Export a pinned selection's immutable raw byte references on the worker.
 
     ``chunks`` contains the original selected line bytes and any exact newline
@@ -240,10 +242,11 @@ def copy_log_selection(chunks, state_dir=None, *, source_path="", use_osc52=True
         temporary = None
         result["export_path"] = os.path.join(export_base, final_name)
         _cancelled(cancel)
-        if use_osc52 or use_tools:
+        if use_osc52 or use_tools or destination == "yank":
             try:
                 delivered = clipboard.copy_file(result["export_path"], tty_path=tty_path,
-                                                use_osc52=use_osc52, use_tools=use_tools, cancel=cancel)
+                                                use_osc52=use_osc52, use_tools=use_tools, cancel=cancel,
+                                                destination=destination, editor_context=editor_context)
             except Exception as exc:
                 delivered = {"methods": [], "warnings": ["Clipboard delivery failed: " + _clean(exc)],
                              "bytes": result["bytes"], "text": None}

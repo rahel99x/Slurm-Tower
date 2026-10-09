@@ -13,6 +13,7 @@ from . import layout as L
 from .log_catalog import LogCatalog
 from .logs import LogSession
 from .research import ResearchHub, clean
+from . import scrollbars
 
 TABS = (("inspector", "Inspector"), ("logs", "Logs"),
         ("investigate", "Investigate"), ("research", "Research"),
@@ -446,9 +447,16 @@ def _logs(views, snap, app, job, width, height, state):
                            context=(job.id, selected["path"], buf.ident, buf.reloads, page),
                            immediate=session.top is None)
         lines, first = buf.window(None if session.top is None else painted, page)
-        rows.append(row(f" {'Following' if session.top is None else 'Paused'} / retained lines {first + 1 if lines else 0}-{first + len(lines)} of {buf.total}"
+        header = len(rows)
+        rows.append(row(("    " if width >= 6 else "") +
+                        f" {'Following' if session.top is None else 'Paused'} / retained lines {first + 1 if lines else 0}-{first + len(lines)} of {buf.total}"
                         + (" / earlier bytes omitted" if buf.truncated else ""), "dim"))
-        rows.extend(L.clip_row(row(line), width) for line in lines)
+        first_row = len(rows)
+        rows.extend(L.clip_row(row(line), max(1, width - 2)) for line in lines)
+        scrollbars.register(app, "inline-log", (first_row, 0, first_row + page, max(1, width - 1)),
+            buf.total, page, target, first, lambda value: setattr(session, "top", value),
+            context=(job.id, selected["path"], buf.ident, buf.reloads, page),
+            header=(header, 0, width) if width >= 6 else None)
         if not lines:
             rows.append(row(" This log is empty.", "dim"))
     return rows, hits
@@ -586,9 +594,11 @@ def _research(views, snap, app, job, width, height, state, header_rows):
     proxy.research_document_window = window or (0, max(32, (height or 24) + 32))
     from . import chart_interaction
     chart_mark = chart_interaction.mark(app)
+    scroll_mark = scrollbars.mark(app)
     rows, hits = research_render(views, snap, proxy, width, MAX_ROWS)
     nav_rows = getattr(proxy, "research_nav_rows", 1)
     chart_interaction.place_since(app, chart_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
+    scrollbars.place_since(app, scroll_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
     retained.update(cursor=proxy.cursor.get("research", 0), array_open=proxy.research_array_open,
                     task_offset=proxy.research_task_offset)
     state["document_headers"][( _view_key(state), width)] = header_rows + 1
@@ -607,6 +617,13 @@ def _analytics(views, snap, app, job, width, height, state):
     # A finished job without session samples must never fall back to a running
     # job's chart. The ordinary Analytics workspace keeps its own cycling list.
     scoped_views.analytics_jobs = lambda current, target: [job.id]
+    if state["analytics_view"] == "advisor" and height is not None:
+        proxy.analytics_virtual_advisor = True
+        proxy.analytics_retained = retained
+        fixed = _analytics_cards(views, snap, proxy, None, width=width)
+        state["virtual_document"] = proxy.analytics_advisor_document
+        return ([[(clean(f" Job {job.id} / {job.name} / accounting window", views.g.ascii), "cyan+bold")],
+                 [(f" Window {proxy.analytics_days_value():g} days", "dim")]] + fixed), []
     narrow_advisor = width < 120 and state["analytics_view"] == "advisor"
     if narrow_advisor:
         # The native table and the vertical cards need the same aggregation.
@@ -616,6 +633,7 @@ def _analytics(views, snap, app, job, width, height, state):
             views, current, target, None, width=target_width)
     from . import chart_interaction
     chart_mark = chart_interaction.mark(app)
+    scroll_mark = scrollbars.mark(app)
     rows, hits = scoped_views.analytics_tab(snap, proxy, width, MAX_ROWS)
     nav_rows = getattr(proxy, "analytics_nav_rows", 1)
     if width < 120 and state["analytics_view"] == "compare":
@@ -628,7 +646,11 @@ def _analytics(views, snap, app, job, width, height, state):
         records = chart_interaction.take_since(app, chart_mark)
         chart_interaction.put_records(app, chart_interaction.map_records(
             records, lambda y: y + delta if y >= cutoff else None))
+        records = scrollbars.take_since(app, scroll_mark)
+        scrollbars.put_records(app, scrollbars.map_records(
+            records, row_map=lambda y: y + delta if y >= cutoff else None))
     chart_interaction.place_since(app, chart_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
+    scrollbars.place_since(app, scroll_mark, dy=1 - nav_rows, clip=(1, 0, MAX_ROWS, width))
     scope = "selected job" if state["analytics_view"] == "job" else "selected job + comparison set" if state["analytics_view"] == "compare" else "accounting window"
     content = [[(clean(f" Job {job.id} / {job.name} / {scope}", views.g.ascii), "cyan+bold")]] + rows[nav_rows:]
     actions = [(y - nav_rows + 1, "job_panel_action", ((kind, value),
@@ -660,7 +682,21 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
             rows = body[:2]
         if not advice:
             rows.append(row("   nothing finished in the window", "dim"))
-        for item in advice[:128]:
+        if getattr(proxy, "analytics_virtual_advisor", False):
+            from .advisor_document import AdvisorDocument, advice_key, running_key
+            running = [item for item in snap.get("jobs", []) if not item.pending]
+            by_name = views.history_advice_cache.groups(snap.get("finished", []))
+            live = snap.get("live", {})
+            key = (max(1, width), views.g.ascii, advice_key(advice), running_key(running, live, by_name))
+            retained = proxy.analytics_retained
+            document = retained.get("advisor_document")
+            if not isinstance(document, AdvisorDocument) or document.key != key:
+                document = retained["advisor_document"] = AdvisorDocument(advice, running, width, views.g.ascii, live=live, groups=by_name)
+            document.bind(advice, running, lambda item: advisor.advise_running(
+                item, snap.get("live", {}).get(item.id), proxy.store.series_of(item.id), by_name.get(item.name, ())))
+            proxy.analytics_advisor_document = document
+            return rows
+        for item in advice:
             rows.append(row(f" {item.name} / {item.id} runs", "bold"))
             rows.append(row(f" Memory peak {human(item.mem_peak) if item.mem_peak else '?'} / requested {human(item.mem_req) if item.mem_req else '?'} / suggested {item.mem_suggest or 'unchanged'}"))
             rows.append(row(f" CPU {item.cpus} / suggested {item.cpus_suggest or 'unchanged'} / efficiency {100 * item.cpu_eff:.0f}%" if item.cpu_eff is not None else f" CPU {item.cpus} / suggested {item.cpus_suggest or 'unchanged'} / efficiency unavailable"))
@@ -673,7 +709,7 @@ def _analytics_cards(views, snap, proxy, body, *, width=120):
         if running:
             rows.append(row(" Running jobs so far", "heading+bold"))
             by_name = views.history_advice_cache.groups(snap.get("finished", []))
-            for item in running[:8]:
+            for item in running:
                 observed = advisor.advise_running(item, snap.get("live", {}).get(item.id), proxy.store.series_of(item.id), by_name.get(item.name, ()))
                 rows.append(row(f" {item.id} / {item.name}: {observed.summary(views.g.dot) or 'nothing to change yet'}", "cyan"))
         return rows
@@ -842,7 +878,9 @@ def _content_action(app, target):
 def render(views, snap, app, job, width, height=None):
     from . import chart_interaction
     chart_mark = chart_interaction.mark(app)
+    scroll_mark = scrollbars.mark(app)
     state = initialize(app)
+    state.pop("virtual_document", None)
     rows, hits = _buttons(views.g, state, max(0, width))
     if state["job"] != getattr(job, "id", None):
         state.update(job=getattr(job, "id", None), file_id=None, entries=[])
@@ -864,7 +902,8 @@ def render(views, snap, app, job, width, height=None):
     if job is None:
         return rows + [[(" Select an active or recent job to show its Details.", "dim")]], hits
     if state["mode"] == "logs":
-        content, content_hits = _logs(views, snap, app, job, width, height, state)
+        content, content_hits = _logs(views, snap, app, job, width,
+                                     None if height is None else max(1, height - len(rows)), state)
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     elif state["mode"] == "investigate":
         content, content_hits = _evidence(views, snap, app, job, state, width)
@@ -882,4 +921,5 @@ def render(views, snap, app, job, width, height=None):
         content, content_hits = _inspector(views, snap, app, job, width, state)
         hits.extend((y + len(rows), kind, value) for y, kind, value in content_hits)
     chart_interaction.place_since(app, chart_mark, dy=len(rows), clip=(len(rows), 0, len(rows) + len(content), width))
+    scrollbars.place_since(app, scroll_mark, dy=len(rows), clip=(len(rows), 0, len(rows) + len(content), width))
     return rows + content, hits

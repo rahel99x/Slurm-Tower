@@ -33,7 +33,7 @@ def draw(app,points,key,ascii_=False,interactive=False):
 
 def ink(rows,metadata,ascii_=False):
     top,left,bottom,right=metadata["plot_rect"]
-    allowed=set("/\\-:|+") if ascii_ else set(charts.QUADRANTS[1:])
+    allowed=set("/\\-:|+") if ascii_ else set(charts.BRAILLE[1:])
     return [[ch in allowed for ch in L.row_text(row)[left:right]] for row in rows[top:bottom]]
 
 

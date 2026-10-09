@@ -473,6 +473,11 @@ indexes, and bind their run directory explicitly when scheduler metadata is gone
 
 ### Select and copy original log contents
 
+The toolbar's Copy/Yank switch selects the destination for text-copy operations.
+Copy uses clipboard transports; Yank targets an already-running local Vim or Neovim server.
+Both preserve the complete private export when delivery is unavailable.
+See [Editor yanking](guides/pane-navigation.md#send-text-to-vim-or-neovim) for server selection, size limits, and fallback results.
+
 In the open log file, arrows move the line cursor before `v` begins selection.
 Arrows/PgUp/PgDn/Home/End then extend it across pages; Esc cancels it. A right-edge
 `›` marks the cursor, and orange `◆` marks selected lines (`>` and `*` in ASCII).

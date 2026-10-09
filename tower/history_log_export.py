@@ -319,7 +319,8 @@ def _request_export(app, clipboard=False, discovered=None):
                 return {"discovery": report}
         return log_bundle.export_logs(report, destination, root=root or None, state_dir=state_dir,
                                       clipboard=clipboard, files=files, cancel=event, progress=progress,
-                                      use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)))
+                                      use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)),
+                                      copy_destination=cb.get("destination", "copy"))
 
     def completed(result):
         if not isinstance(result, dict):
@@ -574,6 +575,7 @@ def overlay(views, snap, app, width, height):
     if not active(app):
         return None
     stage = state["stage"]
+    from . import modal_scrollbars as B
     ascii_ = views.g.ascii
     room = max(1, width - 8)
     prefix = [[(L.cut(f" {len(state['jobs'])} selected jobs: " + ", ".join(state["jobs"]), room, ascii_), "accent+bold")]]
@@ -607,7 +609,10 @@ def overlay(views, snap, app, width, height):
     if detail_count:
         content_room = max(0, available - len(rows) - min(len(items), 3))
         scroll = min(state["scroll"], max(0, detail_count - max(1, content_room)))
-        state["scroll"] = scroll
+        detail_context = ("history-logs-details", state["token"], stage, id(state.get("report")), id(state.get("result")), width)
+        detail_target, scroll = B.window(app, "modal:history-log-report", scroll, detail_count, content_room, context=detail_context)
+        state["scroll"] = detail_target
+        detail_start = len(rows)
         for value in _details(app, scroll, content_room):
             rows.append([(L.cut(" " + clean(value, ascii_, limit=8192), room, ascii_), "yellow" if stage == "missing" else "")])
     page = max(1, available - len(rows))
@@ -616,7 +621,11 @@ def overlay(views, snap, app, width, height):
         top = cursor
     elif cursor >= top + page:
         top = cursor - page + 1
-    state["top"] = top
+    context = ("history-logs-actions", state["token"], stage, state["cwd"])
+    logical, top = B.window(app, "modal:history-log-actions", top, len(items), page,
+                            context=context, focus=cursor)
+    state["top"] = logical
+    action_start = len(rows)
     for index, (label, action) in enumerate(items[top:top + page], top):
         logical_hits.append((len(rows), action))
         style = "sel" if index == cursor else "accent+under" if action == state["hover"] else "text"
@@ -629,13 +638,20 @@ def overlay(views, snap, app, width, height):
                 " Arrows / Tab choose | Enter select | Esc cancel")
         rows.append([(L.cut(hint, room, ascii_), "dim")])
     rendered = L.box(views.g, rows, width, height, clean(title, ascii_))
-    for logical, action in logical_hits:
-        index = logical + 1
+    for row_index, action in logical_hits:
+        index = row_index + 1
         if index < len(rendered) - 1:
             y, x, row = rendered[index]
             state["hits"].append((y, x + 1, x + L.vlen(L.row_text(row)) - 1, action))
     state["paint_size"] = (width, height)
     state["paint_token"] = _paint_context(app, width, height)
+    rendered = B.boxed(app, "modal:history-log-actions", rendered, start=action_start, count=len(items), page=page,
+                       target=logical, painted=top, setter=lambda value: state.update(top=value), context=context,
+                       header=-1 if detail_count else 0)
+    if detail_count:
+        rendered = B.boxed(app, "modal:history-log-report", rendered, start=detail_start, count=detail_count, page=content_room,
+                           target=detail_target, painted=scroll, setter=lambda value: state.update(scroll=value),
+                           context=detail_context)
     return rendered
 
 

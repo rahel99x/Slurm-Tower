@@ -1,8 +1,9 @@
 # Read and adjust charts
 
-Tower draws charts with terminal characters. Unicode curves use connected opaque
-quadrants. ASCII curves use connected strokes. Filled area graphs retain their
-block presentation. Both modes use the
+Tower draws charts with terminal characters.
+Unicode curves use continuous Braille strokes with two horizontal and four vertical positions per cell.
+ASCII curves use directional strokes. Filled area graphs retain their block presentation.
+Both modes use the
 same samples, time windows, and scale limits. No chart control starts a job or
 requests extra scheduler data.
 
@@ -46,10 +47,13 @@ Unicode selectors use a Braille lattice with two horizontal positions and four v
 Crossing strokes combine their Braille dots in the same cell.
 Their exact appearance depends on the terminal font.
 The guide preserves the graph's background and has no black outline.
+At an intersection, the original curve or annotation glyph and its style remain unchanged.
+The selector draws only in unoccupied cells and does not punch holes in the curve.
 The crosshair stays inside the measured plot, outside its labels and controls.
 It marks the pointer's coordinates and does not turn a missing sample into a measurement.
 
-The Unicode selector eases between reported pointer positions over 80 ms.
+The crosshair moves to the latest reported terminal cell immediately.
+Only its Braille dot phase moves within that cell, over at most 24 ms.
 This transition is visual only. Mouse events and selected bounds still use whole terminal cells.
 The lattice does not increase mouse accuracy or measurement precision.
 ASCII and reader modes use static `.` strokes with `+` intersections.
@@ -229,12 +233,14 @@ remain available in the sample inspector and interval statistics.
 
 When samples share a terminal column, Tower retains the first, minimum, maximum,
 and last known values in source order. This envelope preserves short spikes.
-Unicode curves draw the range with opaque quadrant strokes. ASCII curves use
+Unicode curves draw the range with continuous two-by-four Braille strokes. ASCII curves use
 `/`, `\`, `-`, `:`, and `+`; an isolated sample uses `.`. If a bucket contains an unknown sample, the bucket stays
 unknown. Tower does not draw a bridge through that bucket or a detected outage.
 It connects known samples without smoothing their values. Fixed or zoomed
 vertical bounds clip a crossing line. A segment wholly outside those bounds stays
 blank instead of appearing as a flat measurement on the scale edge.
+Straight segments join adjacent known observations; they do not create new measurements.
+The same curve renderer serves dashboard, resource, and inspector graphs.
 
 <a id="feature-44"></a>
 
@@ -400,7 +406,7 @@ file or process I/O. Use `Glyphs(True)` for ASCII output.
 | `time_selection_note(t0, t1, width, ...)` | Identify the exact selected start timestamp and the displayed span. |
 | `vbar_chart(g, values, width, height, ...)` | Draw a filled area graph with scale labels and optional timestamps. |
 | `hbar_rows(g, items, width, ...)` | Draw horizontal bars with measured values. |
-| `braille_chart(g, values, width, height, ...)` | Draw connected opaque Unicode quadrant strokes or equivalent ASCII strokes. The historical method name remains compatible. |
+| `braille_chart(g, values, width, height, ..., curve_style="fine")` | Draw continuous two-by-four Braille curves or equivalent directional ASCII strokes. |
 | `heatmap(g, matrix, width, ...)` | Draw a shared-scale measured matrix. Mark unknown cells. |
 | `stacked_bar(g, items, width, ...)` | Draw a composition bar with a numeric legend. |
 | `histogram(g, values, bins, width, ...)` | Count values in specified bins and draw horizontal bars. |
@@ -411,6 +417,8 @@ file or process I/O. Use `Glyphs(True)` for ASCII output.
 Use `envelope=False` only when a mean representation is intended. Their optional
 `axis_formatter` formats plotted coordinates; their `sample_times` and
 `sample_interval` preserve actual time spacing and known sampling outages.
+The internal `curve_style="blocks"` argument retains the older two-by-two raster for callers that require it.
+It is not a user-facing chart setting.
 
 ### `tower.chart_interaction`
 
@@ -446,7 +454,7 @@ Zoom bounds use plotted coordinates; logarithmic vertical bounds remain base-10 
 | `command_names()` | Return the interaction command names. |
 | `run_command(app, args)` | Apply `chartzoom undo` or `chartzoom reset`. |
 | `feedback(app, ascii_=None, rows=None, overlays=())` | Return themed Braille selector strokes or ASCII fallback, preserving each painted cell's background. |
-| `next_deadline(app, now=None)` | Schedule the next cached selector frame during its bounded 80 ms transition. |
+| `next_deadline(app, now=None)` | Schedule cached selector frames during the bounded 24 ms dot-phase transition. |
 | `overlay(views, snap, app, width, height)` | Return no full modal overlay; feedback belongs to the current plot. |
 
 ### `tower.selector_glyphs`
@@ -459,6 +467,9 @@ They do not change event coordinates, measured values, or source sampling.
 | `locate(y, x)` | Map finite visual coordinates to a terminal cell and its Braille positions. |
 | `glyph(y_slot, x_slot, horizontal=False, vertical=False, ascii_=False, fine=True)` | Return a thin stroke, combined intersection, or portable fallback glyph. |
 | `interpolate(start, target, elapsed, duration=0.08)` | Ease the visual position without overshoot; use at most 200 ms for a custom duration. |
+
+The selector passes a 0.024-second duration for its dot-phase transition inside the latest reported cell.
+The helper's general default does not delay whole-cell pointer movement.
 
 ### `tower.metric_live`
 

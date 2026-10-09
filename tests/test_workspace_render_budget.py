@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tower import job_panels as J, layout as L, workspace_layout as W
+from tower import job_panels as J, layout as L, scrollbars as S, workspace_layout as W
 from tower.config import Config
 from tower.controller import App
 from tower.model import Finished, Job, Live, Store
@@ -48,7 +48,9 @@ def test_details_source_builds_once_at_its_actual_width(dashboard, monkeypatch, 
     rows, hits = views.compose(store.snapshot(), app, width, height)
     rect = app.job_panel_rect
     padding = 2 if density == "comfortable" and rect.width >= 8 and rect.height >= 5 else 0
-    assert sources == [("900", rect.width - padding)]
+    assert sources == [("900", rect.width - padding - 1)]
+    pane = next(item for item in S.initialize(app)["panes"] if item.key == "workspace:jobs:details")
+    assert sources[0][1] == pane.rect.right - pane.rect.left - 1
     assert len(queue_widths) == 1
     assert all(L.vlen(L.row_text(row)) <= width for row in rows)
     assert all(0 <= y < height for y, _, _ in hits)

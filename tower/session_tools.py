@@ -1,6 +1,8 @@
 """Completion review, notification controls and read-only terminal diagnostics."""
 from __future__ import annotations
 
+from bisect import bisect_right
+
 import hashlib
 import math
 import socket
@@ -219,9 +221,8 @@ def run_command(app, args):
     elif command == "terminaltest":
         if values == ["clipboard"]:
             from . import clipboard
-            cb = app.cfg["clipboard"]
             app.say(clipboard.copy("Slurm Tower clipboard test", app.state_dir,
-                use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True))))
+                **clipboard.options(app)))
             state["probe_events"].append("Clipboard delivery requested. Paste into your terminal to verify the result.")
         elif values:
             app.fail("Use terminaltest [clipboard].")
@@ -323,6 +324,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
 
 
 def overlay(views, snap, app, width, height):
+    from . import modal_scrollbars as B
     state = initialize(app)
     rows = []
     state["mouse_rows"], state["mouse_mode"] = {}, app.mode
@@ -340,8 +342,11 @@ def overlay(views, snap, app, width, height):
         state["selected"] = items[cursor]["key"] if items else ""
         rows = [[(f" {unread_count(app)} unreviewed | {state['inbox_filter']} | latest {LIMIT} retained completions", "accent+bold")],
                 [(" Filter: " + (clean(state["query"], views.g.ascii) or "none"), "dim")]]
-        start = max(0, cursor - max(1, height - 8) // 2)
-        for index, item in enumerate(items[start:start + max(1, height - 8)], start):
+        page = max(1, height - 8)
+        start = max(0, cursor - page // 2)
+        context = ("session_inbox", state["inbox_filter"], state["query"])
+        logical, start = B.window(app, "modal:inbox", start, len(items), page, context=context, focus=cursor)
+        for index, item in enumerate(items[start:start + page], start):
             record = item["record"]
             mark = "NEW" if item["unread"] else "read"
             text = f" {mark:4} {record.id:16} {record.state:14} {record.name}  {record.end}"
@@ -352,11 +357,12 @@ def overlay(views, snap, app, width, height):
             rows.append([(" No completions match. a shows all known completions.", "dim")])
         rows.append([(" u unread | f failures | a all | / filter | Enter History | l logs | r reviewed | A review list | Esc back", "dim")])
         rendered = L.box(views.g, rows, width, height, "Completion inbox")
-        for logical, identity in logical_hits.items():
-            if logical + 1 < len(rendered) - 1:
-                y, x, row = rendered[logical + 1]
+        for row_index, identity in logical_hits.items():
+            if row_index + 1 < len(rendered) - 1:
+                y, x, row = rendered[row_index + 1]
                 state["mouse_rows"][y] = (identity, x + 1, x + L.vlen(L.row_text(row)) - 1)
-        return rendered
+        return B.boxed(app, "modal:inbox", rendered, start=2, count=len(items), page=page,
+                       target=logical, painted=start, setter=lambda value: None, context=context)
     if app.mode == "session_alerts":
         engine = app.store.alerts
         if engine:
@@ -367,27 +373,47 @@ def overlay(views, snap, app, width, height):
             rules = engine.rules
             cursor = min(state["alert_cursor"], max(0, len(rules) - 1))
             page = max(1, (height - 7) // 2)
-            start = max(0, cursor - page // 2)
-            for index, rule in enumerate(rules[start:start + page], start):
+            start = 2 * max(0, cursor - page // 2)
+            page *= 2
+            context = ("session_alerts", id(engine), bool(views.g.ascii))
+            logical, start = B.window(app, "modal:alerts", start, 2 * len(rules), page, context=context, focus=cursor)
+            for index in range(start // 2, min(len(rules), (start + page + 1) // 2)):
+                rule = rules[index]
                 active = sorted(rule.active.copy())
                 muted = engine.notification_muted(rule.name)
-                rows.append([(clean(f" {rule.name} | {len(active)} active | {'notifications muted' if muted else 'notifications enabled'}", views.g.ascii), "sel" if index == cursor else "")])
-                rows.append([("  " + clean(rule.when, views.g.ascii), "dim")])
+                card = [[(clean(f" {rule.name} | {len(active)} active | {'notifications muted' if muted else 'notifications enabled'}", views.g.ascii), "sel" if index == cursor else "")],
+                        [("  " + clean(rule.when, views.g.ascii), "dim")]]
+                rows.extend(card[max(0, start - index * 2):min(2, start + page - index * 2)])
             for entry in controls["snoozes"][:max(0, height - len(rows) - 6)]:
                 rows.append([(clean(f" Snooze {entry['rule']} job={entry['job']} {max(0, entry['until'] - time.time()):.0f}s remaining", views.g.ascii), "yellow")])
             if not rules:
                 rows.append([(" No alert rules are configured. Add rules in your Tower configuration.", "dim")])
         rows.append([(" Arrows choose rule | s snooze 30m | u resume rule | Q quiet off | :alerts for custom controls | Esc back", "dim")])
-        return L.box(views.g, rows, width, height, "Alert controls")
+        rendered = L.box(views.g, rows, width, height, "Alert controls")
+        if engine:
+            return B.boxed(app, "modal:alerts", rendered, start=1, count=2 * len(rules), page=page,
+                           target=logical, painted=start, setter=lambda value: None, context=context)
+        return rendered
     if app.mode == "terminal_diagnostics":
-        start = state["diagnostic_cursor"]
-        for item in state["diagnostics"][start:start + max(1, (height - 6) // 3)]:
-            rows.append([(f" {item['status'].upper()} {item['name']}", "cyan" if item["status"] == "ok" else "yellow")])
+        page = 3 * max(1, (height - 6) // 3)
+        context = ("terminal_diagnostics", id(state["diagnostics"]), width, bool(views.g.ascii))
+        offsets = _diagnostic_offsets(state, width, views.g.ascii)
+        target = offsets[min(state["diagnostic_cursor"], max(0, len(offsets) - 2))]
+        logical, start = B.window(app, "modal:diagnostics", target, offsets[-1], page,
+                                  context=context, focus=state["diagnostic_cursor"])
+        index = max(0, bisect_right(offsets, start) - 1)
+        while index < len(state["diagnostics"]) and offsets[index] < start + page:
+            item = state["diagnostics"][index]
+            card = [[(f" {item['status'].upper()} {item['name']}", "cyan" if item["status"] == "ok" else "yellow")]]
             detail = clean(item["detail"], views.g.ascii)
             available = max(1, width - 10)
-            rows += [[("  " + detail[i:i + available], "")] for i in range(0, min(len(detail), available * 2), available)]
+            card += [[("  " + detail[i:i + available], "")] for i in range(0, min(len(detail), available * 2), available)]
+            rows.extend(card[max(0, start - offsets[index]):max(0, min(len(card), start + page - offsets[index]))])
+            index += 1
         rows.append([(" Read-only evidence | arrows/pages browse | t interactive tests | r refresh | Esc back", "dim")])
-        return L.box(views.g, rows, width, height, "Terminal diagnostics")
+        rendered = L.box(views.g, rows, width, height, "Terminal diagnostics")
+        return B.boxed(app, "modal:diagnostics", rendered, start=0, count=offsets[-1], page=page,
+                       target=logical, painted=start, setter=lambda value: None, context=context, header=-1)
     if app.mode == "terminal_probe":
         rows = [[(" Glyph alignment: each block should occupy one terminal cell.", "accent")],
                 [(" |12345678901234567890|", "")],
@@ -398,3 +424,19 @@ def overlay(views, snap, app, width, height):
         rows.append([(" Esc closes | :terminaltest clipboard requests a copy test outside this probe", "dim")])
         return L.box(views.g, rows, width, height, "Terminal input test")
     return None
+
+
+def _diagnostic_offsets(state, width, ascii_):
+    """Index physical rows once per published source, width or glyph change."""
+    source = state["diagnostics"]
+    cached = state.get("diagnostic_row_index")
+    identity = (width, bool(ascii_), len(source))
+    if cached and cached["source"] is source and cached["identity"] == identity:
+        return cached["offsets"]
+    available = max(1, width - 10)
+    offsets = [0]
+    for item in source:
+        length = min(len(clean(item["detail"], ascii_)), available * 2)
+        offsets.append(offsets[-1] + 1 + (length + available - 1) // available)
+    state["diagnostic_row_index"] = {"source": source, "identity": identity, "offsets": offsets}
+    return offsets

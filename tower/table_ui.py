@@ -542,6 +542,10 @@ def overlay(views, snap, app, width, height):
     # Fit selection to the actual visible checkbox capacity on tiny terminals.
     available = max(0, height - 6)
     start = max(0, min(max(0, len(cols) - available), cursor - available // 2))
+    from . import modal_scrollbars as B
+    context = ("columns", state["tab"])
+    logical, start = B.window(app, "modal:columns", start, len(cols), available,
+                              context=context, focus=cursor)
     rows = [[(" Space show/hide | Up/Down select | Left/Right reorder", "dim")],
             [(" +/- width | a automatic width | r reset | Enter done", "dim")]]
     for index, column in enumerate(cols[start:start + available], start):
@@ -569,4 +573,5 @@ def overlay(views, snap, app, width, height):
             "left": left, "right": right, "action": ("click", y, left), "group": "columns",
             "column": (state["tab"], column.key), "enabled": not required,
             "reason": "Required identity/state column" if required else ""}))
-    return rendered
+    return B.boxed(app, "modal:columns", rendered, start=2, count=len(cols), page=available,
+                   target=logical, painted=start, setter=lambda value: None, context=context)

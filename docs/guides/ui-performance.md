@@ -5,6 +5,7 @@
 Tower 4.3.1 introduced the cached pointer display and bounded long inline views.
 Tower 4.4.0 retains that path for draggable workspaces, shared launch groups, history browsers, and Quick Advisor.
 Tower 4.5.0 extends it to current-viewport directional focus and metric crosshair feedback.
+Tower 4.7.0 adds pane scrollbars, pinned rendered-line selections, and finer continuous Braille curves.
 Theme changes repaint the document with the selected canvas and surfaces.
 Live metric windows use display deadlines while source sampling retains its own limits.
 Hover, smooth scrolling, drag selection, menus, and live job updates remain available.
@@ -37,7 +38,9 @@ Continuous pointer movement does not postpone background-result publication.
 
 Metric crosshairs read the frozen, final plot geometry.
 Moving a pointer does not recompute a curve or read its source.
-Unicode selectors use an 80 ms visual transition over cached plot feedback.
+Crosshairs reach the latest reported terminal cell immediately.
+Only the Braille dot phase uses a bounded 24 ms transition inside that cell.
+Curve and annotation glyphs retain their original styles at selector intersections.
 Mouse coordinates remain whole terminal cells despite the finer Braille stroke positions.
 ASCII and reader modes keep static feedback. Disabling `animations` also disables selector easing.
 During a graph drag, both painted axis mappings stay fixed while new sampler results remain available.
@@ -49,6 +52,9 @@ Live advances the visible time window at a bounded display rate; a one-milliseco
 The control graph indexes visible rows and control identities.
 Advisor results and wrapped Details documents reuse their current published inputs.
 These results update when their measurements, settings, selected job, or available width change.
+The inline Advisor indexes the complete retained report and renders only visible cards.
+Running-job metric series are read only for cards in that window.
+Long notes and suggested SBATCH flags remain available at narrow widths.
 Metric charts retain bounded prepared data for the current view.
 Caches have fixed bounds and do not retain unlimited jobs, views, or terminal sizes.
 
@@ -56,6 +62,12 @@ Clicks, keyboard commands, and mouse releases retain their input order.
 Drag selection keeps exact job IDs.
 Cancellation still requires its normal review.
 Log selections and copies retain their exact source positions and bytes.
+Pane scrollbars use the same bounded viewport controller and preserve source selection.
+Count growth keeps an active scrollbar gesture attached to its pane.
+Source, geometry, layout, or modal changes cancel capture and consume its delayed release.
+Rendered text selections cache at most 20,000 lines and 8 MiB.
+Incomplete cache coverage refuses copying instead of publishing a partial range.
+See [Pane navigation](pane-navigation.md) for controls and editor-delivery bounds.
 
 Use the top-right update slider or `:rate N` to change source sampling.
 Use `:smoothscroll off` to request immediate wheel movement.
@@ -225,7 +237,16 @@ python3 scripts/setup.py --mode demo --dev
   tests/test_ui_state_budget.py \
   tests/test_workspace_render_budget.py \
   tests/test_advisor_render_budget.py \
+  tests/test_advisor_document.py \
   tests/test_chart_render_budget.py \
+  tests/test_fine_curves.py \
+  tests/test_selector_responsiveness.py \
+  tests/test_scrollbar_core.py \
+  tests/test_scrollbar_tables.py \
+  tests/test_scrollbar_documents.py \
+  tests/test_modal_scrollbars.py \
+  tests/test_text_selection.py \
+  tests/test_editor_yank.py \
   tests/test_chart_interaction.py \
   tests/test_readable_curve.py \
   tests/test_metric_live.py \

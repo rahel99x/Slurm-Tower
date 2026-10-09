@@ -20,6 +20,9 @@ HORIZONTAL_GLYPHS = "⠉⠒⠤⣀"
 VERTICAL_GLYPHS = "⡇⢸"
 SMOOTH_DURATION = 0.08
 MAX_SMOOTH_DURATION = 0.2
+# Pointer tracking eases only the dot phase inside the latest reported cell.
+# Whole-cell movement must never wait behind a cosmetic animation.
+SUBCELL_DURATION = 0.024
 _HORIZONTAL_BITS = (0x09, 0x12, 0x24, 0xC0)
 _VERTICAL_BITS = (0x47, 0xB8)
 

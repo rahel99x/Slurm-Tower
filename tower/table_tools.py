@@ -570,8 +570,7 @@ def _open_record(app, jid, action):
                 app.sampler.select_fin(jid)
     elif action == "copy":
         from . import clipboard
-        cfg = app.cfg.get("clipboard", {})
-        app.say(clipboard.copy(jid, app.state_dir, use_tools=bool(cfg.get("tools", True)), use_osc52=bool(cfg.get("osc52", True))))
+        app.say(clipboard.copy(jid, app.state_dir, **clipboard.options(app)))
     elif action == "compare":
         if jid not in app.compare_ids:
             app.compare_ids.append(jid)
@@ -847,6 +846,11 @@ def overlay(views, snap, app, width, height):
     available = max(1, height - len(rows) - 5)
     state["visible"] = available
     start = max(0, min(state["cursor"] - available // 2, max(0, len(items) - available)))
+    from . import modal_scrollbars as B
+    context = (modal, tab, state.get("node"), state.get("action_job"), state.get("mark_scope"))
+    logical, start = B.window(app, "modal:table-tools", start, len(items), available,
+                              context=context, focus=state["cursor"])
+    data_start = len(rows)
     row_items = []
     for index, item in enumerate(items[start:start + available], start):
         if modal == "sort":
@@ -881,4 +885,5 @@ def overlay(views, snap, app, width, height):
                      for row_index, index in row_items if row_index < len(placements)]
     if modal == "headers" and selected:
         state["header"] = {"table": tab, "column": selected.key}
-    return result
+    return B.boxed(app, "modal:table-tools", result, start=data_start, count=len(items), page=available,
+                   target=logical, painted=start, setter=lambda value: None, context=context)

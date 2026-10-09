@@ -183,14 +183,26 @@ class App:
         return cur
 
     def scroll_to(self, tab: str, cursor: int, visible: int, n: int) -> int:
+        from . import scrollbars, scrolling
         top = self.top.get(tab, 0)
-        if cursor < top:
-            top = cursor
-        if cursor >= top + visible:
-            top = cursor - visible + 1
+        state = scrollbars.initialize(self)
+        manual = state['manual'].get(tab)
+        if manual and manual['cursor'] != self.cursor.get('jobs' if tab == 'recent' else tab):
+            scrollbars.resume(self, tab)
+            manual = None
+        if manual is not None:
+            top = manual['target']
+        if manual is None:
+            if cursor < top:
+                top = cursor
+            if cursor >= top + visible:
+                top = cursor - visible + 1
         top = max(0, min(top, max(0, n - visible)))
         self.top[tab] = top
-        return top
+        if getattr(self, 'scrollbar_probe', False):
+            return top
+        return scrolling.viewport(self, tab, top, n, visible,
+                                  context=(self.tab, self.mode, getattr(self, 'width', 0)))
 
     def say(self, text: str, *, level="info", path="", job="", task=""):
         self.message, self.message_t = text, time.time()
@@ -611,7 +623,21 @@ class App:
             self.selected_id = self.group_selected()
 
     def handle(self, key: str) -> None:
+        """Route a key and release dialog scroll overrides when its owner closes."""
+        previous = self.mode
+        try:
+            self._handle(key)
+        finally:
+            if self.mode != previous:
+                from .scrollbars import resume, cancel
+                resume(self)
+                cancel(self)
+
+    def _handle(self, key: str) -> None:
         """``key`` is a name: a-z A-Z 0-9 punctuation, or up down pgup pgdn home end tab btab enter esc space backspace."""
+        from .scrollbars import handle_key as scrollbar_key
+        if scrollbar_key(self, key):
+            return
         from .history_log_export import active as export_active, handle_key as export_key
         if export_active(self):
             export_key(self, key)
@@ -637,6 +663,14 @@ class App:
             from .command_ui import open_palette
             open_palette(self)
             return
+        from .text_selection import handle_key as text_key
+        if text_key(self, key):
+            return
+        if (key in ("up", "down", "pgup", "pgdn", "home", "end")
+                and not getattr(self, "interaction_state", {}).get("active")
+                and not (self.mode == "main" and self.tab == "analytics" and self.analytics_view != "job")):
+            from .scrollbars import resume as resume_scroll
+            resume_scroll(self)
         if workbench.handle_key(self, key):
             return
         if key == ":" and self.mode not in ("main", "filter", "palette", "confirm"):
@@ -784,7 +818,7 @@ class App:
         elif action == "yank":
             self.yank()
         elif action == "copy_all":
-            self.copy_all_log() if self.tab == "log" else self.yank()
+            self.copy_all_log() if self.tab == "log" else self.copy_visible_pane()
         elif action == "export_text":
             self.export("text")
         elif action == "export_csv":
@@ -1005,6 +1039,9 @@ class App:
             self.handle(key)
 
     def move(self, action: str):
+        from .scrollbars import resume as resume_scroll
+        if not (self.tab == "analytics" and self.analytics_view != "job"):
+            resume_scroll(self)
         from .job_selection import resume
         self.click_row = None
         scoped = getattr(self, "history_browser_state", {}).get("views", {}).get("deps", {})
@@ -1046,6 +1083,10 @@ class App:
                 self.research_scroll = max(0, self.research_scroll + delta)
             return
         if self.tab == "analytics":
+            if self.analytics_view != "job":
+                from .scrollbars import keyboard_scroll
+                keyboard_scroll(self, "analytics:document:" + self.analytics_view, action)
+                return
             if self.analytics_view == "job":
                 ids = [j.id for j in self.store.jobs if not j.pending]
                 for i in self.store.series_jobs():
@@ -1156,6 +1197,9 @@ class App:
         return export.selection_text(self.last_rows, self.sel_anchor, self.sel_end)
 
     def yank(self):
+        from .text_selection import copy_selection
+        if copy_selection(self):
+            return
         if self.tab == "log" and not self.logs.browser:
             expected = self.log_selection_expected or self.logs.selection_active
             buf = self.prepare_log()
@@ -1188,13 +1232,21 @@ class App:
             self.fail("nothing to copy")
             return
         cb = self.cfg["clipboard"]
-        msg = clipboard.copy(text, self.state_dir, use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)))
+        msg = clipboard.copy(text, self.state_dir, **clipboard.options(self))
         self.store.event("copy", msg)
         self.say(msg)
         self.sel_anchor = None
         if self.tab == "log":
             self.logs.clear_selection()
             self.log_selection_expected = False
+
+    def copy_visible_pane(self):
+        from .text_selection import copy_visible_pane, clear
+        if copy_visible_pane(self):
+            return
+        clear(self)
+        self.sel_anchor = None
+        self.yank()
 
     def copy_all_log(self):
         path = self.resolve_log_path()
@@ -1206,6 +1258,7 @@ class App:
         cb = dict(self.cfg["clipboard"])
         self.start_log_copy(lambda service: copy_full_log(path, self.state_dir, files=files,
             use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)),
+            destination=cb.get("destination", "copy"),
             cancel=lambda: service.closed or self.copy_task["cancel"].is_set(),
             progress=lambda done, total: self.activity.progress(self.copy_task, done, total)), path, f"Copying entire log: {path}")
 
@@ -1225,6 +1278,7 @@ class App:
         cb = dict(self.cfg["clipboard"])
         self.start_log_copy(lambda service: copy_log_selection(chunks(), self.state_dir, source_path=path,
             use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)),
+            destination=cb.get("destination", "copy"),
             cancel=lambda: service.closed or self.copy_task["cancel"].is_set(),
             progress=lambda done, total: self.activity.progress(self.copy_task, done, total)), path, f"Copying log lines {lo + 1}-{hi + 1}: {path}")
 
@@ -1539,8 +1593,7 @@ class App:
                 if self.tab == "log":
                     self.copy_all_log()
                 else:
-                    self.sel_anchor = None
-                    self.yank()
+                    self.copy_visible_pane()
             elif len(args) == 2 and all(a.isdigit() and int(a) > 0 for a in args):
                 if self.tab == "log" and not self.logs.browser:
                     buf = self.prepare_log()
@@ -1783,11 +1836,20 @@ class App:
         Shift-click extends text selection; other right-clicks clear selections.
         """
         self.last_hits = list(hits)
+        if button in ("press", "left"):
+            from .scrollbars import commit_selection_gesture
+            commit_selection_gesture(self)
         from .history_log_export import active as export_active, handle_mouse as export_mouse
+        from .scrollbars import handle_mouse as scrollbar_mouse
+        if scrollbar_mouse(self, y, x, button=button, shift=shift):
+            return
         if export_active(self):
             export_mouse(self, y, x, button=button, shift=shift)
             return
         from .job_selection import context_click
+        if button == "right":
+            from .text_selection import clear as clear_text
+            clear_text(self)
         if context_click(self, y, x, button=button):
             return
         if button in ("press", "left"):
@@ -1806,6 +1868,9 @@ class App:
             chart_interaction.cancel(self)
             metric_live.cancel(self)
             return
+        from .text_selection import handle_mouse as text_mouse
+        if getattr(self, "text_selection_state", {}).get("explicit") and text_mouse(self, y, x, button=button, shift=shift):
+            return
         from .pane_drag import handle_mouse as pane_mouse
         if pane_mouse(self, y, x, button=button, shift=shift):
             return
@@ -1817,10 +1882,20 @@ class App:
             return
         from .chart_interaction import handle_mouse as chart_mouse
         if chart_mouse(self, y, x, button=button, shift=shift):
+            if button in ("press", "left") and not getattr(self, "text_selection_state", {}).get("explicit"):
+                from .text_selection import clear as clear_text
+                clear_text(self)
+            return
+        if text_mouse(self, y, x, button=button, shift=shift):
             return
         if button == "press" and not shift and pointer_mouse(self, y, x, button="left"):
             return
         from .job_selection import handle_mouse as select_mouse
+        if button in ("press", "left") and any(row == y and kind in
+                ("job", "recent", "fin", "group", "source", "dep", "log_file")
+                for row, kind, _ in hits):
+            from .scrollbars import resume as resume_scroll
+            resume_scroll(self)
         if select_mouse(self, y, x, button=button, shift=shift):
             return
         if button == "press":

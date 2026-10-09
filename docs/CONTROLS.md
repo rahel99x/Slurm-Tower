@@ -118,7 +118,7 @@ Use `:view NAME` to select an Analytics or Research subview.
 
 ## Terminal toolbar and update slider
 
-The first display row contains `x`, File, Edit, View, Help, and the update-rate control.
+The first display row contains `x`, File, Edit, View, Help, the copy destination, and the update-rate control.
 The toolbar remains available above pages and overlays.
 Menu actions use the same commands and reviews as their keyboard equivalents.
 
@@ -131,6 +131,8 @@ Menu actions use the same commands and reviews as their keyboard equivalents.
 | Enter / Space, or click a menu choice | Activate the choice |
 | Esc, `q`, F10, or move the pointer outside the dropdown | Dismiss the menu |
 | Click `x` | Exit Tower |
+| Click Copy / Yank | Switch between clipboard copying and a running local Vim/Neovim target |
+| Edit → Switch to Vim/Neovim yanking / Switch to clipboard copying | Change the same copy destination |
 | Click or drag the update track | Choose a requested multiplier from 1x to 50x |
 | Click `[-]` / `[+]`, or use the wheel over the update control | Decrease or increase the multiplier by one |
 | Click the multiplier, or View → Focus update-rate slider | Focus slider keyboard controls |
@@ -571,11 +573,33 @@ Use `v` to return to original lines before selecting raw text.
 Use `Y` for the complete exact source.
 See [Log display](guides/log-view.md) for inspected-source coverage and timestamp limitations.
 
+## Pane scrolling and rendered selection
+
+Scrollable panes reserve four left header cells for top/bottom arrows and one right-edge cell for the scrollbar.
+Drag its thumb to scroll that pane. Click above or below the thumb for a viewport-sized step.
+Click the header arrows for the pane's endpoints, or reach them with F8 and Enter.
+These controls preserve the selected source and do not activate rows under the rail.
+Count growth keeps the current gesture. Changed source, page, geometry, layout, or modal context cancels it.
+A cancelled gesture consumes its delayed release.
+Advisor, History, Timeline, and comparison documents expose their complete published content through their viewport.
+The reader theme, disabled animations, and `:smoothscroll off` use immediate movement.
+
+Drag through ordinary rendered text to select lines in one pane.
+Use `v` to start explicit text selection, then arrows, page keys, Home, or End to extend it.
+Shift-click extends the range. `V` selects the currently painted pane.
+Press `y` or use Edit → Copy to copy the selected text.
+Esc or right-click clears it.
+Job dragging retains its exact-ID marking behavior unless explicit rendered selection starts with `v`.
+Raw Logs and source-page dialogs retain their original-byte selection controls.
+The rendered cache is limited to 20,000 lines and 8 MiB.
+Missing displayed coverage causes a stated failure; no partial range is copied.
+See [Pane navigation](guides/pane-navigation.md) for procedures, source scope, and editor delivery.
+
 ## Copy and export controls
 
 | Key or command | Function |
 | --- | --- |
-| `v`, `V`, `y` outside Logs | Select screen lines, select the screen, and copy displayed text |
+| `v`, `V`, `y` outside raw Logs | Select rendered lines, select the painted pane, and copy displayed text |
 | `E` | Export the current page as text |
 | `C` | Export the current table as CSV |
 | `J` | Export selected or marked jobs and their recorded series as JSON |
@@ -589,6 +613,15 @@ See [Log display](guides/log-view.md) for inspected-source coverage and timestam
 The [operations guide](guides/operations.md) describes notice search and the export library.
 A terminal can reject or limit clipboard requests.
 Inspect the result notice and private export path after a large copy.
+Copy is the default destination. Yank uses a running local Vim or Neovim server.
+The toolbar uses compact `C` / `Y` labels when space is limited.
+Editor delivery sets registers `0` and unnamed without opening an editor or changing a buffer.
+`clipboard.destination` accepts `copy` or `yank`.
+An inherited owned Unix socket identifies Neovim; one reported server or `TOWER_VIM_SERVER` identifies Vim.
+Discovery has a 0.4-second timeout; delivery has a 0.8-second timeout.
+Editor payloads must be complete UTF-8 without NUL bytes and no larger than 8 MiB.
+Failures keep the private export and attempt enabled clipboard fallback.
+Complete-log and History multi-job exports use the captured copy destination and transport preferences.
 
 ## Activity, diagnostics, completions, and alerts
 
@@ -689,7 +722,9 @@ Use `s` to change shared-scale mode.
 Click a visible time-preset or axis control for the corresponding chart operation.
 Move the pointer inside a metric plot for its thin crosshair in the active theme's accent color.
 Unicode selectors use two horizontal and four vertical Braille positions per cell.
-An 80 ms visual transition smooths the selector; mouse coordinates remain whole terminal cells.
+The crosshair reaches the latest reported cell immediately; its Braille dot phase animates for at most 24 ms.
+Mouse coordinates remain whole terminal cells.
+Original curve and annotation glyphs keep their styles where the selector intersects them.
 ASCII and reader modes use static dots and `+` intersections.
 Set `animations` to `false` to disable easing while keeping the Unicode selector.
 Press, drag, and release inside the same plot to select a time interval and fit its visible curve to both axes.
@@ -862,6 +897,16 @@ Use `--account ACCOUNT` for a single launch override.
 
 The desktop alias ignores `CARC_ACCOUNT`.
 See [Desktop account overrides](DESKTOP.md#account-and-profile-overrides) for examples.
+
+Editor destination variables are separate from the managed alias settings:
+
+| Variable | Editor delivery behavior |
+| --- | --- |
+| `NVIM` | Preferred absolute Unix socket for an already-running local Neovim owned by the current user |
+| `NVIM_LISTEN_ADDRESS` | Alternative owned local Neovim Unix socket |
+| `TOWER_VIM_SERVER` | Exact reported Vim server name; required to choose among multiple servers |
+
+See [Pane navigation](guides/pane-navigation.md#send-text-to-vim-or-neovim) for discovery, timeouts, and clipboard fallback.
 
 The normal persistent state base is `~/.local/state/tower/`.
 The desktop profile uses `state_namespace = "desktop"` to separate connection state.

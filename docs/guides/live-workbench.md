@@ -305,7 +305,7 @@ Use `:rate reset` to restore 1x in the active session.
 
 ## Use the terminal toolbar
 
-The first display row contains File, Edit, View, Help, and a quit control.
+The first display row contains File, Edit, View, Help, a copy-destination switch, and a quit control.
 Use the menus for file workflows, preferences, navigation, and diagnostics.
 Job-changing actions retain their existing review and confirmation.
 
@@ -346,6 +346,10 @@ Focus update-rate slider leaves the menu and focuses the slider.
 
 Click the top-left `x`, or choose File → Quit Tower, to exit.
 Esc closes a menu; it does not exit Tower.
+Click **Copy** to switch text delivery to **Yank**, or click **Yank** to restore clipboard copying.
+Narrow terminals use `C` and `Y` for the same switch.
+Yank targets a running local Vim or Neovim server; unavailable delivery retains the export and uses clipboard fallback.
+See [Pane navigation](pane-navigation.md#send-text-to-vim-or-neovim) for server discovery and complete-payload limits.
 
 ### File menu
 
@@ -377,9 +381,10 @@ See [Research](../RESEARCH.md) and [execution recovery](../WORKBENCH.md#execute-
 | Choice | Result or editable command |
 | --- | --- |
 | Copy current selection | Copy the current text selection |
+| Switch to Vim/Neovim yanking / Switch to clipboard copying | Change the destination for text and complete-log copies |
 | Copy entire log / current page | Copy the complete selected log file, or the current page outside Logs |
 | Start line selection | Start selection at the current cursor |
-| Select entire log / current page | Mark the complete log file, or the current page outside Logs |
+| Select entire log / current page | Mark the complete original log source, or select the currently painted pane elsewhere |
 | Clear line selection | Clear the active text selection |
 | Filter this page... | Enter `filter TEXT` |
 | Clear this page's filter | Remove its text filter |

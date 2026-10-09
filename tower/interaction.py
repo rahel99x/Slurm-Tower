@@ -256,7 +256,7 @@ def _rect(value):
 def _action(value):
     if not isinstance(value, (tuple, list)) or not value:
         return None
-    if value[0] not in ("click", "command", "key", "set", "row"):
+    if value[0] not in ("click", "command", "key", "set", "row", "scrollbar"):
         return None
     if any(not isinstance(item, (str, int, float, bool, type(None))) for item in value):
         return None
@@ -844,6 +844,9 @@ def _activate(app, control, *, keyboard=False):
             app.handle(action[1])
         elif action[0] == "set" and len(action) == 3 and action[1] in ("nodes_view", "analytics_view", "research_view"):
             setattr(app, action[1], action[2])
+        elif action[0] == "scrollbar" and len(action) == 3:
+            from .scrollbars import activate
+            return activate(app, action[1], action[2])
         else:
             return False
     finally:

@@ -33,6 +33,13 @@ def render(browser, width=160, height=40, renderer=None):
                         renderer or (lambda w, h: ([[('NATIVE', 'cyan')]], [])))
 
 
+def drag_point(app):
+    rect = app.history_browser_rect
+    y, _, control = next(hit for hit in H.initialize(app)['frame']['hits']
+                         if hit[1] == 'control' and hit[2]['id'].endswith(':drag'))
+    return rect.y + y, rect.x + control['left']
+
+
 @pytest.mark.parametrize("dock", H.DOCKS)
 @pytest.mark.parametrize("width,height", [(160, 40), (80, 18), (40, 14), (10, 8), (2, 2), (1, 1)])
 def test_every_layout_fits_and_builds_one_source_at_actual_dimensions(browser, dock, width, height):
@@ -147,7 +154,7 @@ def test_handle_drag_previews_and_commits_only_valid_edge(browser, dock, target,
     monkeypatch.setattr(browser.app, 'save', lambda: saves.append(True))
     render(browser)
     rect = browser.app.history_browser_rect
-    start = (rect.y, rect.x)
+    start = drag_point(browser.app)
     points = {'left': (26, 0), 'right': (26, 159), 'top': (6, 80), 'bottom': (45, 80)}
     assert H.handle_mouse(browser.app, *start, 'press')
     assert H.handle_mouse(browser.app, *points[target], 'drag')
@@ -165,8 +172,8 @@ def test_handle_click_without_motion_does_not_redock(browser, monkeypatch):
     render(browser)
     rect = browser.app.history_browser_rect
     monkeypatch.setattr(browser.app, 'save', lambda: pytest.fail('Click saved a new dock'))
-    H.handle_mouse(browser.app, rect.y, rect.x, 'press')
-    H.handle_mouse(browser.app, rect.y, rect.x, 'release')
+    H.handle_mouse(browser.app, *drag_point(browser.app), 'press')
+    H.handle_mouse(browser.app, *drag_point(browser.app), 'release')
     assert H._view(browser.app)['dock'] == 'right'
 
 
@@ -175,7 +182,7 @@ def test_invalid_or_interrupted_dock_drag_reverts(browser, reason, monkeypatch):
     H._view(browser.app)['dock'] = 'right'
     render(browser)
     rect = browser.app.history_browser_rect
-    H.handle_mouse(browser.app, rect.y, rect.x, 'press')
+    H.handle_mouse(browser.app, *drag_point(browser.app), 'press')
     monkeypatch.setattr(browser.app, 'save', lambda: pytest.fail('Cancelled drag saved'))
     if reason == 'escape':
         assert H.handle_key(browser.app, 'esc')
@@ -198,7 +205,7 @@ def test_invalid_or_interrupted_dock_drag_reverts(browser, reason, monkeypatch):
 def test_maintenance_cancels_stale_capture_without_waiting_for_a_mouse_report(browser, reason):
     render(browser)
     rect = browser.app.history_browser_rect
-    H.handle_mouse(browser.app, rect.y, rect.x, 'press')
+    H.handle_mouse(browser.app, *drag_point(browser.app), 'press')
     assert H.initialize(browser.app)['drag']
     if reason == 'resize':
         browser.app.width += 1
@@ -475,7 +482,7 @@ def test_real_input_routes_dock_handle_capture_motion_and_release(browser, dock,
     origin = app.body_origin
     def mouse(y, x, bits):
         screen._apply_input(app, ('mouse', (0, x, y, 0, bits)), app.last_hits, MOUSE)
-    mouse(rect.y, rect.x, MOUSE.BUTTON1_PRESSED)
+    mouse(*drag_point(app), MOUSE.BUTTON1_PRESSED)
     assert H.initialize(app)['drag'] is not None
     assert pane_drag.initialize(app)['capture'] is None
     # Move to the right edge from any starting orientation.

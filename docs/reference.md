@@ -44,8 +44,8 @@ the same arguments.
 
 The dashboard uses solid Unicode blocks for resource bars, distributions, and
 timelines. Fractional blocks preserve values at one eighth of a character's width.
-Filled area charts use gradient blocks; telemetry curves use connected opaque
-quadrants with two by two subcells per character. Measured resource heatmaps use opaque cells,
+Filled area charts use gradient blocks; telemetry curves use continuous Braille strokes
+with two horizontal and four vertical positions per character. Measured resource heatmaps use opaque cells,
 an explicit scale, and numeric readings. Composition strips carry a legend with
 the underlying counts or allocation values.
 `--unicode` explicitly selects the Unicode preference; `--ascii` selects portable
@@ -80,7 +80,10 @@ portable plain text regardless of the live dashboard's glyph preference.
 
 Visible metric plots have a thin pointer crosshair in the active theme's accent color, with the graph's background.
 Unicode selectors use two horizontal and four vertical Braille positions per cell.
-Visual easing lasts 80 ms. Mouse coordinates still resolve to whole terminal cells.
+The crosshair reaches the latest reported cell immediately.
+Only its Braille dot phase animates, for at most 24 ms inside that cell.
+Curve and annotation glyphs retain their original style at intersections.
+Mouse coordinates still resolve to whole terminal cells.
 ASCII and reader modes use static dots and `+` intersections.
 Set `animations = false` to disable easing and keep the Unicode selector static.
 Press and drag inside the plot, then release inside it, to select a time interval.
@@ -132,7 +135,7 @@ See [Live metric windows](guides/charts.md#follow-a-running-metric) for mouse, k
 
 ## Workbench navigation and layout
 
-The first terminal row contains File, Edit, View, Help, the quit `x`, and the update slider.
+The first terminal row contains File, Edit, View, Help, the Copy/Yank switch, the quit `x`, and the update slider.
 F10 opens or closes a menu.
 Left/Right changes menus; Up/Down selects a choice; Enter activates it; Esc dismisses it.
 Parameterized choices open an editable command prompt.
@@ -195,6 +198,13 @@ Keyboard movement, selection, and copy positions remain immediate.
 Use `:smoothscroll [on|off|toggle]` to change smoothing; no argument toggles it.
 The reader theme and `animations = false` keep immediate wheel movement.
 Scrolling changes display scheduling without changing scheduler polling or backoff.
+
+Scrollable panes reserve four left header cells for top/bottom arrows and one right-edge cell for a scrollbar.
+Drag its thumb, click above or below it, or use the header arrows to scroll the pane.
+The controls preserve the selected source and do not activate rows beneath the scrollbar.
+A changed row count keeps the gesture; source, page, geometry, layout, or modal changes cancel capture.
+Advisor, History, Timeline, and comparison documents retain their complete published content for scrolling.
+See [Pane navigation](guides/pane-navigation.md) for controls, reduced motion, text selection, and editor delivery.
 
 `Ctrl-W` or F6 focuses Main/Details panels; arrows/page keys scroll a focused
 Details panel and `z` maximizes it on non-Logs pages. `:maximize` supplies the
@@ -346,7 +356,7 @@ without motion or pulses. One-frame reports are static as well.
 | `s` `S` | resume a single-column sort: cycle the tab's legacy sort keys (jobs: state, name, id, time, priority; history: end, name, state, elapsed, cpu eff, mem eff); reverse |
 | `/` `Esc` | filter by name, id, partition or info; clear the filter (or the marks) |
 | `n` `b` `r` `x` | GPU sampling on/off; bell on start on/off; sample every source now; Sources tab: enable / disable the selected source |
-| `v` `V` `y` | Logs: start a logical line selection at the cursor, mark the whole file, copy the original selection or whole file. Other tabs: select screen lines, select the screen, copy its text. Arrows/page keys or Shift-click extend a selection. Right-click clears selections, subject to the graph, History-list, and dialog controls below. |
+| `v` `V` `y` | Raw Logs: select original lines, mark the whole source, copy its bytes. Other panes: select rendered lines, select the painted pane, copy displayed text. Arrows/page keys or Shift-click extend a selection. Right-click clears selections, subject to the graph, History-list, and dialog controls below. |
 | `Y` | Logs: copy the entire exact selected file, independent of displayed lines, search, scrolling, or wrapping |
 | `I` | structured job inspector for the exact active, recent, or historical job; Tab changes sections, `l` opens logs, `e` opens Evidence |
 | `Ctrl-W` / F6, `z` | focus Main/Details; maximize the focused panel (`:maximize` supplies this action on Logs) |
@@ -461,7 +471,25 @@ selection active, arrows, PgUp/PgDn, Home, and End extend the range across pages
 Esc cancels it. `y` copies source text without row numbers, status lines, search
 highlights, or wrapping. Tabs and CRLF line endings are preserved for valid
 UTF-8 text. The display's bounded retained history still applies to line ranges.
-Other tabs keep screen-row selection and screen-wide `V` behavior.
+Other panes support rendered-line selection through click-drag or `v` and navigation keys.
+`V` selects the currently painted pane. `y` or Edit → Copy copies its selected lines.
+Job-row dragging retains exact job marking unless explicit rendered mode starts with `v`.
+The rendered cache retains at most 20,000 lines and 8 MiB of UTF-8 text.
+Missing displayed coverage causes a stated copy failure; scroll through the range or export the source.
+Copied text includes only the pane's displayed columns, without neighboring panes, borders, or scrollbar rails.
+
+The top toolbar switches between **Copy** and **Yank**.
+The Edit menu provides the same destination switch.
+`clipboard.destination` accepts `copy` (default) or `yank`.
+Yank targets a running local Vim or Neovim and sets registers `0` and unnamed.
+It resolves executables on `PATH` and checks an inherited owned Neovim Unix socket or a reported Vim server.
+`TOWER_VIM_SERVER` selects an exact name when Vim has several servers.
+Discovery times out after 0.4 seconds; delivery times out after 0.8 seconds.
+Editor delivery accepts complete UTF-8 text without NUL bytes, up to 8 MiB.
+It does not start an editor or change an editor buffer.
+An unavailable or rejected editor delivery keeps the export and uses enabled clipboard fallback.
+Complete-log and History multi-job copy operations share these captured destination and transport preferences.
+See [Editor yanking](guides/pane-navigation.md#send-text-to-vim-or-neovim) for setup and troubleshooting.
 
 Ranges larger than 256 KiB or 4,096 lines run on the shared worker, as do ranges
 containing invalid UTF-8. These copies pin the selected source bytes and publish
@@ -693,9 +721,15 @@ See [Update rate](guides/live-workbench.md#set-the-update-rate) for controls and
 
 `~/.config/tower/config.toml` (or `.json`; `--config PATH`; `$TOWER_CONFIG`).  `tower --write-config` writes the
 commented defaults without replacing an existing config (JSON on Python 3.10, TOML on 3.11+).  Sections: top level (`user`, `account`, `ascii`, `color`, `history_days`, `log_lines`,
-`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`, `startup_animation`, `smooth_scrolling`), `[research]`, `[logs]`, `[exports]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
+`gpu_sampling`, `bell`, `partitions`, `gpu_types`, `weather`, `weather_probes`, `budget`, `animations`, `startup_animation`, `smooth_scrolling`), `[research]`, `[logs]`, `[exports]`, `[clipboard]`, `[intervals]`, `[timeouts]`, `[thresholds]`, `[[alerts]]`, `[notify]`
 (`command` runs through the shell on the configured `events` with `TOWER_EVENT`, `TOWER_JOBID`, `TOWER_JOBNAME`
 and `TOWER_TEXT` in the environment: a Slack webhook, an e-mail, anything), `[keys]` (action = list of key names).
+
+`clipboard.destination` selects `copy` or `yank`; its default is `copy`.
+`clipboard.osc52` and `clipboard.tools` control the clipboard transports used in Copy mode and Yank fallback.
+These preferences also apply to complete-file and History multi-job copy workers.
+The editor server variables are `NVIM`, `NVIM_LISTEN_ADDRESS`, and `TOWER_VIM_SERVER`.
+See [Editor delivery](guides/pane-navigation.md#send-text-to-vim-or-neovim) for exact server checks and limits.
 
 Set `logs.manifest_file` to an exact log-index filename, such as `logs.json`.
 Relative filenames use the explicitly selected research workdir (`--workdir`),
@@ -822,7 +856,7 @@ tower/
   toolbar.py     persistent mouse menus, editable command entry, and captured update-slider dragging
   controller.py  the application state and every key, mouse click and confirmation; no curses, so tests drive it;
                  the line selection, the command palette, exports and the clipboard
-  charts.py      connected quadrant curves, eight-level area bars, axes, histograms, heatmaps, and Gantt rows
+  charts.py      continuous Braille curves, eight-level area bars, axes, histograms, heatmaps, and Gantt rows
   chart_interaction.py final plot geometry, thin theme-colored crosshairs, buffered exact-source time or XY zoom, cancellation, undo, and reset
   metric_live.py per-running-metric logarithmic display windows and captured mouse or keyboard sliders
   analytics_document.py bounded native Job Series document scrolling and visible metric cards
@@ -833,6 +867,10 @@ tower/
   history_log_export.py asynchronous History export menus, directory picker, missing-source alerts and receipts
   research.py    the shared bounded worker for research inspections, log catalogs, and full-log copies
   clipboard.py   complete OSC 52 requests, streamed local clipboard tools, and private atomic text fallbacks
+  editor_yank.py bounded register delivery to running local Vim/Neovim; clipboard fallback
+  text_selection.py pinned rendered-line ranges over published panes; complete-cache copy checks
+  scrollbars.py pane rails and endpoint arrows over published geometry; bounded viewport targets
+  modal_scrollbars.py shared reserved controls and viewport adapters for boxed dialogs
   export.py      text / CSV / JSON exports
   screen.py      the curses loop (colours, mouse, resize, less), the ANSI watch loop, one-frame text and JSON
   cli.py         the command line: profiles, remote mode, recording and replay, scripted mode, plugins

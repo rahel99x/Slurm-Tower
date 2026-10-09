@@ -182,6 +182,12 @@ controls. Execution cancellation remains separate and stops future submissions.
 
 ## Inspect measurements and events
 
+Scrollable documents have a right-edge scrollbar and top/bottom arrows in their header.
+Use them to read Advisor, History, Timeline, and comparison content without changing the selected source.
+Drag rendered lines, or use `v`, navigation keys, and `y`, to copy one pane's displayed text.
+Use the toolbar's Copy/Yank switch for clipboard delivery or a running local Vim/Neovim server.
+See [Pane navigation](guides/pane-navigation.md) for scope, coverage limits, and editor setup.
+
 Load application metrics in Experiment, then arrange the dashboard:
 
 ```text

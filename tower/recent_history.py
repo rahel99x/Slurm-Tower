@@ -261,6 +261,31 @@ def publish(app, records_, page, queue_count, *, rect=None):
         state.target = max(state.target, state.page)
 
 
+def register_scrollbar(app, width, first, page, painted, *, header):
+    """Seek within retained observations; admit older candidates at next paint.
+
+    A bottom request must reach the accounting history, rather than the end of
+    the small preview. Pointer input changes only the admission budget and
+    logical offset; filters, grouping and sorting remain render work.
+    """
+    from . import scrollbars
+    state = initialize(app)
+    if width < 2 or page <= 0:
+        return
+    retained = (len(state.observation.get("finished", ())) +
+                len(state.observation.get("departed_jobs", {})))
+    loaded_count = len(getattr(app, "recent_ids", state.loaded))
+    count = loaded_count if state.exhausted else max(loaded_count, retained)
+    def seek(value):
+        value = max(0, int(value))
+        if not state.exhausted:
+            state.target = max(state.target, value + max(1, page))
+        app.top["recent"] = value
+    scrollbars.register(app, "recent", (first, 0, first + page, width),
+        count, page, getattr(app, "top", {}).get("recent", painted), painted, seek,
+        header=(header, 0, width) if width >= 6 else None)
+
+
 def contains(app, y, x):
     rect = initialize(app).rect
     if rect is None:

@@ -118,6 +118,22 @@ def advise_finished(f: Finished, runs: Sequence[Finished] = ()) -> Advice:
     return _suggest(a)
 
 
+def running_notes(j: Job, lv: Optional[Live], finished: Sequence[Finished]) -> List[str]:
+    """Measure the existing running warnings without reading metric series."""
+    same = [r for r in finished if r.name == j.name and r.state == "COMPLETED"]
+    notes = []
+    if same:
+        elapsed = max(secs(r.elapsed) or 0 for r in same)
+        if j.limit_s and elapsed > j.limit_s:
+            notes.append(f"earlier runs took longer than this limit: {hms(elapsed)}")
+        current = j.elapsed_s or 0
+        if j.limit_s and current > elapsed * 1.2 and current > 600:
+            notes.append(f"already {hms(current - elapsed)} past the longest completed run")
+    if lv and lv.avg is not None and lv.avg < .3 and j.cpus:
+        notes.append("so far")
+    return notes
+
+
 def advise_running(j: Job, lv: Optional[Live], series: Sequence[dict], finished: Sequence[Finished], limit_hint: Optional[float] = None) -> Advice:
     """A running job: peak memory and CPU efficiency so far, the limit against the completed runs of the same name."""
     a = Advice(id=j.id, name=j.name, state=j.state, cpus=j.cpus, mem_req=j.mem_bytes, limit=j.limit_s, partial=True)
@@ -131,13 +147,12 @@ def advise_running(j: Job, lv: Optional[Live], series: Sequence[dict], finished:
         a.mem_peak = max(a.mem_peak, max(r.rss for r in ended))
     if same:
         a.elapsed = max(secs(r.elapsed) or 0 for r in same)
-        if a.limit and a.elapsed > a.limit:
-            a.notes.append(f"earlier runs took longer than this limit: {hms(a.elapsed)}")
-        el = j.elapsed_s or 0
-        if a.limit and el > a.elapsed * 1.2 and el > 600:
-            a.notes.append(f"already {hms(el - a.elapsed)} past the longest completed run")
     else:
         a.elapsed = None
+    # Historical warnings come first. The shared suggestion rules append
+    # memory, CPU and timeout notes in their original order, including a
+    # terminal state observed before the queue refresh removes this record.
+    a.notes = running_notes(j, None, finished)
     out = _suggest(a)
     if not same:
         out.time_suggest = ""

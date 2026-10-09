@@ -1,4 +1,4 @@
-"""Pure terminal charts: connected opaque curves, measured areas, and timelines.
+"""Pure terminal charts: fine continuous curves, measured areas, and timelines.
 
 Every chart returns rows of text/style segments. Telemetry curves keep observed
 extrema and leave unknown intervals empty; the renderer never smooths samples.
@@ -18,6 +18,8 @@ LEVELS_ASCII = " ..:::##"
 MAX_COLUMNS = 2048
 MAX_HEIGHT = 128
 QUADRANTS = " ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"
+BRAILLE = " " + "".join(chr(0x2800 + mask) for mask in range(1, 256))
+BRAILLE_BITS = ((1, 8), (2, 16), (4, 32), (64, 128))
 
 
 def _finite(v: Optional[float]) -> Optional[float]:
@@ -126,8 +128,13 @@ def _clip_time_samples(samples: Sequence[Tuple[float, Optional[float]]], times: 
     remain original records. Missing endpoints or a cadence outage cannot yield
     an intersection. At most two additional drawing vertices are produced.
     """
+    return list(_iter_time_samples(samples, times, gap_limit))
+
+
+def _iter_time_samples(samples: Sequence[Tuple[float, Optional[float]]], times: Tuple[float, float],
+                       gap_limit: float):
+    """Yield drawing vertices without copying the whole retained time window."""
     t0, t1 = times
-    output = []
     previous = None
 
     def intersection(before: Tuple[float, float], after: Tuple[float, float], boundary: float) -> float:
@@ -143,14 +150,13 @@ def _clip_time_samples(samples: Sequence[Tuple[float, Optional[float]]], times: 
             previous = (timestamp, value)
             continue
         if bridge and previous[0] < t0 < timestamp:
-            output.append((t0, intersection(previous, current, t0), False))
+            yield t0, intersection(previous, current, t0), False
         if timestamp > t1:
             if bridge and previous[0] < t1:
-                output.append((t1, intersection(previous, current, t1), True))
+                yield t1, intersection(previous, current, t1), True
             break
-        output.append((timestamp, value, bridge))
+        yield timestamp, value, bridge
         previous = (timestamp, value)
-    return output
 
 
 def _window_values(values: Sequence[Optional[float]], sample_times: Optional[Sequence[float]],
@@ -179,10 +185,12 @@ def fit_time_bounds(values: Sequence[Optional[float]], sample_times: Sequence[fl
     samples = [(timestamp, _finite(value)) for timestamp, value in zip(sample_times, values)
                if _finite(timestamp) is not None]
     samples.sort(key=lambda item: item[0])
-    deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:])
-                    if b[0] > a[0] and math.isfinite(b[0] - a[0]))
-    cadence = sample_interval if _finite(sample_interval) is not None and sample_interval > 0 else (
-              deltas[(len(deltas) - 1) // 2] if deltas else 0.0)
+    if _finite(sample_interval) is not None and sample_interval > 0:
+        cadence = sample_interval
+    else:
+        deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:])
+                        if b[0] > a[0] and math.isfinite(b[0] - a[0]))
+        cadence = deltas[(len(deltas) - 1) // 2] if deltas else 0.0
     vertices = [value for _, value, _ in _clip_time_samples(samples, times,
                                                           min(sys.float_info.max, cadence * 2.5))
                 if value is not None]
@@ -229,47 +237,90 @@ def time_selection_note(t0: float, t1: float, width: int, indent: str = "   ") -
     return clip_row([(indent + f"Time +offset from t_a={t0!r}s; span {label}", "dim")], width)
 
 
+class _TimeBucket:
+    """Four retained observed vertices and an exact bounded-size mean sum."""
+    __slots__ = ("count", "first", "last", "minimum", "maximum", "unknown",
+                 "breaks", "numerator", "shift", "envelope")
+
+    def __init__(self, envelope):
+        self.count, self.breaks, self.numerator, self.shift = 0, 0, 0, 0
+        self.first = self.last = self.minimum = self.maximum = None
+        self.unknown, self.envelope = False, envelope
+
+    def add(self, timestamp, value, bridge):
+        self.breaks += not bridge
+        point = (self.count, timestamp, value, self.breaks)
+        self.count += 1
+        if self.first is None:
+            self.first = point
+        self.last = point
+        if value is None:
+            self.unknown = True
+            return
+        if self.minimum is None or value < self.minimum[2]:
+            self.minimum = point
+        if self.maximum is None or value > self.maximum[2]:
+            self.maximum = point
+        if not self.envelope:
+            # Float denominators are powers of two. An integer sum avoids
+            # overflow and cancellation loss without retaining all samples.
+            number, denominator = float(value).as_integer_ratio()
+            shift = denominator.bit_length() - 1
+            if shift > self.shift:
+                self.numerator <<= shift - self.shift
+                self.shift = shift
+            self.numerator += number << (self.shift - shift)
+
+    def mean(self):
+        return self.numerator / ((1 << self.shift) * self.count)
+
+
 def _time_points(values: Sequence[Optional[float]], sample_times: Sequence[float], width: int,
                  times: Optional[Tuple[float, float]], sample_interval: Optional[float],
                  envelope: bool = False) -> Tuple[List[Tuple[int, Optional[float], bool]], Tuple[float, float]]:
     """Bounded timestamp buckets with enough metadata to break curves across outages."""
-    samples = [(timestamp, value) for timestamp, value in zip(sample_times, values) if _finite(timestamp) is not None]
+    samples = [(timestamp, _finite(value)) for timestamp, value in zip(sample_times, values) if _finite(timestamp) is not None]
     samples.sort(key=lambda item: item[0])
     if times is None or len(times) != 2 or not all(_finite(t) is not None for t in times) or times[1] < times[0]:
         times = (samples[0][0], samples[-1][0]) if samples else (0.0, 0.0)
     if width <= 0:
         return [], times
-    deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:]) if b[0] > a[0] and math.isfinite(b[0] - a[0]))
-    cadence = sample_interval if _finite(sample_interval) is not None and sample_interval > 0 else (
-              deltas[(len(deltas) - 1) // 2] if deltas else 0.0)
+    if _finite(sample_interval) is not None and sample_interval > 0:
+        cadence = sample_interval
+    else:
+        deltas = sorted(b[0] - a[0] for a, b in zip(samples, samples[1:])
+                        if b[0] > a[0] and math.isfinite(b[0] - a[0]))
+        cadence = deltas[(len(deltas) - 1) // 2] if deltas else 0.0
     gap_limit = min(sys.float_info.max, cadence * 2.5)
     t0, t1 = times
-    buckets: dict[int, list[Tuple[float, Optional[float], bool]]] = {}
-    for timestamp, value, bridge in _clip_time_samples(samples, times, gap_limit):
+    buckets: dict[int, _TimeBucket] = {}
+    for timestamp, value, bridge in _iter_time_samples(samples, times, gap_limit):
         x = min(width - 1, max(0, round(_fraction(timestamp, t0, t1) * (width - 1)))) if t1 > t0 else width - 1
-        buckets.setdefault(x, []).append((timestamp, value, bridge))
+        bucket = buckets.get(x)
+        if bucket is None:
+            bucket = buckets[x] = _TimeBucket(envelope)
+        bucket.add(timestamp, value, bridge)
     points: List[Tuple[int, Optional[float], bool]] = []
     previous_last: Optional[float] = None
     for x, bucket in sorted(buckets.items()):
-        known = all(value is not None for _, value, _ in bucket)
-        value = _mean([value for _, value, _ in bucket]) if known else None
-        bridge = known and bucket[0][2] and previous_last is not None and bucket[0][0] - previous_last <= gap_limit
+        known = not bucket.unknown
+        bridge = (known and bucket.first[3] == 0 and previous_last is not None
+                  and bucket.first[1] - previous_last <= gap_limit)
         if envelope and known:
             # Keep the first, last, minimum and maximum samples in their source
             # order. Each raster column has at most four points. A narrow spike
             # cannot disappear into a mean, and a bucket containing a gap stays
             # unknown instead of manufacturing a continuous measurement.
-            indices = sorted({0, len(bucket) - 1,
-                              min(range(len(bucket)), key=lambda i: bucket[i][1]),
-                              max(range(len(bucket)), key=lambda i: bucket[i][1])})
-            previous_index = 0
-            for i, index in enumerate(indices):
-                connected = bridge if i == 0 else all(point[2] for point in bucket[previous_index + 1:index + 1])
-                points.append((x, bucket[index][1], connected))
-                previous_index = index
+            vertices = sorted({point[0]: point for point in (bucket.first, bucket.minimum,
+                                                            bucket.maximum, bucket.last)}.values())
+            previous_breaks = 0
+            for i, point in enumerate(vertices):
+                connected = bridge if i == 0 else point[3] == previous_breaks
+                points.append((x, point[2], connected))
+                previous_breaks = point[3]
         else:
-            points.append((x, value, bridge))
-        previous_last = bucket[-1][0] if known else None
+            points.append((x, bucket.mean() if known else None, bridge))
+        previous_last = bucket.last[1] if known else None
     return points, times
 
 
@@ -602,12 +653,13 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
                   indent: str = "   ", axis_w: int = 7, sample_times: Optional[Sequence[float]] = None,
                   sample_interval: Optional[float] = None, elapsed: bool = False, envelope: bool = True,
                   axis_formatter: Optional[Callable[[float], str]] = None,
-                  metadata: Optional[dict] = None, fitted: bool = False, time_units: bool = False) -> List[Row]:
-    """Connected telemetry with a solid 2 x 2 quadrant raster per Unicode cell.
+                  metadata: Optional[dict] = None, fitted: bool = False, time_units: bool = False,
+                  curve_style: str = "fine") -> List[Row]:
+    """Connected telemetry with a fine 2 x 4 Braille raster per Unicode cell.
 
-    The historical function name remains API-compatible. Opaque half-cell strokes
-    are easier to follow than isolated dots, including with colour disabled. ASCII
-    uses connected directional strokes instead of filling the area below a curve.
+    Eight subcell positions retain small bends and steep transitions while
+    leaving the graph readable beneath the pointer. ``curve_style="blocks"``
+    retains the earlier opaque 2 x 2 raster. ASCII uses directional line strokes.
     No curve is smoothed: compression preserves first/minimum/maximum/last points,
     unknown samples and cadence outages break segments, and clipping intersects
     the actual observed line instead of fabricating a boundary value.
@@ -621,22 +673,25 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
                      max(1, width - vlen(indent) - 3))
     chart_w = max(0, min(MAX_COLUMNS, width - vlen(indent) - axis_w))
     height = max(0, min(MAX_HEIGHT, height))
-    raster = 1 if g.ascii else 2
+    raster_x = 1 if g.ascii else 2
+    raster_y = 1 if g.ascii else 2 if curve_style == "blocks" else 4
     if sample_times is None:
-        points = envelope_points(values, chart_w * raster) if envelope else [
-            (x, value, True) for x, value in enumerate(resample(values, chart_w * raster))]
+        points = envelope_points(values, chart_w * raster_x) if envelope else [
+            (x, value, True) for x, value in enumerate(resample(values, chart_w * raster_x))]
     else:
-        points, times = _time_points(values, sample_times, chart_w * raster, times, sample_interval, envelope)
+        points, times = _time_points(values, sample_times, chart_w * raster_x, times, sample_interval, envelope)
     _plot_metadata(metadata, width, chart_w, height, indent, axis_w, title, lo, hi,
                    times, sample_times is not None, any(v is not None for _, v, _ in points),
-                   (raster, raster))
-    pixels_h, pixels_w = height * raster, chart_w * raster
+                   (raster_x, raster_y))
+    pixels_h, pixels_w = height * raster_y, chart_w * raster_x
     cells = [[0] * chart_w for _ in range(height)]
 
     def mark(x: int, y: int, direction: int = 16) -> None:
         if 0 <= x < pixels_w and 0 <= y < pixels_h:
             if g.ascii:
                 cells[y][x] |= direction
+            elif raster_y == 4:
+                cells[y // 4][x // 2] |= BRAILLE_BITS[y % 4][x % 2]
             else:
                 cells[y // 2][x // 2] |= 1 << ((y % 2) * 2 + x % 2)
 
@@ -700,13 +755,14 @@ def braille_chart(g: Glyphs, values: Sequence[Optional[float]], width: int, heig
         fraction = 1 - r / max(1, height - 1)
         style = (color(fraction) if color else "chart-1") + "+bold"
         for x, mask in enumerate(masks):
-            # Guides are isolated dim dots, visually distinct from opaque ink.
+            # Sparse dim guides remain separate from the measured curve ink.
             guide = "·" if not g.ascii and r in (0, height // 2) and x % 8 == 0 else " "
-            row.append(((ascii_stroke(mask) if g.ascii else QUADRANTS[mask]), style) if mask else (guide, "dim"))
+            glyph = ascii_stroke(mask) if g.ascii else BRAILLE[mask] if raster_y == 4 else QUADRANTS[mask]
+            row.append((glyph, style) if mask else (guide, "dim"))
         rows.append(row)
     rows.append([(indent + " " * max(0, axis_w - 1) + ("+" if g.ascii else "└") + g.rule * chart_w, "dim")])
     if times:
-        rows.append(_trace_axis(times, len(values), chart_w, indent + " " * axis_w, raster, elapsed) if sample_times is None else
+        rows.append(_trace_axis(times, len(values), chart_w, indent + " " * axis_w, raster_x, elapsed) if sample_times is None else
                     time_axis(times[0], times[1], chart_w, indent + " " * axis_w, elapsed, units=time_units))
         if time_units:
             rows.append(time_selection_note(times[0], times[1], width, indent))

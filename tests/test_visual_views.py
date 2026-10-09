@@ -125,7 +125,7 @@ def test_large_analytics_has_observed_heatmap_and_precision_curves(visual_dashbo
     text = L.to_text(rows, 160)
     assert "telemetry heatmap" in text and "newest at right" in text
     assert "██" in text
-    assert any(char in charts.QUADRANTS[1:] for char in text)
+    assert any(char in charts.BRAILLE[1:] for char in text)
     assert "#" not in text
     assert len(rows) <= 50
 

@@ -3,7 +3,7 @@
 **Inspect Slurm jobs, measurements, logs, and results in one terminal.**
 
 Slurm Tower is a terminal application for CARC and other Slurm clusters.
-It uses solid block graphs, resource maps, and labeled tables.
+It uses solid block bars, continuous terminal curves, resource maps, and labeled tables.
 It runs through an ordinary SSH session.
 It also provides an ASCII display mode and plain-text reports.
 
@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.6.2 |
+| Release | Tower 4.7.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -24,10 +24,21 @@ It also provides an ASCII display mode and plain-text reports.
 [Mouse and button navigation](docs/guides/pointer-navigation.md) ·
 [Adjustable workspaces and job advice](docs/guides/adaptive-workspaces.md) ·
 [Display and input performance](docs/guides/ui-performance.md) ·
+[Pane scrolling and text selection](docs/guides/pane-navigation.md) ·
 [Controls](docs/CONTROLS.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.7.0
+
+- Scroll panes with a draggable right-edge scrollbar and header arrows. Advisor, History, Timeline, and comparison documents expose their complete published content.
+- Curves use continuous two-by-four Braille strokes. The crosshair follows the latest reported cell immediately and preserves curve and annotation cells.
+- Select rendered lines by dragging, or use `v`, navigation keys, and `y`. Raw log copying retains its original source bytes.
+- Switch **Copy** to **Yank** in the top toolbar to send text to a running local Vim or Neovim.
+
+See [pane navigation](docs/guides/pane-navigation.md) for controls, copy limits, editor discovery, and fallback results.
+See [charts](docs/guides/charts.md) for curve rendering, pointer feedback, and measurement limits.
 
 ## Changes in Tower 4.6.2
 
@@ -179,7 +190,7 @@ Theme changes update the canvas, text, menus, information strips, and chart colo
 The `mono`, `high`, `cb`, and `reader` themes provide additional display options.
 The `reader` theme uses plain ASCII text and static notices.
 Set `animations` to `false` for immediate scrolling and static completion notices.
-This setting also disables selector easing and suppresses the startup display.
+This setting also disables selector phase animation and suppresses the startup display.
 Use View → Disable startup animation or `:startup off` to disable only the welcome.
 Use `:startup preview` to inspect it without changing the preference.
 
@@ -399,6 +410,22 @@ This operation runs in a background worker.
 The displayed page, wrapping, and retained tail do not limit the full-file copy.
 Tower also writes a private complete export when the clipboard cannot accept the content.
 Open Activity to inspect the result or cancel an active copy.
+
+### Select other pane text
+
+Drag across rendered text in Advisor or another document pane.
+Alternatively, point at the pane and press `v`.
+Extend the selection with navigation keys.
+Press `y` to copy it.
+`V` selects the currently painted pane. Esc or right-click clears the selection.
+Rendered copies contain displayed columns. They exclude neighboring panes, borders, and scrollbar rails.
+Job-row dragging keeps its job-marking function unless you start explicit rendered selection with `v`.
+Raw Logs retain their original-byte selection controls.
+
+Click **Copy** in the top toolbar to switch to **Yank**.
+Tower uses a running local Vim or Neovim server and sets registers `0` and unnamed.
+It preserves the complete private export and falls back to clipboard copying when editor delivery is unavailable.
+See [pane selection and editor yanking](docs/guides/pane-navigation.md#send-text-to-vim-or-neovim) for prerequisites and limits.
 
 See [log search](docs/guides/log-search.md) and [log display](docs/guides/log-view.md) for paging, search, bookmarks, structured logs, comparisons, and unread lines.
 

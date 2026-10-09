@@ -959,6 +959,7 @@ def run_command(app, args):
 
 
 def _palette_overlay(views, app, width, height):
+    from . import modal_scrollbars as B
     state = _sync_input(app)
     matches = suggestions(app)
     page = max(1, height - 12)
@@ -969,7 +970,10 @@ def _palette_overlay(views, app, width, height):
         top = index
     elif index >= top + page:
         top = index - page + 1
-    state.update(result_cursor=index, result_top=top)
+    context = ("palette", app.palette_edit)
+    logical, top = B.window(app, "modal:commands", top, len(matches), page,
+                            context=context, focus=index)
+    state.update(result_cursor=index, result_top=logical)
     # Show the insertion point directly; the terminal cursor can remain hidden
     # and screen-reader/ASCII modes retain the same editing behavior.
     cursor = state["cursor"]
@@ -996,10 +1000,13 @@ def _palette_overlay(views, app, width, height):
     result = box(views.g, lines, width, height, "Commands")
     state["result_hits"] = [(result[index + 3][0], top + index) for index in range(min(page, len(matches) - top))
                             if index + 3 < len(result) - 1]
-    return result
+    return B.boxed(app, "modal:commands", result, start=2, count=len(matches), page=page,
+                   target=logical, painted=top, setter=lambda value: state.update(result_top=value),
+                   context=context)
 
 
 def overlay(views, snap, app, width, height):
+    from . import modal_scrollbars as B
     state = initialize(app)
     if app.mode == "palette":
         return _palette_overlay(views, app, width, height)
@@ -1009,11 +1016,16 @@ def overlay(views, snap, app, width, height):
         state["help_page"], state["help_total"] = page, len(content)
         app.scroll = max(0, min(app.scroll, max(0, len(content) - page)))
         query = state["help_query"]
+        context = ("help", app.tab, query, width)
+        app.scroll, painted = B.window(app, "modal:help", app.scroll, len(content), page, context=context)
         lines = [[(" Search: ", "dim"), (clean(query, views.g.ascii) or "(/ to search)", "cyan")], [("", "")]]
-        lines += content[app.scroll:app.scroll + page] or [[(" No matching instructions. Backspace edits the search.", "yellow")]]
+        lines += content[painted:painted + page] or [[(" No matching instructions. Backspace edits the search.", "yellow")]]
         lines += [[("", "")], [(f" {count} instructions  rows {app.scroll + 1 if content else 0}-{min(len(content), app.scroll + page)}/{len(content)}", "dim")],
                   [(" Up/Down/PgUp/PgDn scroll  / searches  Esc closes", "dim")]]
-        return box(views.g, lines, width, height, "Help: " + app.tab.capitalize() + " keys")
+        result = box(views.g, lines, width, height, "Help: " + app.tab.capitalize() + " keys")
+        return B.boxed(app, "modal:help", result, start=2, count=len(content), page=page,
+                       target=app.scroll, painted=painted, setter=lambda value: setattr(app, "scroll", value),
+                       context=context)
     if app.mode == "confirm":
         state = _confirm_state(app)
         title, content = _confirm_rows(app, width, views.g.ascii)
@@ -1023,10 +1035,13 @@ def overlay(views, snap, app, width, height):
         page = max(0, capacity - overhead)
         state["confirm_page"], state["confirm_total"] = max(1, page), len(content)
         top = max(0, min(state["confirm_scroll"], max(0, len(content) - page)))
-        state["confirm_scroll"] = top
+        context = ("confirm", state["confirm_token"], width)
+        logical, top = B.window(app, "modal:confirmation", top, len(content), page, context=context)
+        state["confirm_scroll"] = logical
         lines = [[(" " + title, "bold")]] if show_title else []
         if spacing:
             lines.append([("", "")])
+        data_start = len(lines)
         lines += content[top:top + page]
         focus = state["confirm_focus"]
         if spacing:
@@ -1049,5 +1064,7 @@ def overlay(views, snap, app, width, height):
         if not state["confirm_controls_visible"]:
             state["confirm_focus"] = "cancel"
             state["confirm_hits"] = []
-        return result
+        return B.boxed(app, "modal:confirmation", result, start=data_start, count=len(content), page=page,
+                       target=logical, painted=top, setter=lambda value: state.update(confirm_scroll=value),
+                       context=context, header=0 if data_start else -1)
     return None

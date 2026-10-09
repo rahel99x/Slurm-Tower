@@ -1,7 +1,7 @@
 """Research cockpit rows: bounded charts, provenance and cited evidence."""
 from __future__ import annotations
 
-from . import charts, layout as L
+from . import charts, layout as L, scrollbars as S
 from .model import short_duration
 from .research import RESEARCH_VIEWS, clean
 from . import analysis_ui
@@ -18,9 +18,14 @@ def render(views, snap, app, width, height):
     row = lambda value, style="": [(text(value), style)]
     heading = lambda value: L.rule(g, width, text(value))
     view = app.research_view
+    # The outer Jobs Details document owns inline Research scrolling.
+    own_document = height is not None and not getattr(app, "research_document_mode", False)
+    card_width = width
     from .control_rows import buttons
     nav, nav_hits = buttons(g, width, [(key, label, ("command", "view " + key)) for key, label in RESEARCH_VIEWS],
                             selected=view, group="research_nav", prefix="research-view:")
+    if own_document and width >= 6:
+        nav.append(L.clip_row([("    ", "")] + L.rule(g, max(0, width - 4), "Research / " + view), width))
     app.research_nav_rows = len(nav)
     hub = getattr(app, "research", None)
     if hub is None:
@@ -61,7 +66,7 @@ def render(views, snap, app, width, height):
         source = result.get("path", "application metrics")
         identities = {name: analysis_ui.chart_key(app, name, source, interactive=False, jid=reported_jid, job=job)
                       for name in names}
-        live_rows = {name: int(live_running and width >= metric_live.MIN_WIDTH and identities[name] is not None)
+        live_rows = {name: int(live_running and card_width >= metric_live.MIN_WIDTH and identities[name] is not None)
                      for name in names}
         rows.append(row(f" Dashboard {len(names)}/{len(series)} metrics  | :dashboard pin/hide/move/expand/color  | :chart METRIC", "dim"))
         # Offscreen charts reserve their document rows without rasterizing. This
@@ -69,6 +74,13 @@ def render(views, snap, app, width, height):
         tail_rows = len(result.get("errors", [])[:8]) + int(bool(result.get("truncated"))) + int(bool(series) and not names)
         total_rows = len(rows) + sum((10 if name in analysis["expanded"] else 5) + 5 + live_rows[name] + int(name in analysis["pinned"]) for name in names) + tail_rows
         visible_height = max(0, height - len(nav)) if height is not None else total_rows
+        if own_document and width >= 6 and total_rows > visible_height:
+            # A pane that fits has no rail. Keep its full control width, in
+            # particular the existing 24-cell minimum Live control row.
+            card_width = width - 1
+            live_rows = {name: int(live_running and card_width >= metric_live.MIN_WIDTH and identities[name] is not None)
+                         for name in names}
+            total_rows = len(rows) + sum((10 if name in analysis["expanded"] else 5) + 5 + live_rows[name] + int(name in analysis["pinned"]) for name in names) + tail_rows
         window = getattr(app, "research_document_window", None)
         if getattr(app, "research_document_mode", False) and window:
             render_start, render_end = window
@@ -84,12 +96,12 @@ def render(views, snap, app, width, height):
             count = height_ + 5 + live_rows[name]
             if len(rows) < render_end and len(rows) + count > render_start:
                 identity = identities[name]
-                controls, _ = metric_live.controls(g, app, identity, width,
+                controls, _ = metric_live.controls(g, app, identity, card_width,
                     running=live_running, row=len(rows))
                 rows.extend(controls)
                 hits.append((len(rows), "research_metric", name))
                 metadata = {}
-                chart = analysis_ui.chart_rows(g, app, series[name], width, height_, name,
+                chart = analysis_ui.chart_rows(g, app, series[name], card_width, height_, name,
                     source, interactive=False, metadata=metadata, zoom_key=identity,
                     snapshot=snap, running=live_running)
                 chart_interaction.record(app, identity, metadata, row=len(rows), scale=metadata.get("scale", "linear"))
@@ -259,4 +271,12 @@ def render(views, snap, app, width, height):
     visible_hits = [(y - paint_offset + len(nav), kind, key) for y, kind, key in hits if paint_offset <= y < paint_offset + avail]
     chart_interaction.place_since(app, chart_mark, dy=len(nav) - paint_offset,
         clip=(len(nav), 0, len(nav) + avail, width))
-    return nav + rows[paint_offset:paint_offset + avail], nav_hits + visible_hits
+    output = nav + rows[paint_offset:paint_offset + avail]
+    if own_document and avail > 0 and width >= 6:
+        # Navigation retains its full hit map; the stable heading owns arrows.
+        header = len(nav) - 1
+        S.register(app, "research:document", (len(nav), 0, len(nav) + avail, width),
+                   len(rows), avail, offset, paint_offset,
+                   lambda value: setattr(app, "research_scroll", value),
+                   context=scroll_context, header=(header, 0, width))
+    return output, nav_hits + visible_hits

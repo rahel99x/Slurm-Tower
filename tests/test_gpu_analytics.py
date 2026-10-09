@@ -224,9 +224,9 @@ def test_rate_and_busy_mean_curves_keep_missing_or_unobserved_intervals_empty(mo
                                    sample_interval=options["sample_interval"], metadata=metadata)
         top, left, bottom, right = metadata["plot_rect"]
         measured = [L.row_text(row)[left:right] for row in rows[top:bottom]]
-        assert any(row[0] in charts.QUADRANTS[1:] for row in measured)
-        assert any(row[-1] in charts.QUADRANTS[1:] for row in measured)
-        assert all(not any(char in charts.QUADRANTS[1:] for char in row[1:-1]) for row in measured)
+        assert any(row[0] in charts.BRAILLE[1:] for row in measured)
+        assert any(row[-1] in charts.BRAILLE[1:] for row in measured)
+        assert all(not any(char in charts.BRAILLE[1:] for char in row[1:-1]) for row in measured)
 
 
 def test_maximum_gpu_device_and_trace_fanout_is_bounded(monkeypatch, dashboard):

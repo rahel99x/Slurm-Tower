@@ -374,7 +374,11 @@ def overlay(views, snap, app, width, height):
         top = cur
     elif cur >= top + page:
         top = cur - page + 1
-    state.update(picker_cursor=cur, picker_top=top)
+    from . import modal_scrollbars as B
+    context = ("workspace_picker", state["query"])
+    logical, top = B.window(app, "modal:workspaces", top, len(entries), page,
+                            context=context, focus=cur)
+    state.update(picker_cursor=cur, picker_top=logical)
     lines = [[(" Find a workspace: ", "dim"), (clean(state["query"], views.g.ascii) or "(type to search)", "cyan")], [("", "")]]
     for index, (_, label, desc) in enumerate(entries[top:top + page], top):
         style = "sel" if index == cur else ""
@@ -387,4 +391,5 @@ def overlay(views, snap, app, width, height):
     result = box(views.g, lines, width, height, "Research workspaces")
     state["picker_hits"] = [(result[index + 3][0], top + index) for index in range(min(page, len(entries) - top))
                             if index + 3 < len(result) - 1]
-    return result
+    return B.boxed(app, "modal:workspaces", result, start=2, count=len(entries), page=page,
+                   target=logical, painted=top, setter=lambda value: state.update(picker_top=value), context=context)

@@ -81,7 +81,9 @@ def menu_items(app, menu):
             Item("quit", "Quit Tower", local="quit"),
         ]
     if menu == "Edit":
+        from .editor_yank import mode as copy_mode
         return [
+            Item("copy-destination", "Switch to clipboard copying" if copy_mode(app) == "yank" else "Switch to Vim/Neovim yanking", local="copy-mode"),
             Item("copy", "Copy current selection", "copy"),
             Item("copy-all", "Copy entire log / current page", "copy all"),
             Item("select", "Start line selection", local="select"),
@@ -212,10 +214,15 @@ def _activate(app, item):
         initialize(app)["focus"] = "rate"
         app.say("Update slider: Left/Right changes 1x; Home 1x; End 50x; Esc returns.")
     elif action == "clear-selection":
+        from .text_selection import clear
+        clear(app)
         app.sel_anchor = None
         app.logs.clear_selection()
         app.log_selection_expected = False
         app.say("Line selection cleared.")
+    elif action == "copy-mode":
+        from .editor_yank import toggle
+        toggle(app)
     elif action in ("select", "select-all", "follow"):
         app.mode = "main"
         app.handle_action({"select": "visual", "select-all": "visual_all", "follow": "follow"}[action])
@@ -275,6 +282,17 @@ def render_bar(views, app, width, y=0):
     for index, label in enumerate(labels):
         selected = state["menu"] == index if len(labels) == 4 else state["menu"] is not None
         append(label, "accent+bold+bg:surface-sunken" if selected else BAR_STYLE, "menu", index)
+    from .editor_yank import mode as copy_mode
+    destination = copy_mode(app)
+    # Keep an update-rate value visible at every width. A compact switch
+    # appears when the long form cannot fit beside that permanent control.
+    switch = " [Copy ◉] " if destination == "copy" else " [Yank ◉] "
+    if views.g.ascii:
+        switch = " [Copy *] " if destination == "copy" else " [Yank *] "
+    if width - x >= len(switch) + minimum_slider:
+        append(switch, "accent+bold+bg:surface-sunken", "copy-mode")
+    elif width - x >= 4 + minimum_slider:
+        append(" [C]" if destination == "copy" else " [Y]", "accent+bold+bg:surface-sunken", "copy-mode")
     space = width - x
     rate_field = value.rjust(3)
     if space < len(rate_field) + 14:
@@ -429,6 +447,9 @@ def handle_mouse(app, y, x, button="left", shift=False):
                 _open(app, key, source="mouse")
             else:
                 state["menu_source"] = "mouse"
+        elif kind == "copy-mode":
+            from .editor_yank import toggle
+            toggle(app)
         else:
             _close(app)
             state["focus"] = "rate"
@@ -488,7 +509,7 @@ def control_descriptors(app):
             # The descriptive Updates caption invokes the same rate focus as
             # the value; it does not need a duplicate keyboard focus stop.
             continue
-        label = MENUS[key] if kind == "menu" else {"quit": "Quit", "rate": "Update rate", "minus": "Decrease update rate", "plus": "Increase update rate"}.get(kind, kind)
+        label = MENUS[key] if kind == "menu" else {"quit": "Quit", "rate": "Update rate", "minus": "Decrease update rate", "plus": "Increase update rate", "copy-mode": "Switch clipboard copy / editor yank"}.get(kind, kind)
         controls.append(dict(id="toolbar:" + kind + (":" + str(key) if key is not None else ""),
                              label=label, rect=(y, left, y + 1, right),
                              action=(kind, key), disabled=False, reason=""))

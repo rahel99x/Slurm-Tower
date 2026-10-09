@@ -17,6 +17,7 @@ from .deps import DepGraph
 from .model import Finished, Job, Step, compact, hms, human, secs, short_duration, stamp, when
 from .remote import LocalFiles
 from .log_text import display_text
+from . import scrollbars as SB
 
 TABS = [("jobs", "Jobs"), ("cluster", "Cluster"), ("history", "History"), ("analytics", "Analytics"), ("nodes", "Nodes"), ("group", "Group"), ("deps", "Deps"), ("log", "Log"), ("sources", "Sources"), ("research", "Research")]
 ANALYTICS_VIEWS = [("job", "job series"), ("history", "history"), ("timeline", "timeline"), ("advisor", "advisor"), ("compare", "compare")]
@@ -24,6 +25,22 @@ NODES_VIEWS = [("mine", "my nodes"), ("map", "cluster map")]
 LOG_ERROR = re.compile(r"\b(?:error|fatal|traceback|oom|killed|failed)\b", re.IGNORECASE)
 LOG_WARNING = re.compile(r"\b(?:warn(?:ing)?|retry(?:ing)?|timeout)\b", re.IGNORECASE)
 LOG_SUCCESS = re.compile(r"\b(?:done|complete(?:d)?|success(?:ful)?)\b", re.IGNORECASE)
+
+
+def _scroll_rule(glyphs, width, title):
+    """Keep jump controls in the title strip, outside the table columns."""
+    return [("    ", "")] + rule(glyphs, max(0, width - 4), title) if width >= 6 else rule(glyphs, width, title)
+
+
+def _table_scrollbar(app, key, width, first, page, count, top, *, header=0):
+    """Publish a virtual table without changing its selected job or marks."""
+    if width < 2 or page <= 0:
+        return
+    def seek(value):
+        app.top[key] = max(0, int(value))
+    SB.register(app, key, (first, 0, first + page, width), count, page,
+                app.top.get(key, top), top, seek,
+                header=(header, 0, width) if width >= 6 else None)
 
 JOB_COLS = [Column("progress", "PROG", 6, 6), Column("id", "JOBID", 5, 16), Column("name", "NAME", 10, 30, flex=True), Column("part", "PART", 4, 9), Column("st", "ST", 2, 3),
             Column("where", "NODES", 6, 18, flex=True), Column("cpus", "CPU", 3, 4, ">"), Column("gpu", "GPU", 3, 8), Column("time", "ELAPSED/LIMIT", 8, 20),
@@ -911,13 +928,14 @@ class Views:
         for r in shown:
             r["_mark"] = self.g.pin if r.get("pinned") else ""
         cells = []
-        trows, _ = table(job_columns, shown, width, self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus or not selection_active else cur - top, marks=marks, mark_char=self.g.mark,
+        trows, _ = table(job_columns, shown, max(1, width - 1), self.g.ascii, droppable=JOB_DROP, cursor=None if recent_focus or not selection_active else cur - top, marks=marks, mark_char=self.g.mark,
                          header_cells=cells)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
-        out = [rule(self.g, width, title)] + trows if show_queue else []
+        out = [_scroll_rule(self.g, width, title)] + trows if show_queue else []
         hits = header_hits("jobs", cells, 1) + [(2 + i, "job", r["id"]) for i, r in enumerate(shown)] if show_queue else []
         if show_queue:
             self.group_controls(app, out, hits, [r["job"] for r in shown], 2, "jobs", width)
+            _table_scrollbar(app, "jobs", width, 2, max(1, vis), n, top)
             if native:
                 while len(out) < queue_capacity + 2:
                     out.append([("", "")])
@@ -934,11 +952,13 @@ class Views:
             recent_shown = fin[fin_top:fin_top + fin_vis]
             base = len(out)
             recent_cells = []
-            recent_rows = self.finished_rows(recent_shown, width, "recent", recent_cur - fin_top if recent_focus and selection_active else None,
+            recent_rows = self.finished_rows(recent_shown, max(1, width - 1), "recent", recent_cur - fin_top if recent_focus and selection_active else None,
                                              app=app, header_cells=recent_cells, sort_tab="recent")
+            recent_rows[0] = _scroll_rule(self.g, width, "recent")
             hits += header_hits("recent", recent_cells, base + 1) + [(base + 2 + i, "recent", f.id) for i, f in enumerate(recent_shown)]
             out += recent_rows
             self.group_controls(app, out, hits, recent_shown, base + 2, "recent", width)
+            recent_history.register_scrollbar(app, width, base + 2, fin_vis, fin_top, header=base)
             hits.append((base, "control", {"id": "recent-divider", "label": "Resize Queue and Recents",
                 "left": 0, "right": width, "action": ("command", "pane-focus recent:jobs"), "group": "pane-dividers"}))
         if native:
@@ -1045,7 +1065,7 @@ class Views:
             summary.append((f"{st.lower()} {c}  ", "green" if st == "COMPLETED" else ("yellow" if st.startswith("CANCEL") else "red")))
         sort_label = describe(app, "history") if chain(app, "history") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
         summary.append((f"{self.g.dot} {core_h:.1f} core-hours {self.g.dot} {gpu_h:.1f} gpu-hours" + (f" {self.g.dot} mean cpu eff {100 * sum(effs) / len(effs):.0f}%" if effs else "") + f" {self.g.dot} {sort_label}", "dim"))
-        prefix = [summary]
+        prefix = [L.clip_row(summary, width)]
         if self.visual_room(width, height):
             prefix += self.composition([(state.lower(), count, "green" if state == "COMPLETED" else "yellow" if state.startswith("CANCEL") else "red")
                                         for state, count in sorted(counts.items(), key=lambda pair: -pair[1])], width)
@@ -1058,15 +1078,16 @@ class Views:
         data = [self.finished_dict(f) for f in shown]
         cells = []
         marks = {i for i, record in enumerate(shown) if record.id in app.marks}
-        trows, _ = table(fin_columns, data, width, self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top if app.selected_id else None,
+        trows, _ = table(fin_columns, data, max(1, width - 1), self.g.ascii, droppable=("tags", "nodes", "exit", "start", "gpus", "part", "rss"), cursor=cur - top if app.selected_id else None,
                          marks=marks, mark_char=self.g.mark,
                          header_cells=cells)
         title = f"history {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "history"
-        out = prefix + [rule(self.g, width, title)] + trows
+        out = prefix + [_scroll_rule(self.g, width, title)] + trows
         if not fin:
             out.append([("   nothing matches the filter; Esc clears it" if app.filter else "   No completed runs yet. Finished jobs and efficiency appear here.", "dim")])
         hits = header_hits("history", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "fin", f.id) for i, f in enumerate(shown)]
         self.group_controls(app, out, hits, shown, len(prefix) + 2, "history", width)
+        _table_scrollbar(app, "history", width, len(prefix) + 2, vis, n, top, header=len(prefix))
         if fin and app.selected_id:
             out += [rule(self.g, width, "selected")] + self.finished_summary(fin[cur], width)
         record_page(app, "history", len(shown))
@@ -1426,17 +1447,19 @@ class Views:
         if height is None:
             trows, _ = table(columns(app, "group", self.GROUP_COLS), rows, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"))
             return out + [rule(g, width, "jobs")] + trows, []
+        out = [L.clip_row(row, width) for row in out]
         vis = max(1, height - len(out) - 2)
         top = app.scroll_to("group", cur, vis, n)
         shown = rows[top:top + vis]
         cells = []
-        trows, _ = table(columns(app, "group", self.GROUP_COLS), shown, width, g.ascii, droppable=("prio", "part", "gpu", "where", "st"), cursor=cur - top if app.selected_id is not None else None, header_cells=cells)
+        trows, _ = table(columns(app, "group", self.GROUP_COLS), shown, max(1, width - 1), g.ascii, droppable=("prio", "part", "gpu", "where", "st"), cursor=cur - top if app.selected_id is not None else None, header_cells=cells)
         title = f"jobs {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "jobs"
         base = len(out) + 1
         sort_label = describe(app, "group") if chain(app, "group") is not None else f"sorted by {key}{' (reversed)' if rev else ''}"
-        out += [rule(g, width, title + f", {sort_label}")] + trows
+        out += [_scroll_rule(g, width, title + f", {sort_label}")] + trows
         hits = user_hits + header_hits("group", cells, base) + [(base + 1 + i, "group", r["id"]) for i, r in enumerate(shown)]
         self.group_controls(app, out, hits, [r["job"] for r in shown], base + 1, "group", width)
+        _table_scrollbar(app, "group", width, base + 1, vis, n, top, header=base - 1)
         record_page(app, "group", len(shown))
         return out, hits
 
@@ -1480,7 +1503,13 @@ class Views:
                     top = viewport(app, "deps:scope", getattr(app, "deps_scope_top", 0),
                         app.deps_scope_count, app.deps_scope_page, context=(scoped, width, actual_height))
                     out = out[:1] + out[1 + top:1 + top + app.deps_scope_page]
-                return [L.clip_row(row, width) for row in out], []
+                    out[0] = _scroll_rule(g, width, "dependencies / " + scoped)
+                    SB.register(app, "deps:scope", (1, 0, 1 + app.deps_scope_page, width),
+                        app.deps_scope_count, app.deps_scope_page, getattr(app, "deps_scope_top", 0), top,
+                        lambda value: setattr(app, "deps_scope_top", value),
+                        context=(scoped,), header=(0, 0, width) if width >= 6 else None)
+                return [L.clip_row(row, max(1, width - 1) if index else width)
+                        for index, row in enumerate(out)], []
         names = {f.id: f"{f.name} {f.state.lower()}" for f in snap["finished"]}
         graph = DepGraph(snap["jobs"], names)
         jobs = graph.jobs
@@ -1557,9 +1586,14 @@ class Views:
             # full graph for keyboard actions and chain confirmations.
             visible = max(1, height - prefix_length)
             selected_row = hits[cur][0] - prefix_length if hits else 0
-            top = app.scroll_to("deps", selected_row, visible, max(0, len(out) - prefix_length))
+            count = max(0, len(out) - prefix_length)
+            top = app.scroll_to("deps", selected_row, visible, count)
             out = out[:prefix_length] + out[prefix_length + top:prefix_length + top + visible]
+            out[0] = _scroll_rule(g, width, f"dependency chains: {len(graph.edges)} edges among {len(related_ids)} jobs (c cancels a job and everything downstream, h releases a held chain)")
+            out = [row if index < prefix_length else L.clip_row(row, max(1, width - 1))
+                   for index, row in enumerate(out)]
             hits = [(y - top, kind, key) for y, kind, key in hits if prefix_length + top <= y < prefix_length + top + visible]
+            _table_scrollbar(app, "deps", width, prefix_length, visible, count, top)
         return out, hits
 
     # ---- log tab ----------------------------------------------------------------------------------
@@ -1717,7 +1751,7 @@ class Views:
         cands = app.logs.candidates.get(j.id, (0, []))[1] if j else []
         identity = f"{j.id} {j.name}" if j else f"Run {binding['run_id']} / " + (f"job {binding['job_id']} (accounting unavailable)" if binding.get("job_id") else "job not recorded")
         head = f"{identity} {g.dot} {label}" + (f" {g.dot} o: {len(cands)} other file{'s' if len(cands) != 1 else ''}" if cands else "") + f" {g.dot} {path or 'path not known yet'}"
-        out = [rule(g, width, cut(head, width - 8, g.ascii))]
+        out = [_scroll_rule(g, width, cut(head, width - 8, g.ascii)) if height is not None else rule(g, width, cut(head, width - 8, g.ascii))]
         if buf is None:
             app.logs.path, app.logs.match = "", None
             message = kv.get("LogPathError") or ("Log path unavailable for this finished job; checking its recorded scheduler/accounting paths."
@@ -1728,10 +1762,11 @@ class Views:
         if getattr(buf, "loading", False):
             return out + [[("   Reading the selected log in the background.", "dim")]], []
         total = buf.total
+        scroll_context = (path, buf.ident, buf.skipped_bytes, width, app.logs.wrap)
         from .scrolling import viewport as scroll_viewport, active as scrolling_active
         target = max(0, total - page) if app.logs.top is None else app.logs.top
         painted_top = scroll_viewport(app, "logs:document", target, total, page,
-                                     context=(path, buf.ident, buf.skipped_bytes, width, app.logs.wrap),
+                                     context=scroll_context,
                                      immediate=app.logs.following or app.logs.selection_active or height is None)
         lines, start = buf.window(None if app.logs.following else painted_top, page)
         search = app.logs.search
@@ -1765,9 +1800,11 @@ class Views:
         out.append(status)
         def render_lines(source_lines, first):
             body = []
+            line_width = width
+            rail_width = 1 if height is not None and width >= 4 else 0
             numbers = not g.ascii and width >= 64
             number_width = max(5, len(str(total))) if numbers else 0
-            content_width = max(1, width - (number_width + 5 if numbers else 2))
+            content_width = max(1, line_width - rail_width - (number_width + 5 if numbers else 2))
             for i, line in enumerate(source_lines):
                 idx = first + i
                 line = pan_line(app, line)
@@ -1810,10 +1847,10 @@ class Views:
                 for part, text in enumerate(chunks):
                     continuation = [(" " * (number_width + 1) + " │ ", "dim")] if numbers else [(" ", "cyan")]
                     row = (gutter if part == 0 and not skipped_prefix else continuation) + [(text, style)]
-                    row = L.clip_row(row, max(0, width - 1))
+                    row = L.clip_row(row, max(0, line_width - 1 - rail_width))
                     symbol = ("*" if g.ascii else "◆") if selected else ((">" if g.ascii else "›") if idx == app.logs.cursor else " ")
                     if symbol.strip():
-                        row += [(" " * max(0, width - 1 - vlen(L.row_text(row))), style),
+                        row += [(" " * max(0, line_width - 1 - vlen(L.row_text(row))), style),
                                 (symbol, "fg:#fb923c+bold" if selected else "cyan+bold")]
                     body.append((row, idx))
                     if not app.logs.following and len(body) >= page:
@@ -1824,6 +1861,7 @@ class Views:
         body = render_lines(lines, start)
         if (app.logs.cursor is not None and not app.logs.following
                 and (not scrolling_active(app) or app.logs.selection_active)
+                and SB.manual(app, "logs:document", context=scroll_context) is None
                 and not any(idx == app.logs.cursor for _, idx in body)):
             # Long wrapped predecessors must not conceal the keyboard-selected line.
             app.logs.top = app.logs.cursor
@@ -1832,6 +1870,11 @@ class Views:
         out += [row for row, _ in body]
         if not lines:
             out.append([("   This log file is empty." if isinstance(j, Finished) else "   No output yet. This view updates as the job writes to its log.", "dim")])
+        if height is not None and width >= 4:
+            SB.register(app, "logs:document", (2, 0, 2 + page, width - 1), total, page,
+                max(0, total - page) if app.logs.top is None else app.logs.top, start,
+                lambda value: setattr(app.logs, "top", value), context=scroll_context,
+                header=(0, 0, width) if width >= 6 else None)
         return out, [(2 + i, "log_line", str(idx)) for i, (_, idx) in enumerate(body)]
 
     # ---- sources tab ------------------------------------------------------------------------------
@@ -1885,10 +1928,10 @@ class Views:
         top = app.scroll_to("sources", cur, vis, n) if height is not None else 0
         shown = rows[top:top + vis]
         cells = []
-        trows, _ = table(columns(app, "sources", cols), shown, width, self.g.ascii, cursor=cur - top if height else None,
+        trows, _ = table(columns(app, "sources", cols), shown, max(1, width - 1) if height is not None else width, self.g.ascii, cursor=cur - top if height else None,
                          droppable=("backoff", "calls", "errors", "every", "error"), header_cells=cells)
         title = f"sources {top + 1}-{min(n, top + vis)} of {n}" if n > vis else "sources"
-        out = prefix + [rule(self.g, width, title + f" ({app.keys_help('source_toggle')} enables / disables the selected one)")] + trows
+        out = prefix + [_scroll_rule(self.g, width, title + f" ({app.keys_help('source_toggle')} enables / disables the selected one)") if height is not None else rule(self.g, width, title)] + trows
         if not hs:
             out.append([("   Waiting for the first sample. Source health appears here automatically.", "dim")])
         out.append([("", "")])
@@ -1899,6 +1942,8 @@ class Views:
             out += self.event_rows(ev, width, limit=8)
         hits = header_hits("sources", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "source", r["name"]) for i, r in enumerate(shown)]
         record_page(app, "sources", len(shown))
+        if height is not None:
+            _table_scrollbar(app, "sources", width, len(prefix) + 2, vis, n, top, header=len(prefix))
         return out, hits
 
     # ---- analytics tab ----------------------------------------------------------------------------
@@ -1918,6 +1963,7 @@ class Views:
         from . import chart_interaction, analytics_document
         analytics_document.begin_render(app)
         chart_mark = chart_interaction.mark(app)
+        scroll_mark = SB.mark(app)
         g = self.g
         view = app.analytics_view
         days = app.analytics_days_value()
@@ -1927,17 +1973,54 @@ class Views:
         app.analytics_nav_rows = len(out)
         out.append([(f" window {days:g} day{'s' if days != 1 else ''}", "dim")])
         avail = None if height is None else max(0, height - len(out))
-        if view == "job":
-            body = self.analytics_job(snap, app, width, avail)
-        elif view == "history":
-            body = self.analytics_history(snap, app, width, avail, days)
-        elif view == "advisor":
-            body = self.analytics_advisor(snap, app, width, avail, days)
-        elif view == "compare":
-            body = self.analytics_compare(snap, app, width, avail)
-        else:
-            body = self.analytics_timeline(snap, app, width, avail, days)
+        from .workspace_layout import enabled as workspace_enabled
+        document = (view != "job" and height is not None and
+                    not getattr(app, "analytics_document_mode", False) and not workspace_enabled(app))
+        body_width = max(1, width - 1) if document else width
+        body_avail = None if document else avail
+        previous_window = getattr(app, "analytics_render_window", None)
+        if document:
+            offsets = getattr(app, "analytics_scroll_offsets", None)
+            if not isinstance(offsets, dict):
+                offsets = app.analytics_scroll_offsets = {}
+            key = "analytics:document:" + view
+            context = (view, app.analytics_job, days, tuple(app.compare_ids), width)
+            state = offsets.setdefault(view, {"top": 0, "context": context})
+            if state["context"] != context:
+                state.update(top=0, context=context)
+            app.analytics_render_window = (state["top"], max(0, (avail or 0) - 1))
+        try:
+            if view == "job":
+                body = self.analytics_job(snap, app, width, avail)
+            elif view == "history":
+                body = self.analytics_history(snap, app, body_width, body_avail, days)
+            elif view == "advisor":
+                body = self.analytics_advisor(snap, app, body_width, body_avail, days)
+            elif view == "compare":
+                body = self.analytics_compare(snap, app, body_width, body_avail)
+            else:
+                body = self.analytics_timeline(snap, app, body_width, body_avail, days)
+        finally:
+            app.analytics_render_window = previous_window
+        if document:
+            from .scrolling import viewport
+            page, count = max(0, (avail or 0) - 1), max(0, len(body) - 1)
+            state["top"] = max(0, min(max(0, count - page), state["top"]))
+            painted = viewport(app, key, state["top"], count, page, context=context)
+            records = chart_interaction.take_since(app, chart_mark)
+            chart_interaction.put_records(app, chart_interaction.map_records(records,
+                lambda y: y - painted if 1 + painted <= y < 1 + painted + page else None,
+                clip=(1, 0, 1 + page, width)))
+            body = body[:1] + body[1 + painted:1 + painted + page]
+            if body and width >= 6:
+                body[0] = L.clip_row([("    ", "")] + body[0], width)
+            if page and width >= 2:
+                SB.register(app, key, (1, 0, 1 + page, width), count, page, state["top"], painted,
+                    lambda value: state.__setitem__("top", value), context=context,
+                    header=(0, 0, width) if width >= 6 else None)
         chart_interaction.place_since(app, chart_mark, dy=len(out),
+            clip=(len(out), 0, len(out) + len(body), width))
+        SB.place_since(app, scroll_mark, dy=len(out),
             clip=(len(out), 0, len(out) + len(body), width))
         return out + body, hits
 
@@ -1972,7 +2055,17 @@ class Views:
         if running:
             out.append(rule(g, width, "running jobs so far"))
             by_name = self.history_advice_cache.groups(snap["finished"])
-            for j in running[:8]:
+            window = getattr(app, "analytics_render_window", None)
+            if isinstance(window, tuple) and len(window) == 2:
+                wanted_top, window_page = window
+                wanted_top = min(wanted_top, max(0, len(out) + len(running) - 1 - window_page))
+                lower, upper = wanted_top + 1 - 4, wanted_top + 1 + window_page + 4
+            else:
+                lower, upper = 0, float("inf")
+            for j in running:
+                if not lower <= len(out) < upper:
+                    out.append([])
+                    continue
                 lv = snap["live"].get(j.id)
                 adv = advisor.advise_running(j, lv, app.store.series_of(j.id), by_name.get(j.name, ()))
                 text = adv.summary(g.dot) or "nothing to change yet"
@@ -2167,7 +2260,8 @@ class Views:
         filled = not native_document and not g.ascii and (avail is None or avail - len(head) >= plot_rows * 10)
         overhead = (7 if filled else 3) + 2 * int(bool(job and job.state == "RUNNING" and width >= 24))
         h = 8 if native_document or avail is None else max(2, min(12, (avail - len(head)) // plot_rows - overhead))
-        cell_width = (width - 2 * (columns - 1)) // columns
+        plot_width = max(1, width - 1) if native_document else width
+        cell_width = (plot_width - 2 * (columns - 1)) // columns
         out = list(head)
         record = job or fin
         attempt = "|".join(str(getattr(record, name, None) or "") for name in ("submit", "start")) if record else None
@@ -2327,6 +2421,7 @@ class Views:
             app.height = height
         from . import chart_interaction
         chart_interaction.begin_frame(app, width, height)
+        SB.begin_frame(app, width, height)
         app.completion.update(snap)
         from .session_tools import observe, unread_count
         from .table_tools import snapshot, freeze_status
@@ -2367,6 +2462,8 @@ class Views:
         body, hits = wrap_render(self, snap, app, width, body_h,
             lambda panel_width, panel_height: render_body(self, snap, app, panel_width, panel_height, actions, default_renderer))
         chart_interaction.place_since(app, 0, dy=len(head),
+            clip=None if height is None else (len(head), 0, max(len(head), height - 1), width))
+        SB.place_since(app, 0, dy=len(head),
             clip=None if height is None else (len(head), 0, max(len(head), height - 1), width))
         hits = [(y + len(head), kind, key) for y, kind, key in hits]
         if height is None:
@@ -2438,8 +2535,9 @@ class Views:
             return output, hits
         from .interaction import publish, decorate
         chart_interaction.publish(app, width, height)
+        SB.publish(app, width, height)
         from .metric_live import descriptors as live_descriptors
-        publish(app, output, hits, width, height, extra_controls=live_descriptors(app))
+        publish(app, output, hits, width, height, extra_controls=live_descriptors(app) + SB.descriptors(app))
         return decorate(app, output), hits
 
     def step_lines(self, steps: Sequence[Step], width: int) -> List[Row]:
@@ -2476,15 +2574,18 @@ class Views:
         from .chart_interaction import publish as publish_charts
         if feedback:
             publish_charts(app, width, height)
+            SB.publish(app, width, height, overlays=rows or ())
         if rows is not None and not app.content_overlay_rows and not app.toolbar_overlay_rows:
             app.content_overlay_rows = rows
-        if rows is not None and feedback:
+        if feedback:
             from .interaction import publish, decorate_overlays
             from .metric_live import descriptors as live_descriptors
             publish(app, getattr(app, "frame_rows", getattr(app, "last_rows", [])),
-                    getattr(app, "last_hits", []), width, height, overlays=rows,
-                    extra_controls=live_descriptors(app))
-            return decorate_overlays(app, rows)
+                    getattr(app, "last_hits", []), width, height, overlays=rows or (),
+                    extra_controls=live_descriptors(app) + SB.descriptors(app))
+            scroll_feedback = SB.feedback(app, ascii_=self.g.ascii)
+            decorated = decorate_overlays(app, rows) if rows is not None else []
+            return scroll_feedback + decorated if scroll_feedback or rows is not None else None
         return rows
 
     def _overlay_content(self, snap: dict, app, width: int, height: int):

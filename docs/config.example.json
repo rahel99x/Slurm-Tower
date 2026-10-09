@@ -1,4 +1,9 @@
 {
+  "clipboard": {
+    "destination": "copy",
+    "osc52": true,
+    "tools": true
+  },
   "exports": {
     "projects_root": ""
   },

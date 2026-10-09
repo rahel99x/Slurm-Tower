@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 import math
 import time
 
-from . import charts, selector_glyphs as G
+from . import charts, layout as L, selector_glyphs as G
 from .interaction import Rect
 
 MAX_PLOTS = 96
@@ -20,6 +20,7 @@ MAX_UNDO = 16
 MAX_KEY_PARTS = 16
 MAX_KEY_TEXT = 512
 MAX_OVERLAY_CELLS = 4096
+MAX_FEEDBACK_ROWS = 128
 CAPTURE_TIMEOUT = 15.0
 CAPTURE_MARGIN = 3
 # Use the active theme's accent, rather than the deliberately bright pointer
@@ -404,7 +405,7 @@ def _motion_enabled(app, ascii_=None):
 
 
 def _track_pointer(app, plot, y, x, *, snap=False, now=None):
-    """Animate glyph positions only; data coordinates always use real events."""
+    """Follow the newest event cell immediately, easing only its dot phase."""
     state = initialize(app)
     y, x = _clamp_pointer(plot, y, x)
     target = (y + .5, x + .5)
@@ -413,8 +414,13 @@ def _track_pointer(app, plot, y, x, *, snap=False, now=None):
     same = bool(visual and visual["key"] == plot.key and visual["rect"] == plot.visible)
     if same and visual["target"] == target and not snap:
         return
-    start = (G.interpolate(visual["start"], visual["target"], now - visual["started"])
-             if same and not snap and _motion_enabled(app) else target)
+    start = target
+    if same and not snap and _motion_enabled(app):
+        previous = visual["target"]
+        # Start at the entry edge of this *new* cell. An arbitrary burst or
+        # reversal never draws the head in an older event's terminal cell.
+        start = (y + (.125 if target[0] > previous[0] else .875 if target[0] < previous[0] else .5),
+                 x + (.25 if target[1] > previous[1] else .75 if target[1] < previous[1] else .5))
     state["visual"] = {"key": plot.key, "rect": plot.visible, "start": start or target,
                        "target": target, "started": now}
 
@@ -434,9 +440,12 @@ def _visual_pointer(app, plot, *, ascii_=None, now=None):
         state["visual"] = None
         return G.locate(*target)
     now = time.monotonic() if now is None else now
-    position = G.interpolate(visual["start"], visual["target"], now - visual["started"]) or target
-    return G.locate(min(plot.visible.bottom - .5, max(plot.visible.top + .5, position[0])),
-                    min(plot.visible.right - .5, max(plot.visible.left + .5, position[1])))
+    position = G.interpolate(visual["start"], visual["target"], now - visual["started"],
+                             duration=G.SUBCELL_DURATION) or target
+    # Keep the visible row/column pinned to the exact latest event even if an
+    # embedding adapter supplies stale visual state or a clock moves backwards.
+    cell = G.locate(*position)
+    return G.Cell(y, x, cell.y_slot, cell.x_slot) if cell else G.locate(*target)
 
 
 def next_deadline(app, now=None):
@@ -460,7 +469,7 @@ def next_deadline(app, now=None):
     if visual["start"] == visual["target"]:
         return float("inf")
     now = time.monotonic() if now is None else now
-    end = visual["started"] + G.SMOOTH_DURATION
+    end = visual["started"] + G.SUBCELL_DURATION
     return min(end, now + 1 / 60) if now < end else float("inf")
 
 
@@ -746,13 +755,80 @@ def overlay(views, snap, app, width, height):
     return None
 
 
+def _painted_cells(app, visible, y, layers):
+    """Index already painted characters, with bounded reuse across reports.
+
+    This reads terminal rows, never metric samples. Source row snapshots detect
+    in-place edits too. Wide/combining annotations remain protected; a selector
+    cannot split a character or turn its ink into invented measurement pixels.
+    """
+    state = initialize(app)
+    cache = state.setdefault("ink_rows", OrderedDict())
+    signature = tuple((offset, tuple(row)) for offset, row in layers)
+    key = (y, visible.left, visible.right)
+    cached = cache.get(key)
+    if cached is not None and cached[0] == signature:
+        cache.move_to_end(key)
+        return cached[1]
+    width = visible.right - visible.left
+    cells = [None] * width
+    for offset, row in signature:
+        position, last = offset, None
+        for text, style in row:
+            if not isinstance(text, str):
+                continue
+            style = style if isinstance(style, str) else ""
+            if position >= visible.right and (not text or L.vlen(text[0])):
+                break
+            if text.isascii():
+                start = max(0, visible.left - position)
+                end = min(len(text), visible.right - position)
+                for index in range(start, max(start, end)):
+                    glyph = text[index]
+                    cell = position + index - visible.left
+                    cells[cell] = (glyph, style, not glyph.isspace(), 1)
+                    last = cell
+                position += len(text)
+                continue
+            for glyph in text:
+                size = L.vlen(glyph)
+                if not size:
+                    if last is not None and cells[last] is not None:
+                        old = cells[last]
+                        cells[last] = (old[0] + glyph, old[1], True, old[3])
+                    continue
+                if position >= visible.right:
+                    break
+                cell = position - visible.left
+                if position + size > visible.left:
+                    protected = size > 1 or (not glyph.isspace() and glyph != "⠀")
+                    entry = (glyph, style, protected, size)
+                    for column in range(max(0, cell), min(width, cell + size)):
+                        cells[column] = entry
+                    last = cell if 0 <= cell < width else None
+                else:
+                    last = None
+                position += size
+    result = tuple(cells)
+    # A malformed embedding's enormous source row is not retained merely to
+    # paint a small intersecting plot. Normal renderer rows fit the terminal.
+    if sum(len(text) for _, row in signature for text, _ in row if isinstance(text, str)) <= 16384:
+        cache[key] = (signature, result)
+        cache.move_to_end(key)
+        while len(cache) > MAX_FEEDBACK_ROWS:
+            cache.popitem(last=False)
+    return result
+
+
 def feedback(app, *, ascii_=None, rows=None, overlays=()):
-    """Return thin themed Braille strokes on the painted plot background.
+    """Follow the newest cell with thin strokes while retaining all plot ink.
 
     Terminals cannot alpha blend a glyph. When supplied, cached document rows
-    and prior overlays provide each cell's actual background, so dots do not
-    cut a canvas-coloured outline into a raised, sunken or highlighted plot.
-    Row/style lookups are reused within the gesture; no graph is rasterized.
+    and prior overlays provide actual glyphs, colours and background. A measured
+    stroke or annotation has priority over selector ink; unchanged characters
+    retain the curve's geometry and legend colour at intersections. Blank cells
+    show the theme accent on their exact painted background. Cached character
+    lookups are reused across reports; no graph is rasterized or source read.
     """
     state = initialize(app)
     tick(app)
@@ -765,7 +841,7 @@ def feedback(app, *, ascii_=None, rows=None, overlays=()):
     ascii_ = state["ascii"] if ascii_ is None else ascii_
     ascii_ = bool(ascii_ or getattr(app, "theme", "default") == "reader")
     output, marks = [], {}
-    backgrounds, styles = {}, {}
+    painted, styles = {}, {}
     theme = getattr(app, "theme", "default")
     layers = {}
     if rows is not None:
@@ -775,28 +851,24 @@ def feedback(app, *, ascii_=None, rows=None, overlays=()):
             if plot.visible.top <= y < plot.visible.bottom:
                 layers.setdefault(y, []).append((x, row))
 
-    def style_at(y, x):
-        if y not in backgrounds:
-            from .layout import vlen
+    def cell_at(y, x):
+        if not layers.get(y):
+            return None
+        if y not in painted:
+            painted[y] = _painted_cells(app, plot.visible, y, layers.get(y, ()))
+        return painted[y][x - plot.visible.left]
+
+    def style_at(style):
+        if style is None:
+            return CROSSHAIR_STYLE
+        if style not in styles:
             from .palette import cell_style, resolve
-            spans = []
-            for offset, row in layers.get(y, ()):
-                for text, style in row:
-                    end = offset + vlen(text)
-                    if end > plot.visible.left and offset < plot.visible.right:
-                        if style not in styles:
-                            resolved = resolve(cell_style(style, theme), theme)
-                            background = resolved.foreground if "rev" in resolved.flags else resolved.background
-                            styles[style] = (CROSSHAIR_STYLE + "+bg-raw:#" +
-                                             "".join(f"{part:02x}" for part in background)
-                                             if background is not None else CROSSHAIR_STYLE)
-                        if spans and spans[-1][1] == offset and spans[-1][2] == styles[style]:
-                            spans[-1] = (spans[-1][0], end, styles[style])
-                        else:
-                            spans.append((offset, end, styles[style]))
-                    offset = end
-            backgrounds[y] = spans
-        return next((style for left, right, style in reversed(backgrounds[y]) if left <= x < right), CROSSHAIR_STYLE)
+            resolved = resolve(cell_style(style, theme), theme)
+            background = resolved.foreground if "rev" in resolved.flags else resolved.background
+            styles[style] = (CROSSHAIR_STYLE + "+bg-raw:#" +
+                             "".join(f"{part:02x}" for part in background)
+                             if background is not None else CROSSHAIR_STYLE)
+        return styles[style]
 
     def put(y, x, char):
         if not plot.visible.contains(y, x) or (y, x) not in marks and len(marks) >= MAX_OVERLAY_CELLS:
@@ -833,5 +905,13 @@ def feedback(app, *, ascii_=None, rows=None, overlays=()):
             put(row, cursor.column, G.glyph(cursor.y_slot, cursor.x_slot, vertical=True, ascii_=ascii_))
         if ascii_:
             put(cursor.row, cursor.column, "+")
-    output = [(y, x, [(char, style_at(y, x))]) for (y, x), char in marks.items()]
+    for (y, x), char in marks.items():
+        original = cell_at(y, x)
+        if original is not None and original[2]:
+            if original[3] == 1:
+                output.append((y, x, [(original[0], original[1])]))
+            # Wide annotations remain on the base canvas rather than being
+            # duplicated or split by a one-cell overlay.
+            continue
+        output.append((y, x, [(char, style_at(original[1] if original is not None else None))]))
     return output

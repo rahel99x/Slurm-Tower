@@ -464,13 +464,22 @@ def _apply_input(app, event, hits, curses):
               "press" if bstate & curses.BUTTON1_PRESSED else "motion")
     from .scrolling import note_input, handle_wheel
     note_input(app, "wheel" if button.startswith("wheel-") else button)
+    if button in ("press", "left"):
+        from .scrollbars import commit_selection_gesture
+        commit_selection_gesture(app)
     from .startup import handle_mouse as startup_mouse
     startup_mouse(app, my, mx, button=button, shift=shift)
     from .history_log_export import active as export_active, handle_mouse as export_mouse
+    from .scrollbars import handle_mouse as scrollbar_mouse
+    if not button.startswith("wheel-") and scrollbar_mouse(app, my, mx, button=button, shift=shift):
+        return
     if export_active(app):
         export_mouse(app, my, mx, button=button, shift=shift)
         return
     from .job_selection import context_click
+    if button == "right":
+        from .text_selection import clear as clear_text
+        clear_text(app)
     if context_click(app, my, mx, button=button):
         return
     if button in ("press", "left"):
@@ -510,11 +519,14 @@ def _apply_input(app, event, hits, curses):
         focus = getattr(app, "interaction_state", None)
         if isinstance(focus, dict):
             focus["active"], focus["focused"] = False, None
+        if scrollbar_mouse(app, my, mx, button=button, shift=shift, rail_only=True):
+            return
     if button in ("motion", "drag", "release"):
         from .job_selection import active as selection_active
         if (selection_active(app) or getattr(app, "pane_drag_state", {}).get("capture") or
                 getattr(app, "history_browser_state", {}).get("drag") or
                 getattr(app, "chart_interaction_state", {}).get("capture") or
+                getattr(app, "text_selection_state", {}).get("capture") or
                 getattr(app, "metric_live_state", {}).get("capture")):
             app.click(my, mx, hits, button=button, shift=shift)
         elif app.mode == "terminal_probe":
@@ -544,6 +556,8 @@ def _apply_input(app, event, hits, curses):
             return
     if app.mode == "terminal_probe":
         app.click(my, mx, hits, button=button, shift=shift)
+        return
+    if button.startswith("wheel-") and scrollbar_mouse(app, my, mx, button=button, shift=shift):
         return
     if button.startswith("wheel-") and handle_wheel(app, my, mx, -1 if button == "wheel-up" else 1):
         return
@@ -653,7 +667,7 @@ class _InputEffects:
         hover = name == "mouse" and bool(state & getattr(curses, "REPORT_MOUSE_POSITION", 0)) and not state & deliberate
         chart = getattr(app, "chart_interaction_state", {}) or {}
         live = getattr(app, "metric_live_state", {}) or {}
-        if ((chart.get("capture") or live.get("capture")) and state & getattr(curses, "REPORT_MOUSE_POSITION", 0) and
+        if ((chart.get("capture") or live.get("capture") or getattr(app, "text_selection_state", {}).get("capture")) and state & getattr(curses, "REPORT_MOUSE_POSITION", 0) and
                 not state & (getattr(curses, "BUTTON1_RELEASED", 0) |
                              getattr(curses, "BUTTON4_PRESSED", 0) |
                              getattr(curses, "BUTTON5_PRESSED", 0))):
@@ -665,6 +679,7 @@ class _InputEffects:
         # Some terminal drivers omit the held-button bit on position reports.
         # A captured gesture must still rebuild its slider or selected rows.
         capture = (toolbar.get("dragging") or selection.get("capture") or
+                   getattr(app, "scrollbar_state", {}).get("capture") or
                    getattr(app, "pane_drag_state", {}).get("capture") or
                    getattr(app, "history_browser_state", {}).get("drag"))
         if not hover or capture or app.mode == "terminal_probe":
@@ -711,7 +726,8 @@ class _DifferentialPainter:
 
 def _toolbar_feedback_token(app):
     state = getattr(app, "toolbar_state", {}) or {}
-    return tuple(state.get(key) for key in ("menu", "cursor", "top", "panel", "panel_scroll", "focus"))
+    return tuple(state.get(key) for key in ("menu", "cursor", "top", "panel", "panel_scroll", "focus")) + (
+        getattr(app, 'cfg', {}).get('clipboard', {}).get('destination', 'copy'),)
 
 
 class _FrameCache:
@@ -739,12 +755,13 @@ class _FrameCache:
         from .interaction import needs_frame
         from . import metric_live
         live_changed = metric_live.document_revision(app) != self.live_revision and not metric_live.active(app)
-        return (self.dirty or live_changed or needs_frame(app) or self.geometry != (width, height) or
+        return (self.dirty or live_changed or needs_frame(app) or getattr(app, "text_selection_state", {}).get("frame_required") or self.geometry != (width, height) or
                 now >= self.next_maintenance or now >= self.next_animation or now >= self.next_live)
 
     def rebuild(self, app, views, store, actions, width, height):
         from . import startup, toolbar
         from .scrolling import begin_frame, finish_frame, timeout_ms
+        from . import scrollbars
         from .interaction import publish
         app.tick()
         snap = store.snapshot()
@@ -752,9 +769,9 @@ class _FrameCache:
         begin_frame(app)
         options = {"feedback": False} if getattr(views, "feedback_options", False) else {}
         rows, hits = views.compose(snap, app, width, height, actions, **options)
-        finish_frame(app)
         welcome = startup.overlay(views, snap, app, width, height) or []
         overlays = views.overlay(snap, app, width, height, **options) or []
+        finish_frame(app)
         self.rows = getattr(app, "frame_rows", rows)
         self.hits, self.welcome = hits, welcome
         from .job_progress import publish_animation
@@ -770,8 +787,11 @@ class _FrameCache:
         from .chart_interaction import publish as publish_charts
         from . import metric_live
         publish_charts(app, width, height)
+        scrollbars.publish(app, width, height, overlays=welcome + overlays)
+        from .text_selection import publish as publish_text
+        publish_text(app, self.rows, width, height, overlays=welcome + overlays)
         publish(app, self.rows, hits, width, height, overlays=welcome + overlays,
-                extra_controls=metric_live.descriptors(app))
+                extra_controls=metric_live.descriptors(app) + scrollbars.descriptors(app))
         self.snapshot, self.geometry = snap, (width, height)
         self.toolbar_token = _toolbar_feedback_token(app)
         now = time.monotonic()
@@ -798,10 +818,14 @@ class _FrameCache:
             self.bar = toolbar.render_bar(views, app, width) if height > 0 else []
             from .chart_interaction import publish as publish_charts
             from . import metric_live
+            from . import scrollbars
             publish_charts(app, width, height)
+            scrollbars.publish(app, width, height, overlays=self.welcome + self.content + self.toolbar)
+            from .text_selection import publish as publish_text
+            publish_text(app, self.rows, width, height, overlays=self.welcome + self.content + self.toolbar)
             publish(app, self.rows, self.hits, width, height,
                     overlays=self.welcome + self.content + self.toolbar,
-                    extra_controls=metric_live.descriptors(app))
+                    extra_controls=metric_live.descriptors(app) + scrollbars.descriptors(app))
             self.toolbar_token = _toolbar_feedback_token(app)
         rows = decorate(app, self.rows)
         from .job_progress import animate_rows
@@ -815,6 +839,10 @@ class _FrameCache:
         from .metric_live import feedback as live_feedback
         glyphs = getattr(views, "g", None) or L.Glyphs(bool(getattr(app, "ascii", False)))
         overlays += live_feedback(app, glyphs)
+        from .scrollbars import feedback as scrollbar_feedback
+        overlays += scrollbar_feedback(app, ascii_=glyphs.ascii)
+        from .text_selection import feedback as text_feedback
+        overlays += text_feedback(app, ascii_=glyphs.ascii)
         bar = decorate(app, [self.bar])[0] if height > 0 else None
         return rows, overlays, bar
 

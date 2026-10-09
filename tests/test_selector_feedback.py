@@ -37,14 +37,13 @@ def marks(app, **kwargs):
     return {(y, x): (row[0][0], row[0][1]) for y, x, row in C.feedback(app, **kwargs)}
 
 
-@pytest.mark.parametrize("elapsed,expected", [(.0, G.Cell(5, 30, 2, 1)),
-                                             (.02, G.Cell(5, 30, 2, 1)),
-                                             (.03, G.Cell(5, 30, 3, 1)),
-                                             (.04, G.Cell(6, 31, 0, 0)),
-                                             (.06, G.Cell(6, 31, 1, 0)),
-                                             (.08, G.Cell(6, 31, 2, 1)),
-                                             (.09, G.Cell(6, 31, 2, 1))])
-def test_received_one_cell_motion_uses_all_vertical_slots_and_both_columns_without_overshoot(app, clock, elapsed, expected):
+@pytest.mark.parametrize("elapsed,expected", [(.0, G.Cell(6, 31, 0, 0)),
+                                             (.006, G.Cell(6, 31, 0, 0)),
+                                             (.012, G.Cell(6, 31, 1, 0)),
+                                             (.018, G.Cell(6, 31, 1, 0)),
+                                             (.024, G.Cell(6, 31, 2, 1)),
+                                             (.03, G.Cell(6, 31, 2, 1))])
+def test_received_motion_follows_latest_cell_immediately_and_only_eases_subcell_dots(app, clock, elapsed, expected):
     item = plot(app)
     C.hover(app, 5, 30)
     C.hover(app, 6, 31)
@@ -61,22 +60,22 @@ def test_received_one_cell_motion_uses_all_vertical_slots_and_both_columns_witho
     assert all(item.visible.contains(y, x) for y, x in result)
 
 
-def test_reversal_retargets_from_painted_position_and_duplicate_reports_do_not_restart_motion(app, clock):
+def test_reversal_follows_new_cell_entry_edge_and_duplicate_reports_do_not_restart_motion(app, clock):
     item = plot(app)
     C.hover(app, 5, 30)
     C.hover(app, 9, 60)
     clock.now = .02
-    painted = G.interpolate((5.5, 30.5), (9.5, 60.5), .02)
     C.hover(app, 3, 20)
     visual = C.initialize(app)["visual"]
-    assert visual["start"] == pytest.approx(painted) and visual["target"] == (3.5, 20.5)
+    assert visual["start"] == (3.875, 20.75) and visual["target"] == (3.5, 20.5)
     assert visual["started"] == .02
+    assert C._visual_pointer(app, item) == G.Cell(3, 20, 3, 1)
     clock.now = .04
     C.hover(app, 3, 20)
     assert C.initialize(app)["visual"]["started"] == .02
     cell = C._visual_pointer(app, item)
-    assert 3 <= cell.row <= math.floor(painted[0]) and 20 <= cell.column <= math.floor(painted[1])
-    clock.now = .101
+    assert (cell.row, cell.column) == (3, 20)
+    clock.now = .045
     assert C._visual_pointer(app, item) == G.Cell(3, 20, 2, 1)
     assert math.isinf(C.next_deadline(app))
 
@@ -146,7 +145,7 @@ def test_intermediate_rectangle_preserves_different_top_and_bottom_subcell_dot_r
     plot(app)
     C.handle_mouse(app, 4, 18, button="press", shift=True)
     C.handle_mouse(app, 9, 56, button="drag")
-    clock.now = .03
+    clock.now = .006
     result = marks(app)
     cursor = C._visual_pointer(app, C.initialize(app)["capture"]["plot"])
     assert cursor.y_slot == 0
@@ -282,11 +281,11 @@ def test_selector_feedback_and_deadlines_do_not_query_sources_snapshots_or_raste
     monkeypatch.setattr(C.charts, "vbar_chart", forbidden)
     C.hover(app, 5, 30)
     C.hover(app, 9, 60)
-    for now in (0., .016, .033, .05, .066, .081):
+    for now in (0., .008, .016, .025):
         clock.now = now
         assert C.feedback(app, rows=rows)
         deadline = C.next_deadline(app)
-        assert deadline == pytest.approx(min(.08, now + 1 / 60)) if now < .08 else math.isinf(deadline)
+        assert deadline == pytest.approx(min(G.SUBCELL_DURATION, now + 1 / 60)) if now < G.SUBCELL_DURATION else math.isinf(deadline)
 
 
 def test_frame_cache_selector_wakeups_remain_cosmetic_and_preserve_document_deadlines(clock, monkeypatch):
@@ -325,16 +324,16 @@ def test_frame_cache_selector_wakeups_remain_cosmetic_and_preserve_document_dead
     monkeypatch.setattr(views.files, "tail", forbidden)
     monkeypatch.setattr(C.charts, "braille_chart", forbidden)
     monkeypatch.setattr(C.charts, "vbar_chart", forbidden)
-    for now in (.01, .03, .05, .07):
+    for now in (.002, .008, .016):
         clock.now = now
         rows, overlays, _ = cache.feedback(app, views)
-        assert overlays and cache.next_selector == pytest.approx(min(.08, now + 1 / 60))
+        assert overlays and cache.next_selector == pytest.approx(min(G.SUBCELL_DURATION, now + 1 / 60))
         assert 1 <= cache.wait_ms() <= 17
         assert not cache.due(app, 160, 64, now=cache.next_selector)
         assert tuple(tuple(row) for row in rows) == pristine
         assert app.interaction_state["graph"] is graph
         assert (cache.next_maintenance, cache.next_animation, cache.next_live) == deadlines
-    clock.now = .081
+    clock.now = .025
     cache.feedback(app, views)
     assert math.isinf(cache.next_selector) and cache.wait_ms() > 17
     if app.research:

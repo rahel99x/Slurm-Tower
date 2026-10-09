@@ -438,6 +438,8 @@ def overlay(views, snap, app, width, height):
     if getattr(app, "mode", None) != "execution":
         return None
     state = initialize(app)
+    from . import modal_scrollbars as B
+    scroll_spec = None
     state["confirm_visible"] = False
     state["control_hits"] = []
     state["confirm_screen"] = (width, height)
@@ -479,12 +481,22 @@ def overlay(views, snap, app, width, height):
             else:
                 detail_lines.append([(" Changed fields need p validation before a command can be reviewed", "yellow")])
             state["detail_scroll"] = min(state["detail_scroll"], max(0, len(detail_lines) - max(1, usable - 1)))
-            lines = detail_lines[state["detail_scroll"]:state["detail_scroll"] + max(1, usable - 1)]
+            page = max(1, usable - 1)
+            context = ("execution-form-details", id(plan), width)
+            target, painted = B.window(app, "modal:execution-details", state["detail_scroll"], len(detail_lines), page, context=context)
+            state["detail_scroll"] = target
+            lines = detail_lines[painted:painted + page]
+            scroll_spec = ("modal:execution-details", 0, len(detail_lines), page, target, painted,
+                           lambda value: state.update(detail_scroll=value), context)
             lines.append([(" Arrows/PgDn scroll; Esc returns to fields; p validates; s reviews submission", "dim")])
         # Keep the selected form field visible in very short terminals.
         elif len(lines) > usable:
             top = max(0, min(state["field"] - usable + 1, len(_FIELDS) - 1))
-            lines = lines[top:top + usable]
+            context = ("execution-form", id(plan), width)
+            target, painted = B.window(app, "modal:execution-form", top, len(lines), usable,
+                                       context=context, focus=state["field"])
+            scroll_spec = ("modal:execution-form", 0, len(lines), usable, target, painted, lambda value: None, context)
+            lines = lines[painted:painted + usable]
     else:
         review = state["review"] or {}
         nodes = review.get("nodes", [])
@@ -550,7 +562,13 @@ def overlay(views, snap, app, width, height):
                 content += [f"Observed: {observation['state']}  elapsed {observation['elapsed']}  exit {observation['exit']}"]
             content += ["Esc returns to the node list; arrows scroll"]
             state["detail_scroll"] = min(state["detail_scroll"], max(0, len(content) - max(1, usable - 1)))
-            lines = [[(" " + line, "")] for line in content[state["detail_scroll"]:state["detail_scroll"] + max(1, usable - 1)]]
+            page = max(1, usable - 1)
+            context = ("execution-node-details", id(review), selected["id"], width)
+            target, painted = B.window(app, "modal:execution-details", state["detail_scroll"], len(content), page, context=context)
+            state["detail_scroll"] = target
+            lines = [[(" " + line, "")] for line in content[painted:painted + page]]
+            scroll_spec = ("modal:execution-details", 0, len(content), page, target, painted,
+                           lambda value: state.update(detail_scroll=value), context)
             lines.append([(" Esc returns; arrows scroll. Tab shows action controls", "dim")])
         else:
             # At compact sizes omit the generic header and help before any target
@@ -565,8 +583,14 @@ def overlay(views, snap, app, width, height):
                 state["top"] = state["index"]
             if page and state["index"] >= state["top"] + page:
                 state["top"] = state["index"] - page + 1
+            context = ("execution-review", id(review), width)
+            target, painted = B.window(app, "modal:execution-nodes", state["top"], len(nodes), page,
+                                       context=context, focus=state["index"])
+            state["top"] = target
+            scroll_spec = ("modal:execution-nodes", len(body), len(nodes), page, target, painted,
+                           lambda value: state.update(top=value), context)
             current_by_id = {item["id"]: item for item in receipt.get("nodes", [])}
-            for index in range(state["top"], min(len(nodes), state["top"] + page)):
+            for index in range(painted, min(len(nodes), painted + page)):
                 node = nodes[index]
                 current = current_by_id.get(node["id"], {})
                 prefix = views.g.cursor if index == state["index"] else " "
@@ -580,6 +604,10 @@ def overlay(views, snap, app, width, height):
             state["confirm_visible"] = can_confirm
     presentation = [[(clean(text, ascii_=views.g.ascii, limit=128 << 10), style) for text, style in row] for row in lines[:usable]]
     rendered = box(views.g, presentation, width, height, clean(title, ascii_=views.g.ascii), min_width=30)
+    if scroll_spec is not None:
+        key, start, count, page, target, painted, setter, context = scroll_spec
+        rendered = B.boxed(app, key, rendered, start=start, count=count, page=page, target=target,
+                           painted=painted, setter=setter, context=context, header=-1)
     if state["pending_action"] and not state["detail"] and presentation:
         index = len(presentation) - 1
         if index < len(rendered) - 2:

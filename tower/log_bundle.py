@@ -516,7 +516,7 @@ def _stream(entry, files, output, cancel, progress):
 
 def export_logs(report, destination=None, *, root=None, state_dir=None, clipboard=False,
                 files=None, cancel=None, progress=None, use_osc52=True, use_tools=True,
-                tty_path="/dev/tty"):
+                tty_path="/dev/tty", copy_destination="copy", editor_context=None):
     """Publish a unique raw job/source hierarchy and manifest, then optionally copy.
 
     Directory copies never overwrite. Individual missing/changed logs are listed
@@ -651,6 +651,7 @@ def export_logs(report, destination=None, *, root=None, state_dir=None, clipboar
             try:
                 result["clipboard"] = clipboard_io.copy_file(result["clipboard_path"], tty_path=tty_path,
                                                             use_osc52=use_osc52, use_tools=use_tools,
+                                                            destination=copy_destination, editor_context=editor_context,
                                                             cancel=(lambda: cancel() if callable(cancel) else cancel.is_set()) if cancel is not None else None)
             except Exception as exc:
                 result["clipboard"] = {"methods": [], "warnings": ["Clipboard delivery failed: " + _clean(exc)]}

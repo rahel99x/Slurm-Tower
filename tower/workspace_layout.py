@@ -368,7 +368,7 @@ def _section_title(row: L.Row) -> Optional[str]:
     return title.lower() if title else None
 
 
-def partition(body, hits, tab: str = "jobs", *, chart_records=()) -> dict:
+def partition(body, hits, tab: str = "jobs", *, chart_records=(), scroll_records=()) -> dict:
     """Separate supporting sections while retaining their source hit records."""
     groups = {name: {"rows": [], "hits": []} for name in PANELS}
     panel = "main"
@@ -404,6 +404,11 @@ def partition(body, hits, tab: str = "jobs", *, chart_records=()) -> dict:
         for panel, group in groups.items():
             mapping = {y: index for y, (target, index) in source_map.items() if target == panel}
             group["charts"] = map_records(chart_records, mapping)
+    if scroll_records:
+        from .scrollbars import map_records
+        for panel, group in groups.items():
+            mapping = {y: index for y, (target, index) in source_map.items() if target == panel}
+            group["scrollbars"] = map_records(scroll_records, row_map=mapping)
     return groups
 
 
@@ -561,6 +566,57 @@ def _preserve_metadata(fitted, original) -> None:
             fitted["rows"][index] = list(source[occurrence])
 
 
+def _virtual_details(app, state, rect, group, document, glyphs, padding):
+    """Use a measured card index without expanding the complete Details source."""
+    from . import scrollbars, scrolling
+    from .job_panels import _view_key
+    inline = getattr(app, "job_panel_state", {})
+    key = _key(app, "details")
+    width = max(1, rect.width - padding * 2 - 1)
+    fixed, hits = _reflow(group["rows"], group["hits"], width)
+    capacity = max(0, rect.height - 1 - padding * 2)
+    fixed = fixed[:max(0, capacity - 1)]
+    page = max(0, capacity - len(fixed))
+    context = (getattr(app, "selected_id", None), rect.width, page, inline.get("mode"),
+               inline.get("research_view"), inline.get("analytics_view"))
+    target = max(0, min(max(0, document.count - page), state.scroll.get(key, 0)))
+    painted = scrolling.viewport(app, "workspace:" + key, target, document.count, page, context=context)
+    visible = document.window(painted, page)
+    state.scroll[key], state.sizes[key] = target, (document.count, page)
+    state.selected[key], state.interactive_panels[key] = getattr(app, "selected_id", None), False
+    inline["scrolls"][_view_key(inline)] = target
+    scrollable = document.count > page and page > 0
+    title_width = max(0, rect.width - 4) if scrollable and rect.width >= 6 else rect.width
+    rows = [([("    ", "")] if title_width != rect.width else []) +
+            L.panel_title(glyphs, "Details", title_width, state.focus == "details",
+                          (painted, min(document.count, painted + page), document.count))]
+    if padding:
+        rows.append(L.fill_row([], rect.width))
+    rows.extend(_style_row([(" " * padding, "")] + row, rect.width) for row in fixed + visible)
+    rows.extend(L.fill_row([], rect.width) for _ in range(max(0, rect.height - len(rows))))
+    mapped_hits = []
+    for y, kind, value in hits:
+        if y >= len(fixed):
+            continue
+        if kind in ("job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"):
+            target_value, left, right = value
+            value = (target_value, rect.x + padding + left, rect.x + padding + min(right, width))
+        elif kind == "control" and isinstance(value, dict):
+            value = {**value, "left": rect.x + padding + value["left"],
+                     "right": rect.x + padding + min(width, value["right"])}
+        mapped_hits.append((rect.y + 1 + padding + y, kind, value))
+    def seek(value):
+        state.scroll[key] = value
+        inline["scrolls"][_view_key(inline)] = value
+    if page and rect.width >= 2:
+        scrollbars.register(app, "workspace:" + key,
+            (rect.y + 1 + padding + len(fixed), rect.x + padding,
+             rect.y + rect.height - padding, rect.x + rect.width - padding),
+            document.count, page, target, painted, seek, context=context,
+            header=(rect.y, rect.x, rect.x + rect.width) if scrollable and rect.width >= 6 else None)
+    return rows, mapped_hits
+
+
 def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = False, groups=None):
     state = initialize(app)
     native_jobs = (getattr(app, "tab", "") == "jobs" and
@@ -582,10 +638,16 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
         key = _key(app, panel)
         padding = 1 if (state.density == "comfortable" and rect.width >= 8 and rect.height >= 5
                         and not (native_jobs and panel == "main" and rect.height < 7)) else 0
+        if panel == "details" and groups[panel].get("virtual_document") is not None:
+            rendered[panel], mapped = _virtual_details(app, state, rect, groups[panel],
+                groups[panel]["virtual_document"], g, padding)
+            output_hits.extend(mapped)
+            continue
         raw_mapping = {}
         source, source_hits = _cached_reflow(state, panel, source, source_hits,
                                             max(0, rect.width - padding * 2), raw_mapping)
         chart_mapping = dict(raw_mapping)
+        scroll_mapping, scroll_sticky = dict(raw_mapping), {}
         # Column headers are buttons, not selectable data rows. Header-only
         # tables must keep their normal panel-scrolling controls.
         drill_buttons = {"sort_header", "node_row", "node_cell", "partition_row", "user_drill", "control", "job_panel_tab", "job_panel_view", "job_panel_file", "job_panel_action"}
@@ -614,6 +676,8 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                 source = remaining
                 source_hits = [(remap[y], kind, value) for y, kind, value in source_hits if y in remap]
                 chart_mapping = {raw: remap[fitted] for raw, fitted in chart_mapping.items() if fitted in remap}
+                scroll_sticky = {raw: sticky_map[fitted] for raw, fitted in scroll_mapping.items() if fitted in sticky_map}
+                scroll_mapping = {raw: remap[fitted] for raw, fitted in scroll_mapping.items() if fitted in remap}
                 page -= len(sticky)
         if panel == "main" and source_hits and page >= 2:
             headers = [y for y, kind, _ in source_hits if kind == "sort_header"]
@@ -635,6 +699,8 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
             source = remaining
             source_hits = [(remap[y], kind, value) for y, kind, value in source_hits if y in remap]
             chart_mapping = {raw: remap[fitted] for raw, fitted in chart_mapping.items() if fitted in remap}
+            scroll_sticky = {raw: sticky_map[fitted] for raw, fitted in scroll_mapping.items() if fitted in sticky_map}
+            scroll_mapping = {raw: remap[fitted] for raw, fitted in scroll_mapping.items() if fitted in remap}
             page -= len(sticky)
         state.sizes[key] = (len(source), page)
         top = state.scroll.get(key, 0)
@@ -658,6 +724,9 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                     top = row - max(1, page) + 1
             state.selected[key] = selected_key
         logical_top = max(0, min(max(0, len(source) - page), top))
+        native_table = panel == "main" and bool(groups[panel].get("scrollbars"))
+        if native_table:
+            logical_top = 0
         from .scrolling import viewport
         inline = getattr(app, "job_panel_state", {})
         context = (getattr(app, "selected_id", None), rect.width, page,
@@ -671,13 +740,22 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                 dy=rect.y + 1 + padding + len(sticky), dx=rect.x + padding,
                 clip=(rect.y + 1 + padding + len(sticky), rect.x + padding,
                       rect.y + rect.height - padding, rect.x + rect.width - padding)))
+        if groups[panel].get("scrollbars"):
+            from . import scrollbars
+            mapping = {raw: fitted - top + len(sticky) for raw, fitted in scroll_mapping.items()
+                       if top <= fitted < top + page}
+            mapping.update(scroll_sticky)
+            scrollbars.put_records(app, scrollbars.map_records(groups[panel]["scrollbars"], row_map=mapping,
+                dy=rect.y + 1 + padding, dx=rect.x + padding,
+                clip=(rect.y + 1 + padding, rect.x + padding,
+                      rect.y + rect.height - padding, rect.x + rect.width - padding)))
         state.scroll[key] = logical_top
         if native_jobs and panel == "details":
             from .job_panels import _view_key
             view_key = _view_key(inline)
             inline["scrolls"][view_key] = logical_top
             if inline.get("mode") == "research":
-                usable_width = max(0, rect.width - padding * 2)
+                usable_width = max(0, rect.width - padding * 2 - 1)
                 header = inline["document_headers"].get((view_key, usable_width), 0)
                 document_key = (view_key, usable_width)
                 inline["document_maps"][document_key] = {
@@ -695,7 +773,19 @@ def transform_body(app, body, hits, width: int, height: int, *, ascii_: bool = F
                         max(0, min(candidates) - header - 16),
                         max(0, max(candidates) - header + 16))
         title = panel.title() + ("  [z restore]" if state.maximized else "")
-        rows = [L.panel_title(g, title, rect.width, state.focus == panel, (top, min(len(source), top + page), len(source)))]
+        scrollable = not native_table and not (native_jobs and panel == "main") and len(source) > page and page > 0
+        title_width = max(0, rect.width - 4) if scrollable and rect.width >= 6 else rect.width
+        rows = [([("    ", "")] if title_width != rect.width else []) +
+                L.panel_title(g, title, title_width, state.focus == panel, (top, min(len(source), top + page), len(source)))]
+        if not native_table and not (native_jobs and panel == "main") and page > 0 and rect.width >= 2:
+            from . import scrollbars
+            def seek(value, target_key=key):
+                state.scroll[target_key] = value
+            scrollbars.register(app, "workspace:" + key,
+                (rect.y + 1 + padding + len(sticky), rect.x + padding,
+                 rect.y + rect.height - padding, rect.x + rect.width - padding),
+                len(source), page, logical_top, top, seek, context=context,
+                header=(rect.y, rect.x, rect.x + rect.width) if scrollable and rect.width >= 6 else None)
         if padding:
             rows.append(L.fill_row([], rect.width))
         rows.extend(_style_row([(" " * padding, "")] + row, rect.width) for row in sticky)
@@ -801,60 +891,82 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
         app.job_panel_defer_content = app.job_panel_source_canvas = True
         from . import chart_interaction
         chart_mark = chart_interaction.mark(app)
+        from . import scrollbars
+        scroll_mark = scrollbars.mark(app)
         try:
             body, hits = default_renderer(main_width, max(height, MAX_SOURCE_ROWS))
         finally:
             app.job_panel_defer_content = previous_deferred
             app.job_panel_source_canvas = previous_canvas
         records = chart_interaction.take_since(app, chart_mark)
-        queue = partition(body, hits, "jobs", chart_records=records)["main"]
+        scroll_records = scrollbars.take_since(app, scroll_mark)
+        queue = partition(body, hits, "jobs", chart_records=records, scroll_records=scroll_records)["main"]
         groups = {"main": queue, "details": {"rows": [], "hits": []}}
         if detail_rect:
             from .job_panels import render as render_details
             job = app.job_record(getattr(app, "selected_id", None), snap)
             chart_mark = chart_interaction.mark(app)
-            detail_rows, detail_hits = render_details(views, snap, app, job, usable(detail_rect),
+            scroll_mark = scrollbars.mark(app)
+            detail_width = max(0, usable(detail_rect) - (0 if getattr(app, "job_panel_state", {}).get("mode") == "logs" else 1))
+            detail_rows, detail_hits = render_details(views, snap, app, job, detail_width,
                                                       app.job_panel_target_height)
             groups["details"] = {"rows": detail_rows, "hits": detail_hits,
-                                 "charts": chart_interaction.take_since(app, chart_mark)}
+                                 "charts": chart_interaction.take_since(app, chart_mark),
+                                 "scrollbars": scrollbars.take_since(app, scroll_mark),
+                                 "virtual_document": getattr(app, "job_panel_state", {}).get("virtual_document")}
         return transform_body(app, body, hits, width, height,
                               ascii_=getattr(views.g, "ascii", False), groups=groups)
     # Native tab renderers already limit their work to their requested height.
     # A larger bounded source keeps lower sections reachable rather than clipped.
-    source_height = max(height, MAX_SOURCE_ROWS)
+    table_tab = getattr(app, "tab", "") in ("history", "group", "sources", "deps")
+    source_height = height if table_tab else max(height, MAX_SOURCE_ROWS)
     previous_canvas = getattr(app, "job_panel_source_canvas", False)
     if native_jobs:
         app.job_panel_source_canvas = True
     from . import chart_interaction
     chart_mark = chart_interaction.mark(app)
+    from . import scrollbars
+    scroll_mark = scrollbars.mark(app)
+    previous_probe = getattr(app, "scrollbar_probe", False)
+    app.scrollbar_probe = table_tab
     try:
         body, hits = default_renderer(width, source_height)
     finally:
         app.job_panel_source_canvas = previous_canvas
+        app.scrollbar_probe = previous_probe
     records = chart_interaction.take_since(app, chart_mark)
-    groups = partition(body, hits, getattr(app, "tab", "jobs"), chart_records=records)
+    scroll_records = scrollbars.take_since(app, scroll_mark)
+    groups = partition(body, hits, getattr(app, "tab", "jobs"), chart_records=records, scroll_records=scroll_records)
     originals = {panel: {"rows": list(group["rows"]), "hits": list(group["hits"])} for panel, group in groups.items()}
     rects = geometry(app, width, height, has_details=bool(groups["details"]["rows"]))
     # Refit columns and plots to their actual panel widths instead of cutting
     # away the right half of a table that was composed for a whole terminal.
-    by_width = {width: groups}
+    by_width = {(width, source_height): groups}
     for panel, rect in rects.items():
         padding = 1 if (initialize(app).density == "comfortable" and rect.width >= 8 and rect.height >= 5
                         and not (native_jobs and panel == "main" and rect.height < 7)) else 0
-        usable_width = max(0, rect.width - padding * 2)
-        if usable_width not in by_width:
+        usable_width = max(0, rect.width - padding * 2 - (1 if panel == "details" or not table_tab else 0))
+        render_height = max(1, rect.height - 1 - padding * 2) if table_tab and panel == "main" else source_height
+        fitted_key = (usable_width, render_height)
+        if fitted_key not in by_width:
             if native_jobs:
                 app.job_panel_source_canvas = True
             chart_mark = chart_interaction.mark(app)
+            scroll_mark = scrollbars.mark(app)
+            previous_probe = getattr(app, "scrollbar_probe", False)
+            app.scrollbar_probe = table_tab and panel != "main"
             try:
-                fitted_body, fitted_hits = default_renderer(usable_width, source_height)
+                fitted_body, fitted_hits = default_renderer(usable_width, render_height)
             finally:
                 app.job_panel_source_canvas = previous_canvas
+                app.scrollbar_probe = previous_probe
             records = chart_interaction.take_since(app, chart_mark)
-            by_width[usable_width] = partition(fitted_body, fitted_hits, getattr(app, "tab", "jobs"), chart_records=records)
-        groups[panel] = by_width[usable_width][panel]
+            scroll_records = scrollbars.take_since(app, scroll_mark)
+            by_width[fitted_key] = partition(fitted_body, fitted_hits, getattr(app, "tab", "jobs"), chart_records=records, scroll_records=scroll_records)
+        groups[panel] = by_width[fitted_key][panel]
         _preserve_titles(groups[panel], originals[panel])
-        _preserve_metadata(groups[panel], originals[panel])
+        if not table_tab or panel != "main":
+            _preserve_metadata(groups[panel], originals[panel])
         if native_jobs and panel == "details" and groups[panel]["rows"] and _section_title(groups[panel]["rows"][0]) == "selected":
             groups[panel] = {"rows": groups[panel]["rows"][1:],
                              "hits": [(y - 1, kind, key) for y, kind, key in groups[panel]["hits"] if y > 0]}

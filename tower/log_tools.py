@@ -10,7 +10,7 @@ from collections import OrderedDict
 import math
 import re
 
-from . import layout as L, log_scan, log_match_index
+from . import layout as L, log_scan, log_match_index, scrollbars as S
 from .research import clean
 
 MODES = {"log_tools_page", "log_tools_results", "log_tools_marks"}
@@ -26,6 +26,8 @@ def initialize(app):
                                "search_mode": {"regex": True, "case": False, "word": False},
                                "retained_explicit": False, "retained_cache": None, "retained_omitted": 0, "retained_matcher_cache": None, "page_pan_cache": OrderedDict(), "page_pan_page": None, "retained_index": None, "retained_target": None, "retained_target_buffer": None, "retained_token": None, "retained_pending": False, "retained_processed": 0, "retained_total": 0, "retained_known_count": None}
     app.log_tools_state.setdefault("cursor_deselected", False)
+    app.log_tools_state.setdefault("result_top", 0)
+    app.log_tools_state.setdefault("mark_top", 0)
     return app.log_tools_state
 
 
@@ -490,7 +492,8 @@ def _copy_page(app, *, all_file=False):
         app.fail("Select a source line before copying; Y copies the entire source")
         return
     from .log_copy import copy_full_log, copy_log_selection
-    files, cb = state.get("page_files") or app.logs.files, dict(app.cfg.get("clipboard", {}))
+    from .clipboard import options
+    files, cb = state.get("page_files") or app.logs.files, options(app)
     if source.get("target", _target(files)) != _target(files):
         app.fail("This source belongs to another connection; reopen its original profile")
         return
@@ -500,14 +503,14 @@ def _copy_page(app, *, all_file=False):
             if before["ident"] != page["snapshot"]["ident"]:
                 raise log_scan.SourceChanged("Log source was replaced; reopen the page before copying")
             return copy_full_log(source["path"], getattr(app, "state_dir", None), files=files,
-                   use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)), cancel=cancel, progress=progress)
+                   **cb, cancel=cancel, progress=progress)
     else:
         selection = state["selection"] or (state["page_cursor"], state["page_cursor"])
         lo, hi = sorted(selection)
         chunks = tuple(row["raw"] for row in page["rows"][lo:hi + 1])
         def fn(cancel, progress):
             return copy_log_selection(chunks, getattr(app, "state_dir", None), source_path=source["path"],
-                   use_osc52=bool(cb.get("osc52", True)), use_tools=bool(cb.get("tools", True)), cancel=cancel, progress=progress)
+                   **cb, cancel=cancel, progress=progress)
     original_selection = state["selection"]
     def complete(value):
         if value.get("status") not in ("ready", "partial"):
@@ -523,6 +526,8 @@ def handle_key(app, key):
     if app.mode not in MODES:
         return False
     state = initialize(app)
+    if key in ("up", "down", "pgup", "pgdn", "home", "end"):
+        S.resume(app, "log-tools:document")
     if key in ("esc", "q"):
         app.mode = state["page_return"] if app.mode == "log_tools_page" else state["return_mode"]
         state["selection"] = None
@@ -613,6 +618,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
     if hit is None or not hit[1] <= x < hit[2] or button not in ("left", "double"):
         return True
     index = hit[0]
+    S.resume(app, "log-tools:document")
     state["cursor_deselected"] = False
     if app.mode == "log_tools_page":
         if shift:
@@ -646,6 +652,10 @@ def overlay(views, snap, app, width, height):
         return None
     state, g = initialize(app), views.g
     rows, indices = [], {}
+    top_field = "page_top" if app.mode == "log_tools_page" else "result_top" if app.mode == "log_tools_results" else "mark_top"
+    scroll_context = (app.mode, id(state.get("page")) if app.mode == "log_tools_page" else id(state.get("results")) if app.mode == "log_tools_results" else id(state["marks"]),
+                      getattr(app, "log_job", None), width)
+    from .scrolling import viewport
     if app.mode == "log_tools_page":
         page = state["page"]
         if page is None: return L.box(g, [[("No source page loaded", "dim")]], width, height, "Source page")
@@ -659,8 +669,12 @@ def overlay(views, snap, app, width, height):
         n = len(page["rows"])
         cursor = min(state["page_cursor"], max(0, n - 1))
         available = max(1, height - 9)
-        start = max(0, cursor - available // 2)
-        for index, row in enumerate(page["rows"][start:start + available], start):
+        start = state[top_field] if S.manual(app, "log-tools:document", context=scroll_context) is not None else max(0, cursor - available // 2)
+        start = max(0, min(start, max(0, n - available)))
+        state[top_field] = start
+        painted = viewport(app, "log-tools:document", start, n, available, context=scroll_context)
+        body_start = len(rows)
+        for index, row in enumerate(page["rows"][painted:painted + available], painted):
             label = f"L{row['line']}" if row["line"] is not None else f"B{row['offset']}"
             chosen = state["selection"] is not None and min(state["selection"]) <= index <= max(state["selection"])
             marker = "*" if g.ascii else "◆"
@@ -698,8 +712,13 @@ def overlay(views, snap, app, width, height):
             omitted = sum(r.get("long_regex_lines", 0) for r in reports)
             rows.append([(f"{len(reports)} sources; {done:,}/{total:,} bytes; {errors} source errors; {omitted} overlong regex lines omitted", "dim")])
         available = max(1, height - 12)
-        start = max(0, cursor - available // 2)
-        for index, row in enumerate(collection[start:start + available], start):
+        n = len(collection)
+        start = state[top_field] if S.manual(app, "log-tools:document", context=scroll_context) is not None else max(0, cursor - available // 2)
+        start = max(0, min(start, max(0, n - available)))
+        state[top_field] = start
+        painted = viewport(app, "log-tools:document", start, n, available, context=scroll_context)
+        body_start = len(rows)
+        for index, row in enumerate(collection[painted:painted + available], painted):
             label = row["source"].get("label", row["source"]["path"])
             location = f"L{row['line']}" if row.get("line") else f"B{row['offset']}"
             text = f" {label} {location}: " + (row["text"] if is_results else row["name"])
@@ -717,12 +736,22 @@ def overlay(views, snap, app, width, height):
                 rows.append([(clean(report["source"].get("label", report["source"]["path"]) + ": " + (report.get("error") or ("complete" if report.get("complete") else "partial coverage")), g.ascii), "yellow" if not report.get("complete") else "dim")])
         rows.append([("Arrows/PgUp/PgDn browse | Enter open exact source | Esc back" + (" | d delete" if not is_results else ""), "dim")])
         title = "Log search" if is_results else "Log marks"
-    result = L.box(g, rows, width, height, title)
+    result = L.box(g, rows, width, height, "   " + title)
     state["mouse_rows"] = {}
     for logical, index in indices.items():
         if logical + 1 < len(result) - 1:
             y, x, rendered = result[logical + 1]
             state["mouse_rows"][y] = (index, x + 1, x + L.vlen(L.row_text(rendered)) - 1)
+    if state["mouse_rows"] and len(result) >= 3:
+        first_y = min(state["mouse_rows"])
+        bottom = max(state["mouse_rows"]) + 1
+        _, left, first = result[1]
+        right = left + L.vlen(L.row_text(first))
+        S.register(app, "log-tools:document", (first_y, left + 1, bottom, right),
+                   n, available, start, painted,
+                   lambda value: state.__setitem__(top_field, value),
+                   context=scroll_context, header=(result[0][0], left + 1, right - 1),
+                   layer=1, absolute=True)
     return result
 
 

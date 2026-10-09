@@ -1,7 +1,7 @@
 """Virtualized native Analytics Job Series document, with no source IO."""
 from __future__ import annotations
 
-from . import layout as L
+from . import layout as L, scrollbars as S
 
 
 def initialize(app):
@@ -83,7 +83,17 @@ def finish(app, rows, sticky, painted, page, width, chart_mark, glyphs):
     first = painted + 1 if count and page else 0
     last = min(count, painted + page) if page else 0
     note = f" Series rows {first}-{last}/{count} {glyphs.dot} PgUp/PgDn or wheel; :series-scroll home/end"
-    return rows[:sticky] + visible + [L.clip_row([(note, "dim")], width)]
+    output = rows[:sticky] + visible + [L.clip_row([(note, "dim")], width)]
+    header = sticky - 1 if sticky else len(output) - 1
+    if page > 0 and width >= 6:
+        # The jump controls share the pane heading; no table column is added.
+        if count > page:
+            output[header] = L.clip_row([("    ", "")] + output[header], width)
+        S.register(app, "analytics:series-document", (sticky, 0, sticky + page, width),
+                   count, page, state["top"], painted,
+                   lambda value: state.__setitem__("top", value),
+                   context=(state["identity"], width, page), header=(header, 0, width))
+    return output
 
 
 def _current(app):

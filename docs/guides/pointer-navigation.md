@@ -83,7 +83,9 @@ Move the pointer inside a metric plot to show its thin crosshair in the active t
 Press the left button, drag across a time interval, and release inside the plot.
 Tower fits the selected interval across the plot and calculates the vertical scale from its visible curve.
 The guide preserves the graph background.
-Unicode strokes use two horizontal and four vertical Braille positions per cell, with 80 ms visual easing.
+Unicode strokes use two horizontal and four vertical Braille positions per cell.
+The crosshair reaches the latest reported cell immediately. Only its dot phase animates, for at most 24 ms.
+Curve and annotation glyphs keep their original styles where the selector intersects them.
 Mouse events and selected bounds still use whole terminal cells.
 ASCII and reader modes use static dots and `+` intersections.
 Disable **Interface animations** in `:settings` to keep the Unicode selector static.
@@ -209,6 +211,17 @@ Outside those plots, analysis clears sample, Timeline, and Chart Events row sele
 Select a row again before opening an event or starting a sample interval.
 Use its arrow keys or click the row.
 Research Evidence uses the shared line-selection state on its main page.
+
+## Scroll with pane controls
+
+Scrollable panes reserve four header cells for top/bottom arrows and one right-edge cell for the scrollbar.
+Drag the scrollbar thumb to move within that pane.
+Click above or below it to move by one viewport.
+Use the header arrows to reach the document endpoints.
+These gestures preserve the selected source and do not activate rows under the rail.
+A changed content count keeps the drag active; changed source or geometry cancels it.
+Advisor, History, Timeline, and comparison documents expose their complete published content through their pane viewport.
+See [Pane navigation](pane-navigation.md) for keyboard access, cancellation, rendered text selection, and editor yanking.
 
 ## Scroll without delayed input
 

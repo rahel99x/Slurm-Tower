@@ -17,6 +17,14 @@ TOOLS = [["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel",
 OSC52_LIMIT = 100_000                                     # bytes of base64 most terminals accept in one sequence
 
 
+def options(app):
+    """Capture destination and transport preferences before queuing copy work."""
+    preferences = getattr(app, "cfg", {}).get("clipboard", {})
+    return {"use_osc52": bool(preferences.get("osc52", True)),
+            "use_tools": bool(preferences.get("tools", True)),
+            "destination": "yank" if preferences.get("destination") == "yank" else "copy"}
+
+
 def osc52(text: str, tty_path: str = "/dev/tty") -> bool:
     """Request the complete text through OSC 52; never send a truncated prefix.
 
@@ -134,7 +142,8 @@ def _tool_from_file(path: str) -> Optional[str]:
     return None
 
 
-def copy_file(path: str, *, tty_path: str = "/dev/tty", use_osc52: bool = True, use_tools: bool = True, cancel=None) -> dict:
+def copy_file(path: str, *, tty_path: str = "/dev/tty", use_osc52: bool = True, use_tools: bool = True, cancel=None,
+              destination="copy", editor_context=None) -> dict:
     """Deliver a complete private export without loading a large file in memory.
 
     Text transports receive only strict UTF-8. The caller keeps the exact-byte
@@ -172,6 +181,13 @@ def copy_file(path: str, *, tty_path: str = "/dev/tty", use_osc52: bool = True, 
     if cancel is not None and cancel():
         result["warnings"].append("Clipboard delivery cancelled.")
         return result
+    if destination == "yank":
+        from . import editor_yank
+        success, message = editor_yank.send_file(path, target=editor_context, cancel=cancel)
+        if success:
+            result["methods"].append(message)
+            return result
+        result["warnings"].append(message)
     if use_osc52:
         if not fits:
             result["warnings"].append(f"OSC 52 skipped: complete log exceeds the {OSC52_LIMIT}-byte base64 limit.")
@@ -191,7 +207,8 @@ def copy_file(path: str, *, tty_path: str = "/dev/tty", use_osc52: bool = True, 
     return result
 
 
-def copy(text: str, state_dir: Optional[str] = None, tty_path: str = "/dev/tty", use_osc52: bool = True, use_tools: bool = True) -> str:
+def copy(text: str, state_dir: Optional[str] = None, tty_path: str = "/dev/tty", use_osc52: bool = True, use_tools: bool = True,
+         destination="copy", editor_context=None) -> str:
     """Send ``text`` everywhere it can go; returns a one-line account of where it went."""
     where: List[str] = []
     notices: List[str] = []
@@ -199,6 +216,14 @@ def copy(text: str, state_dir: Optional[str] = None, tty_path: str = "/dev/tty",
         encoded_size = len(text.encode("utf-8"))
     except UnicodeError:
         return "copy failed: text is not valid UTF-8"
+    path = to_file(text, state_dir)
+    if destination == "yank":
+        from . import editor_yank
+        success, message = (editor_yank.send_file(path, target=editor_context) if path
+                            else editor_yank.send(text, target=editor_context))
+        if success:
+            return message + (" Private export: " + path if path else "")
+        notices.append(message)
     if use_osc52:
         if osc52(text, tty_path):
             notices.append("OSC 52 request sent (terminal acceptance cannot be confirmed)")
@@ -208,7 +233,6 @@ def copy(text: str, state_dir: Optional[str] = None, tty_path: str = "/dev/tty",
         tool = local_tool(text)
         if tool:
             where.append(tool)
-    path = to_file(text, state_dir)
     if path:
         where.append(path)
     n = text.count("\n") + (1 if text and not text.endswith("\n") else 0)

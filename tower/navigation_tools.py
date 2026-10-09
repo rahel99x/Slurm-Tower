@@ -926,8 +926,7 @@ def handle_key(app, key):
             app.mode = state["return_mode"]
         elif key == "y" and app.mode == "value_peek":
             from . import clipboard
-            options = app.cfg["clipboard"]
-            result = clipboard.copy(state["raw_value"], app.state_dir, use_osc52=bool(options.get("osc52", True)), use_tools=bool(options.get("tools", True)))
+            result = clipboard.copy(state["raw_value"], app.state_dir, **clipboard.options(app))
             app.say(result)
         elif key in ("up", "down", "pgup", "pgdn", "home", "end"):
             total, page = state.get("line_total", 1), state["page"]
@@ -963,6 +962,7 @@ def handle_mouse(app, y, x, button="left", shift=False):
 
 
 def _list_overlay(views, app, width, height, title, rows, prefix, hints):
+    from . import modal_scrollbars as B
     state = initialize(app)
     page = max(1, height - 11)
     cursor = max(0, min(state["cursor"], max(0, len(rows) - 1)))
@@ -971,7 +971,10 @@ def _list_overlay(views, app, width, height, title, rows, prefix, hints):
         top = cursor
     elif cursor >= top + page:
         top = cursor - page + 1
-    state.update(cursor=cursor, top=top, page=page)
+    context = (app.mode, state["query"], state["editing"], state["test"])
+    logical, top = B.window(app, "modal:navigation-list", top, len(rows), page,
+                            context=context, focus=cursor)
+    state.update(cursor=cursor, top=logical, page=page)
     content = [[(" " + clean(prefix, views.g.ascii), "cyan")], [("", "")]]
     for index, (value, description) in enumerate(rows[top:top + page], top):
         style = "sel" if index == cursor else ""
@@ -983,7 +986,8 @@ def _list_overlay(views, app, width, height, title, rows, prefix, hints):
     content += [[("", "")]] + [[(" " + clean(hint, views.g.ascii), "dim")] for hint in hints[:3]]
     result = L.box(views.g, content, width, height, title)
     state["hits"] = [(result[3 + offset][0], top + offset) for offset in range(min(page, len(rows) - top)) if 3 + offset < len(result) - 1]
-    return result
+    return B.boxed(app, "modal:navigation-list", result, start=2, count=len(rows), page=page,
+                   target=logical, painted=top, setter=lambda value: state.update(top=value), context=context)
 
 
 def overlay(views, snap, app, width, height):
@@ -1021,7 +1025,13 @@ def overlay(views, snap, app, width, height):
     page = max(1, height - 8)
     state["line_total"], state["page"] = len(lines), page
     state["scroll"] = max(0, min(state["scroll"], max(0, len(lines) - page)))
+    from . import modal_scrollbars as B
+    context = (app.mode, state["field"], state["value"], width)
+    logical, painted = B.window(app, "modal:full-value", state["scroll"], len(lines), page, context=context)
+    state["scroll"] = logical
     content = [[(" " + clean(state["field"], views.g.ascii), "cyan+bold")], [("", "")]]
-    content += [[(" " + line, "")] for line in lines[state["scroll"]:state["scroll"] + page]]
+    content += [[(" " + line, "")] for line in lines[painted:painted + page]]
     content += [[("", "")], [(" Up/Down/PgUp/PgDn scroll · y copies the complete raw value · Esc closes" if app.mode == "value_peek" else " Up/Down/PgUp/PgDn scroll · Esc closes", "dim")]]
-    return L.box(views.g, content, width, height, "Full value" if app.mode == "value_peek" else "Field explanation")
+    result = L.box(views.g, content, width, height, "Full value" if app.mode == "value_peek" else "Field explanation")
+    return B.boxed(app, "modal:full-value", result, start=2, count=len(lines), page=page,
+                   target=logical, painted=painted, setter=lambda value: state.update(scroll=value), context=context)

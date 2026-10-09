@@ -813,6 +813,7 @@ def overlay(views, snap, app, width, height):
     if app.mode not in MODES:
         return None
     state = initialize(app)
+    from . import modal_scrollbars as B
     state["control_hits"] = []
     button_hits = []
     g = views.g
@@ -827,16 +828,28 @@ def overlay(views, snap, app, width, height):
             lines.append(row(" All binding and discovery notices | arrows scroll | ! / Esc back", "dim"))
             notices = state["warnings"] + state["run_warnings"]
             start = min(state["notices_scroll"], max(0, len(notices) - 1))
-            for notice in notices[start:start + max(1, height - 9)]:
+            page = max(1, height - 9)
+            context = ("project-notices", state["root"], binding.get("run_id"))
+            logical, start = B.window(app, "modal:project-notices", start, len(notices), page, context=context)
+            state["notices_scroll"] = logical
+            for notice in notices[start:start + page]:
                 lines.append(row(" " + notice, "yellow"))
             if not notices:
                 lines.append(row(" No binding or discovery notices", "green"))
-            return L.box(g, lines, width, height, "project notices")
+            rendered = L.box(g, lines, width, height, "project notices")
+            return B.boxed(app, "modal:project-notices", rendered, start=3, count=len(notices), page=page,
+                           target=logical, painted=start, setter=lambda value: state.update(notices_scroll=value), context=context)
         lines.append(row(" Enter binds | / filter | ! notices | r refresh | Esc back", "dim"))
         lines.append(row(" Filter: " + state["filter"] + ("_" if state["filtering"] else ""), "cyan"))
         items = _visible_runs(state)
         page = max(1, height - 11)
         cursor, top = _window(state, "run_cursor", "run_top", len(items), page)
+        key = "modal:project-runs"
+        context = ("project_runs", state["root"], state["filter"])
+        logical, top = B.window(app, key, top, len(items), page, context=context, focus=cursor)
+        state["run_top"] = logical
+        data_start = len(lines)
+        setter = lambda value: state.update(run_top=value)
         for index, run in enumerate(items[top:top + page], top):
             marker = (">" if g.ascii else "›") if index == cursor else " "
             text = f" {marker} {run['run_id']}  [{run['state']}]  attempt {run['attempt']}  job {run.get('job_id') or 'unrecorded'}"
@@ -859,6 +872,13 @@ def overlay(views, snap, app, width, height):
         items = _visible_outputs(state)
         page = max(1, height - 12)
         cursor, top = _window(state, "output_cursor", "output_top", len(items), page)
+        key = "modal:project-outputs"
+        context = ("project_outputs", state["root"], binding.get("run_id"), binding.get("attempt"),
+                   state["filter"], tuple(state["collapsed"]))
+        logical, top = B.window(app, key, top, len(items), page, context=context, focus=cursor)
+        state["output_top"] = logical
+        data_start = len(lines)
+        setter = lambda value: state.update(output_top=value)
         for index, node in enumerate(items[top:top + page], top):
             marker = (">" if g.ascii else "›") if index == cursor else " "
             branch = ("+" if node["path"] in state["collapsed"] else "-") if node["directory"] else ("o" if g.ascii else "◆")
@@ -902,7 +922,14 @@ def overlay(views, snap, app, width, height):
         display_lines = preview.get("lines", [])[1:] if preview.get("format") == "csv" else preview.get("lines", [])
         start = min(state["preview_scroll"], max(0, len(display_lines) - 1))
         page = max(1, height - len(lines) - 5)
-        for index, text in enumerate(display_lines[start:start + page], start):
+        key = "modal:project-preview"
+        context = ("project_preview", id(preview), width, state["preview_column"])
+        logical, top = B.window(app, key, start, len(display_lines), page,
+                                context=context, focus=state["preview_scroll"])
+        data_start = len(lines)
+        items = display_lines
+        setter = lambda value: None
+        for index, text in enumerate(display_lines[top:top + page], top):
             selected = index == state["preview_scroll"]
             marker = ">" if g.ascii else "›"
             number = preview.get("row", 0) + index + 1
@@ -911,7 +938,8 @@ def overlay(views, snap, app, width, height):
     rendered = L.box(g, lines, width, height, title)
     from .control_rows import place_hits
     state["control_hits"] = place_hits(button_hits, rendered[1:-1])
-    return rendered
+    return B.boxed(app, key, rendered, start=data_start, count=len(items), page=page,
+                   target=logical, painted=top, setter=setter, context=context)
 
 
 def handle_mouse(app, y, x, button="left", shift=False):

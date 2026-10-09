@@ -240,6 +240,8 @@ def test_actual_modal_graph_contains_only_visible_clipped_controls(dashboard, wi
                and 0 <= control.rect.left < control.rect.right <= width for control in controls)
     assert not any(control.id.startswith(("sort:", "job_panel", "tab:")) for control in controls)
     visible_modal_ids = {value["id"] for _, _, value in app.analysis_state.get("control_hits", [])}
+    from tower.scrollbars import descriptors as scrollbar_descriptors
+    visible_modal_ids.update(value['id'] for value in scrollbar_descriptors(app))
     assert all(control.id in visible_modal_ids or control.id.startswith("toolbar:") for control in controls)
     if width <= 2 or height <= 3:
         assert not visible_modal_ids

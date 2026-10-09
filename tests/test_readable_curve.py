@@ -17,7 +17,7 @@ def render(values, *, ascii_=False, width=50, height=6, **kwargs):
 
 def ink(rows, metadata, ascii_=False):
     top, left, bottom, right = metadata["plot_rect"]
-    allowed = set("./\\-:|+") if ascii_ else set(charts.QUADRANTS[1:])
+    allowed = set("./\\-:|+") if ascii_ else set(charts.BRAILLE[1:])
     return [[char in allowed for char in L.row_text(row)[left:right]]
             for row in rows[top:bottom]]
 
@@ -132,7 +132,7 @@ def test_plot_metadata_matches_actual_clipped_geometry_and_clears_stale_fields(a
     assert left == min(width, 10) and right == width
     assert metadata["x_bounds"] == (100., 200.) and metadata["y_bounds"] == (0, 100)
     assert metadata["valid"] is bool(width > 10 and height)
-    assert metadata["raster"] == ((1, 1) if ascii_ else (2, 2))
+    assert metadata["raster"] == ((1, 1) if ascii_ else (2, 4))
     assert "obsolete" not in metadata
     assert all(L.vlen(L.row_text(row)) <= width for row in rows)
 
