@@ -282,7 +282,9 @@ def execute(app, cmd, args, *, ready=None):
                 fn = lambda: prepare_args(args)
             else:
                 jobs, finished = list(app.store.jobs), list(app.store.finished)
-                fn = lambda: array_plan(args, jobs, finished)
+                from .array_manifest_ui import capture
+                manifest = capture(app)
+                fn = lambda: array_plan(args, jobs, finished, manifest=manifest, files=hub.files)
             token, origin = object(), None
             resources = (hub.plan, hub.passport, hub.passport_diff)
 
@@ -362,7 +364,9 @@ def execute(app, cmd, args, *, ready=None):
         elif cmd == "array":
             from .research import detach_manual_source
             detach_manual_source(app)
-            hub.plan = ready if ready is not None else array_plan(args, app.store.jobs, app.store.finished)
+            from .array_manifest_ui import capture
+            hub.plan = ready if ready is not None else array_plan(args, app.store.jobs, app.store.finished,
+                                                                  manifest=capture(app), files=hub.files)
             if not hub.plan.get("valid"):
                 raise ValueError("retry script failed preflight; prepare a valid script before retrying")
             hub.configure()
@@ -401,7 +405,7 @@ def execute(app, cmd, args, *, ready=None):
     return True
 
 
-def array_plan(args, jobs, finished):
+def array_plan(args, jobs, finished, *, manifest=None, files=None):
     from .arrays import retry_plan, summarize
     if len(args) < 3 or args[0] != "retry":
         raise ValueError("array retry ARRAYID SCRIPT [--workdir DIR] [--indices RANGE] [--limit N]")
@@ -415,7 +419,19 @@ def array_plan(args, jobs, finished):
     matching = [g for g in groups if g["id"] == array_id]
     if len(matching) != 1:
         raise ValueError("array is absent or ambiguous across clusters in the current snapshot")
-    return retry_plan(matching[0], script, indices=opts.indices, limit=opts.limit, workdir=opts.workdir)
+    plan = retry_plan(matching[0], script, indices=opts.indices, limit=opts.limit, workdir=opts.workdir)
+    if manifest and manifest[0].matches(matching[0]["id"], matching[0].get("cluster", "")):
+        from .array_manifest import verify, retry_metadata
+        from .submission import _digest
+        frozen, path = manifest[:2]
+        submitted = set(manifest[2]) if len(manifest) > 2 else set()
+        observed = set(matching[0].get("submit_times", ()))
+        if len(observed) > 1 or submitted and observed and submitted != observed:
+            raise ValueError("array submission identity changed or is ambiguous; reload its input map before preparing a retry")
+        verify(path, files, frozen)
+        plan["array_retry"]["manifest"] = retry_metadata(frozen, path, plan["array_retry"]["indices"])
+        plan["plan_id"] = _digest(plan)
+    return plan
 
 
 def submission_done(app, result):

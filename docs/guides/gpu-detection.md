@@ -2,9 +2,18 @@
 
 [README](../../README.md) · [Desktop setup](../DESKTOP.md) · [Chart controls](charts.md)
 
-Tower must detect a job's GPU allocation before it collects automatic NVIDIA measurements.
+Tower must detect a job's GPU allocation before it collects automatic GPU measurements.
 A GPU visible on the desktop does not establish that Slurm assigned it to a job.
 This guide separates sampling settings, allocation detection, driver access, live measurements, trace files, and retained data.
+Tower 4.14 supports optional NVIDIA, AMD, and Intel providers. Use **GPU source**
+on Sources or `:gpuprovider` to choose one. See
+[provider requirements](phase-one.md#select-a-gpu-provider) for compute-node
+tools, allocation identity checks, and unsupported-counter behavior.
+Numeric Slurm GRES order can differ from vendor device order. Without stable
+device evidence, phase one accepts only a matching complete visible
+single-vendor device set, with no partition or mixed-vendor ambiguity. Opaque
+numeric subsets on shared multi-GPU nodes remain unavailable; faster polling
+cannot resolve that identity limit.
 
 ## Enable sampling on Fedora
 
@@ -28,7 +37,7 @@ Changed job attempts or resource settings invalidate the cached count.
 Failed discovery cannot extend it indefinitely: its lifetime is twice the effective GPU interval, bounded from 10 to 120 seconds.
 The cache retains at most 10,000 current running jobs.
 The first graph slider changes only the displayed time window.
-The adjacent polling slider requests more frequent NVIDIA measurements for that exact running job.
+The adjacent polling slider requests more frequent GPU measurements for that exact running job.
 Its value and endpoints show effective intervals in `s`, `ms`, or `µs`; ASCII mode uses `us`.
 GPU utilization and busy-mean curves share a probe, so the fastest request for either curve applies.
 The sampling request remains active while Live is off and can remain active when the graph moves offscreen.
@@ -127,26 +136,30 @@ Read `summary.jobs_with_graph_data` and the job-specific checks; a successful ex
 | --- | --- |
 | `sampling_settings`, `saved_sampling` | Shows configuration, `--no-gpu`, and the saved toggle. Use `:gpu on` when off. |
 | `command_paths` | Reports tool paths on the scheduler connection host. Check that Tower uses your normal Slurm environment. |
-| `host_gpu_inventory` | Runs `nvidia-smi` on the connection host. This is hardware evidence, not job attribution. A GPU-free cluster login host is normal. |
-| `pci_gpu_inventory` | Lists display/controller devices when NVIDIA inventory fails. `lspci` is optional. |
-| `nvidia_backend_only` | The listed devices are not NVIDIA. Automatic sampling currently uses `nvidia-smi`; AMD and Intel devices need another telemetry source. |
+| `host_gpu_inventory` | Runs the selected vendor helper on the connection host. This is hardware evidence, not job attribution. A GPU-free cluster login host is normal. |
+| `host_gpu_provider` | Reports a provider-specific host inventory limitation. Inspect the named optional tool or driver. |
+| `pci_gpu_inventory` | Lists display/controller devices when vendor inventory fails. `lspci` is optional. |
+| `gpu_provider_setup` | Hardware was observed without usable vendor inventory. Check provider choice, matching utility/driver, Slurm GRES, and compute-node `python3`. |
 | `queue` | Shows whether the controller returned your jobs. Resolve a queue connection failure first. |
 | `allocation_batch` | Reads per-job allocation TRES. This detects `--gpus` allocations omitted by the per-node `%b` field. |
 | `queue_gpu_underreported` | Allocation details show more GPUs than the queue lookup. Compare the captured resource fields and batch-query result. |
 | `allocation_missing` | Slurm reports no GPU allocation. Check compute-node GRES and the job's GPU request. |
 | `not_running` | Pending or completed jobs cannot produce a new live sample. Check recorded traces or retained samples. |
 | `live_samples` | Counts observed devices with valid utilization. Tower can record new graph samples. |
-| `utilization_unsupported` | Devices exist but the utilization counter is unavailable. Inspect the NVIDIA output and device/MIG/driver capabilities. |
+| `utilization_unsupported` | Devices exist but the utilization counter is unavailable. Inspect the selected vendor output and device/partition/driver capabilities. |
 | `driver_unavailable`, `command_missing`, `permission_denied` | Identifies the original command failure. Fix the named prerequisite. |
-| `allocation_probe_failed`, `probe_timeout`, `sampling_failed` | Shows why the allocation probe or fallback failed. Read the corresponding `srun` and SSH records. |
-| `ssh_device_scope` | SSH exposed node-visible devices. On a shared node, their ownership by this job is not proved. Prefer the allocation probe or an in-job trace. |
+| `allocation_probe_failed`, `probe_timeout`, `sampling_failed` | Shows why the allocation probe failed. Read the corresponding `srun` records. |
+| `gpu_partial_coverage` | Some provider output or allocation mapping was unavailable. The diagnostic retains only verified device attribution. |
 | `trace_read`, `trace_unavailable`, `trace_workdir_missing` | Shows the exact optional trace location, read result, and valid utilization count. |
 | `retained_samples` | Counts valid retained GPU measurements in this connection's local series cache. Malformed and unknown readings do not count as measurements. |
 | `job_not_found`, `job_details_identity` | Rejects missing or mismatched exact job evidence. Check the profile, user, and job ID. |
 | `nonindividual_queue_ids` | Skips compressed array groups and malformed IDs. Specify the exact array task. |
 | `job_limit`, `node_limit`, `diagnostic_budget` | Reports incomplete coverage caused by the stated limits. Run another exact-job check if required. |
 
-Live sampling uses Tower's ordinary `srun --jobid ... --overlap` NVIDIA query.
+Live sampling uses Tower's ordinary `srun --jobid ... --overlap` allocation helper
+with the selected provider. It requires `python3` and the relevant vendor tool
+on the compute node. Missing or ambiguous allocation ownership does not fall
+back to node-wide SSH measurements.
 It can create a short step inside an existing allocation.
 It does not submit, cancel, requeue, hold, or change jobs.
 The check does not start the dashboard, its plugins, or the sampler background loop.

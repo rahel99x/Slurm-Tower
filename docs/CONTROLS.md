@@ -886,6 +886,36 @@ See [Artifacts](guides/artifacts.md) for size limits, source identity, and decla
 
 ## Command families
 
+### Phase one inspection controls
+
+These controls are available in release 4.14. Inspectors do not submit jobs.
+See the [phase one guide](guides/phase-one.md) for source scope and limits.
+
+| Control | Function |
+| --- | --- |
+| **Metric sampling** on Sources, Analytics, or Research Experiment | Inspect read cadence and upstream collection evidence |
+| `:telemetry [JOBID]` | Inspect the selected or specified job; show cluster capabilities when no job is selected |
+| `:telemetry refresh` | Refresh the report and bypass the configuration cache |
+| `:telemetry copy`, `:telemetry close` | Copy or close the inspector report |
+| **GPU source**, or `:gpuprovider` | Open the provider choices; arrows choose, Enter applies, Esc returns |
+| `:gpuprovider auto\|nvidia\|amd\|intel` | Set the live GPU adapter; GPU sampling must also be enabled |
+| **Shell checks** in Research Submit or the resource submission form | Check the prepared local script; `h` is the form shortcut |
+| `:shellcheck [SCRIPT]` | Check an explicit local script, or the prepared plan's script when omitted |
+| `:shellcheck refresh` | Rerun the previous check |
+| **Load input map**, or `:arraymap [PATH]` | Load an explicit array manifest; omitted path opens a prompt |
+| **Browse inputs**, or `:arraymap inspect` | Inspect the attached scientific mapping |
+| `:arraymap search TEXT` | Search attached scientific entries |
+| **Reload map**, or `:arraymap reload` | Accept a reviewed current source revision |
+| **Detach map**, or `:arraymap clear` | Remove the session attachment |
+
+Research controls also apply to their inline Jobs and History Details views.
+The toolbar's Help menu exposes sampling capabilities and GPU provider
+selection. View also exposes GPU provider selection. Edit exposes shell checks
+and array mapping. Use Esc to leave an inspection. Shell checks reject remote
+and replay sessions, even when a path is explicit.
+
+### Command index
+
 These commands are available through the palette.
 The same command families are available through `tower run` when they do not require an interactive overlay.
 Quoted arguments preserve paths that contain spaces.
@@ -904,6 +934,7 @@ Job-changing commands open a review; scripted changes require `--yes`.
 | Log files and presentation | `find`, `wrap`, `bookmark`, `logview`, `logpan`, `loggroup`, `logpreview`, `logalign`, `logdiff`, `logjson`, `logfold`, `logunread` | [Log display](guides/log-view.md) |
 | Complete-file log inspection | `logolder`, `logsearch`, `logsearchmode`, `logresults`, `loggoto`, `logmark`, `logmarks` | [Log search](guides/log-search.md) |
 | Sampling and profiles | `rate`, `refresh`, `source`, `gpu`, `bell`, `profile`, `theme` | [Live workbench](guides/live-workbench.md#set-the-update-rate) |
+| Sampling evidence and GPU provider | `telemetry`, `gpuprovider` | [Phase one](guides/phase-one.md) |
 | Pointer navigation and motion | `focusbuttons`, `smoothscroll`, `startup` | [Mouse and button navigation](guides/pointer-navigation.md) |
 | Activity and output | `activity`, `notifications`, `task`, `export`, `exports`, `copy` | [Operations](guides/operations.md) |
 | Completion and alert delivery | `inbox`, `alerts` | [Operations](guides/operations.md) |
@@ -913,6 +944,7 @@ Job-changing commands open a review; scripted changes require `--yes`.
 | Output contracts | `artifacts`, `validate` | [Research](RESEARCH.md) |
 | Provenance | `passport` | [Research](RESEARCH.md) |
 | Submission preparation | `prepare`, `preflight`, `submit`, `array` | [Research](RESEARCH.md) |
+| Shell checks and scientific array mapping | `shellcheck`, `arraymap` | [Phase one](guides/phase-one.md) |
 | Resource and queue evidence | `predict`, `forecast`, `blockers`, `tradeoffs`, `choose` | [Planning](WAVE_TWO.md) |
 | Experiment and workflow execution | `scaling`, `workflow`, `orchestrate`, `execution` | [Planning](WAVE_TWO.md) |
 | Recorded sessions | `replay` | [Reference](reference.md#recording-and-replay) |

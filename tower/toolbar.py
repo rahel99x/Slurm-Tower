@@ -113,6 +113,7 @@ def menu_items(app, menu):
         ]
     if menu == "Edit":
         from .editor_yank import mode as copy_mode
+        array_attached = bool(getattr(app, "array_manifest_state", {}).get("manifest"))
         return [
             Item("copy-destination", "Switch to clipboard copying" if copy_mode(app) == "yank" else "Switch to Vim/Neovim yanking", local="copy-mode"),
             Item("copy", "Copy current selection", "copy"),
@@ -132,6 +133,8 @@ def menu_items(app, menu):
             Item("save-location", "Save current location...", "location save ", True),
             Item("locations", "Saved locations", "location list"),
             Item("settings", "Terminal and sampler settings", "settings"),
+            Item("shell-checks", "Check prepared shell script", "shellcheck"),
+            Item("array-map", "Array input mapping", "arraymap inspect" if array_attached else "arraymap"),
             Item("keys", "Edit and test keybindings", "keybindings"),
         ]
     if menu == "View":
@@ -166,6 +169,7 @@ def menu_items(app, menu):
             Item("wrap", "Wrap / unwrap current log", "wrap", context="log"),
             Item("refresh", "Refresh all sources now", "refresh"),
             Item("rate", "Focus update-rate slider", local="rate"),
+            Item("gpu-provider", "GPU source selection", "gpuprovider"),
             Item("rate-reset", "Reset queue polling to " + _polling_label(app, 1), "rate reset"),
             Item("workers-toggle", worker_toggle, "workers toggle", local="workers", context="workers"),
             Item("workers-single", "Use one background worker", "workers single", local="workers", context="workers"),
@@ -187,6 +191,8 @@ def menu_items(app, menu):
         Item("doctor", "Terminal diagnostics", "terminaldoctor"),
         Item("terminal-test", "Test keys, mouse, and glyphs", "terminaltest"),
         Item("sources", "Source health and freshness", "tab sources"),
+        Item("telemetry", "Metric sampling capabilities", "telemetry"),
+        Item("gpu-provider", "GPU source selection", "gpuprovider"),
         Item("activity", "Activity and background tasks", "activity"),
         Item("inbox", "Completed-job review inbox", "inbox all"),
         Item("alerts", "Alert and quiet-hour controls", "alerts"),

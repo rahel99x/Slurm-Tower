@@ -15,6 +15,7 @@ files or require a JSON Schema package.
 | [output-contract.v1.schema.json](output-contract.v1.schema.json) | `.tower/contracts/outputs.v1.json` | Native artifact contract loader and bounded validation |
 | [planning.v1.schema.json](planning.v1.schema.json) | Project or per-run `reports/planning.json`, plus per-view sources | Native planning-file views, exact run bindings, and offline analysis commands |
 | [submission-plan.v1.schema.json](submission-plan.v1.schema.json) | `runs/<run_id>/reports/submit.json` | Intact native preflight shown as read-only Submit evidence |
+| [array-manifest.schema.json](array-manifest.schema.json) | `reports/arrays/<cluster>-<array_id>.json` | Explicit `arraymap` attachment; exact cluster, parent, and task-index matching |
 
 `planning.v1.schema.json` also includes native workflow and scaling recipe
 definitions as `$defs.workflowRecipe` and `$defs.scalingRecipe`. Standalone
@@ -25,6 +26,11 @@ distinct `schema` markers `tower.run/v1` and `tower.summary/v1`; metric records
 carry no version or schema marker.
 The separate log index uses `tower.logs/v1`; inventory `paths.log_index` describes
 its location, while native `logs.manifest_file` binds it to the selected workdir.
+The separate array map uses `tower.array-manifest/v1`. It has a content revision
+and explicit attachment; placing the file in a project does not discover it
+automatically. Declared input/output paths are descriptive and are not opened.
+See [scientific array identities](../PROJECT_STANDARD.md#scientific-array-identities)
+for limits and reload rules.
 
 `run.json` and scientific `results` remain project-owned metadata. Tower reads
 bounded direct inventories beneath a known project root or standard selected

@@ -58,6 +58,10 @@ class ProbeBackend(Backend):
         if cmd[:2] == ["sh", "-c"]:
             assert "command -v" in cmd[2]
             return "\n".join(f"{name}|/usr/bin/{name}" for name in G.TOOLS), 0
+        if cmd[0] == "python3":
+            if "nvidia-smi" in self.errors:
+                raise CommandError(self.errors["nvidia-smi"])
+            return json.dumps(dict(tower_gpu=1, node="scheduler-host", vendors={"nvidia": {"metrics": self.host}}), separators=(",", ":")), 0
         if cmd[0] == "nvidia-smi":
             return self.host, 0
         if cmd[0] == "lspci":
@@ -77,7 +81,11 @@ class ProbeBackend(Backend):
         if cmd[0] == "srun":
             if isinstance(self.live, Exception):
                 raise self.live
-            return self.live, 0
+            # The production helper wraps vendor output with verified allocation metadata.
+            metrics = "\n".join(line.split(": ", 1)[-1] for line in self.live.splitlines())
+            jid = cmd[cmd.index("--jobid") + 1]
+            return "0: " + json.dumps(dict(tower_gpu=1, node="desktop", job_id=jid,
+                gpus="0", vendors={"nvidia": {"metrics": metrics}}), separators=(",", ":")), 0
         if cmd[0] == "ssh":
             if isinstance(self.ssh, Exception):
                 raise self.ssh
@@ -157,7 +165,8 @@ def test_success_probes_exact_allocation_and_preserves_host_scope():
     assert findings(result, "host_gpu_inventory")[0]["evidence"][0]["node"] == "scheduler-host"
     srun = next(cmd for cmd, _ in backend.calls if cmd[0] == "srun")
     assert srun[srun.index("--jobid") + 1] == "7"
-    assert srun[-len(NVSMI):] == NVSMI
+    assert "python3" in srun and "--label" in srun
+    assert "SLURM_STEP_GPUS" in srun[srun.index("-c") + 1]
     assert_read_only(backend)
 
 
@@ -315,25 +324,25 @@ def test_genuine_zero_utilization_is_graph_data():
     assert result["summary"]["jobs_with_graph_data"] == 1
 
 
-def test_srun_failure_and_ssh_failure_preserve_both_reasons():
+def test_srun_failure_preserves_reason_without_unsafe_ssh_fallback():
     backend = ProbeBackend(live=CommandError("srun: step creation temporarily disabled"),
                            ssh=CommandError("ssh: Permission denied (publickey)."))
     result = check(backend)
     problem = [item for item in result["checks"] if item["status"] == "error" and item.get("job_id") == "7"]
-    assert problem and "step creation" in problem[0]["detail"] and "Permission denied" in problem[0]["detail"]
+    assert problem and "step creation" in problem[0]["detail"] and "SSH fallback is disabled" in problem[0]["detail"]
     failures = {record["argv"][0]: record for record in result["commands"] if record["status"] == "error"}
     assert "step creation" in failures["srun"]["error"]
-    assert "Permission denied" in failures["ssh"]["error"]
+    assert "ssh" not in failures
     assert result["summary"]["jobs_with_graph_data"] == 0
 
 
-def test_srun_failure_with_ssh_success_records_fallback_source():
+def test_srun_failure_cannot_use_node_inventory_as_job_telemetry():
     backend = ProbeBackend(live=CommandError("srun: step creation temporarily disabled"))
     result = check(backend)
-    assert result["jobs"][0]["devices"][0]["node"] == "desktop"
-    assert findings(result, "live_samples", job="7")
+    assert "devices" not in result["jobs"][0]
+    assert not findings(result, "live_samples", job="7")
     assert any(item["argv"][0] == "srun" and item["status"] == "error" for item in result["commands"])
-    assert result["ok"]
+    assert not result["ok"]
 
 
 @pytest.mark.parametrize("detail,code", [("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver", "driver_unavailable"),
@@ -350,8 +359,8 @@ def test_non_nvidia_hardware_explains_sampler_scope():
     result = check(ProbeBackend(queue="", pci="01:00.0 VGA compatible controller: AMD Navi [1002:744c]\n",
                                 errors={"nvidia-smi": "nvidia-smi: not found"}))
     assert findings(result, "pci_gpu_inventory")
-    assert findings(result, "nvidia_backend_only")
-    assert "AMD/Intel" in findings(result, "nvidia_backend_only")[0]["next_step"]
+    assert findings(result, "gpu_provider_setup")
+    assert "amd, intel" in findings(result, "gpu_provider_setup")[0]["next_step"]
 
 
 def test_large_queue_and_node_lists_stay_within_detailed_probe_limits():
@@ -788,12 +797,10 @@ def test_native_check_file_pipeline_saves_exact_errors_and_finds_typed_fedora_al
     assert result["jobs"][0]["trace"]["path"] == str(project / "logs" / "gpu-util-7.csv")
     records = [json.loads(line) for line in (target / "commands.jsonl").read_text().splitlines()]
     srun = next(record for record in records if record["argv"][0] == "srun")
-    ssh = next(record for record in records if record["argv"][0] == "ssh")
+    assert not any(record["argv"][0] == "ssh" for record in records)
     assert srun["returncode"] == 11 and srun["stdout"] == "step stdout evidence\n"
     assert srun["stderr"] == "srun: step creation temporarily disabled: exact Fedora reason\n"
-    assert ssh["returncode"] == 255
-    assert ssh["stderr"] == "ssh: Permission denied (publickey): exact Fedora fallback reason\n"
-    assert findings(result, "permission_denied", job="7")
+    assert findings(result, "allocation_probe_failed", job="7")
     for argv in [json.loads(line) for line in audit.read_text().splitlines()]:
         assert Path(argv[0]).name not in {"sbatch", "scancel", "salloc"}
     assert not (tmp_path / "state").exists()

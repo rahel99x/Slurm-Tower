@@ -45,6 +45,15 @@ def render(views, snap, app, width, height):
     job = context["job"]
     if view in ("experiment", "evidence"):
         rows.append(row(f" Job {job.id}  {job.name}  {job.state}" if job else " No job selected", "cyan+bold"))
+    if view == "experiment":
+        import shlex
+        diagnostic_command = "telemetry" + (" " + shlex.quote(str(context.get("jid"))) if context.get("jid") else "")
+        controls, control_hits = buttons(g, width,
+            [("telemetry", "Metric sampling", ("command", diagnostic_command)),
+             ("gpu-provider", "GPU source", ("command", "gpuprovider"))],
+            group="research-tools", prefix="research-tools:")
+        hits += [(y + len(rows), kind, data) for y, kind, data in control_hits]
+        rows += controls
     structured = ((view == "experiment" and "series" in result) or (view == "artifacts" and "outputs" in result)
                   or view in ("predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow")
                   and any(key in result for key in ("metrics", "predicted_start", "evidence", "candidates", "points", "runs", "issues", "nodes")))
@@ -116,12 +125,16 @@ def render(views, snap, app, width, height):
         if result.get("truncated"):
             rows.append(row(" Bounded tail: earlier records are outside this inspection window.", "yellow"))
     elif view == "arrays":
+        from . import array_manifest_ui
         from .job_selection import selected, cleared
         from .job_group_ui import fold_icon
         from .array_disclosure import publish
         from collections import Counter
         import shlex
         groups = result.get("groups", [])
+        map_rows, map_hits = array_manifest_ui.controls(g, app, width)
+        hits.extend((y + len(rows), kind, value) for y, kind, value in map_hits)
+        rows.extend(map_rows)
         publish(app, groups)
         id_counts = Counter(group["id"] for group in groups)
         index = app.clamp_cursor("research", len(groups))
@@ -165,7 +178,16 @@ def render(views, snap, app, width, height):
                     app.research_task_offset = min(app.research_task_offset, max(0, ((count - 1) // 24) * 24))
                     rows.append(heading(f"task page / offset {app.research_task_offset}"))
                     for task in tasks(group, offset=app.research_task_offset, limit=24):
-                        rows.append(row(f"   {task.get('index')}  {task.get('state')}  elapsed {short_duration(task['duration']) if task.get('duration') is not None else '?'}",
+                        entry = array_manifest_ui.label(app, group, task.get("index"))
+                        manifest = array_manifest_ui.initialize(app)["manifest"]
+                        suffix = (" | " + entry.id + " / " + entry.label) if entry else (
+                            " | unmapped index" if manifest and manifest.matches(group["id"], group.get("cluster", "")) else "")
+                        if entry and width:
+                            hits.append((len(rows), "control", {"id": "arraymap-task:" + manifest.revision + ":" + str(entry.index),
+                                "label": "Inspect " + entry.id, "left": 0, "right": width,
+                                "action": ("command", "arraymap select " + manifest.revision + " " + str(entry.index)),
+                                "group": "array-mapped-tasks"}))
+                        rows.append(row(f"   {task.get('index')}  {task.get('state')}  elapsed {short_duration(task['duration']) if task.get('duration') is not None else '?'}" + suffix,
                                         STATES.get(task.get("state"), "dim")))
         rows.append(row(" :array retry ARRAYID SCRIPT --workdir DIR prepares only observed failed tasks.", "dim"))
     elif view == "evidence":
@@ -239,6 +261,13 @@ def render(views, snap, app, width, height):
         rows.extend(analysis_ui.passport_rows(g, passport, result.get("differences")))
     elif view == "submit":
         plan = result.get("plan") or {}
+        from .shell_checks_ui import summary as shell_summary
+        controls, control_hits = buttons(g, width,
+            [("shellcheck", "Shell checks", ("command", "shellcheck"))],
+            group="submit-tools", prefix="submit-tools:")
+        hits += [(y + len(rows), kind, data) for y, kind, data in control_hits]
+        rows += controls
+        rows.append(row(" " + shell_summary(app, plan), "dim"))
         rows.append(row(" Preflight " + ("ready for review" if plan.get("valid") else "blocked by validation issues"), "green" if plan.get("valid") else "red"))
         levels = ("error", "warning", "info")
         rows.extend(charts.stacked_bar(g, [(level, sum(issue.get("level") == level for issue in plan.get("issues", [])), style) for level, style in zip(levels, ("red", "yellow", "cyan"))], width, title="Preflight observations"))

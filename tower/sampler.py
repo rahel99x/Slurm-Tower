@@ -250,6 +250,9 @@ class Sampler(threading.Thread):
         key = context["targets"].get(str(jid))
         if key is not None:
             with self._schedule_lock:
+                if (name == "gpu" and context.get("provider_generation", 0)
+                        != getattr(self.slurm, "gpu_provider_generation", 0)):
+                    return
                 record = self._metric_jobs.get(str(jid))
                 if (self.store.jobs is self._metric_jobs_ref and record is not None
                         and key[2:] == record[1:] and record[0].state == "RUNNING"
@@ -335,12 +338,17 @@ class Sampler(threading.Thread):
         h = self.health(name)
         previous_context = getattr(self._sampling_context, "current", None)
         context = {"source": name, "targets": {}, "baseline": False}
+        if name == "gpu":
+            context["provider_generation"] = getattr(self.slurm, "gpu_provider_generation", 0)
         self._sampling_context.current = context
         t0 = time.perf_counter()
         h.last_try = time.time()
         try:
             self.sources[name]()
             with self.store.lock:
+                if (name == "gpu" and context["provider_generation"]
+                        != getattr(self.slurm, "gpu_provider_generation", 0)):
+                    return
                 h.calls += 1
                 h.latency_ms = 1000 * (time.perf_counter() - t0)
                 h.last_ok = time.time()
@@ -348,12 +356,18 @@ class Sampler(threading.Thread):
                 h.backoff = 0.0
         except CommandError as e:
             with self.store.lock:
+                if (name == "gpu" and context["provider_generation"]
+                        != getattr(self.slurm, "gpu_provider_generation", 0)):
+                    return
                 h.calls += 1
                 h.errors += 1
                 h.error = str(e)
                 h.backoff = min(300.0, max(self.intervals.get(name, 30.0), 2 * h.backoff))
         except Exception as e:                            # a bug in a source never stops the others
             with self.store.lock:
+                if (name == "gpu" and context["provider_generation"]
+                        != getattr(self.slurm, "gpu_provider_generation", 0)):
+                    return
                 h.calls += 1
                 h.errors += 1
                 h.error = f"{type(e).__name__}: {e}"
@@ -361,7 +375,9 @@ class Sampler(threading.Thread):
         finally:
             if context["baseline"] and name in ("live", "gpu", "trace"):
                 with self._schedule_lock:
-                    self._baseline_completed[name] = time.monotonic()
+                    if (name != "gpu" or context["provider_generation"]
+                            == getattr(self.slurm, "gpu_provider_generation", 0)):
+                        self._baseline_completed[name] = time.monotonic()
             self._sampling_context.current = previous_context
             with self.store.lock:
                 h.inflight = False
@@ -586,8 +602,27 @@ class Sampler(threading.Thread):
         while len(self._gpu_allocation_cache) > GPU_ALLOCATION_CACHE_MAX:
             self._gpu_allocation_cache.pop(next(iter(self._gpu_allocation_cache)))
 
+    def set_gpu_provider(self, provider):
+        """Invalidate current GPU observations without dropping historical data."""
+        with self.store.lock:
+            if not self.slurm.set_gpu_provider(provider):
+                return False
+            for jid in tuple(self.store.gpu):
+                self.store.apply_gpu(jid, None)
+            health = self.health("gpu")
+            health.error, health.backoff = "", 0.0
+        with self._schedule_lock:
+            self.last_run["gpu"] = 0.0
+            self._baseline_completed.pop("gpu", None)
+            for key in tuple(self._metric_completed):
+                if key[0] == "gpu":
+                    self._metric_completed.pop(key, None)
+        self.kick.set()
+        return True
+
     def src_gpu(self):
         with self.store.lock:
+            provider_generation = getattr(self.slurm, "gpu_provider_generation", 0)
             self._gpu_cache_reapply_locked(time.monotonic())
             running = [j for j in self.store.jobs if j.state == "RUNNING"]
             attempts = {j.id: self.store.job_attempt(j.id) for j in running}
@@ -661,18 +696,23 @@ class Sampler(threading.Thread):
                     self._sampling_complete("gpu", job.id)
                 with self.store.lock:
                     current = self.store.job(job.id)
-                    if (current is None or self.store.job_attempt(job.id) != attempts[job.id]
+                    if (getattr(self.slurm, "gpu_provider_generation", 0) != provider_generation
+                            or current is None or self.store.job_attempt(job.id) != attempts[job.id]
                             or self._gpu_identity(current) != identities[job.id]):
                         continue
                     self.store.apply_gpu(job.id, samples, _persist=False)
                     if error:
                         failures.append(error)
+                    else:
+                        warnings = getattr(self.slurm, "gpu_probe_warnings", {}).get(job.id, ())
+                        if warnings:
+                            failures.append(f"job {job.id}: partial GPU coverage: " + "; ".join(str(item)[:300] for item in warnings[:3]))
                 self.store.flush_persistence(_series_only=True)
         for fut in pending:
             fut.cancel()
         self.check_alerts()
         if failures or discovery_error:
-            reason = f"GPU sampling failed for {len(failures)}/{len(jobs)} jobs: {failures[0]}" if failures else ""
+            reason = f"GPU sampling incomplete for {len(failures)}/{len(jobs)} jobs: {failures[0]}" if failures else ""
             raise CommandError("; ".join(message for message in (discovery_error, reason) if message))
 
     def src_nodes(self):

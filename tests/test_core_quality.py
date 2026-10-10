@@ -202,7 +202,7 @@ def test_late_recording_response_after_shutdown_does_not_fail(tmp_path):
     assert recording.f.closed
 
 
-def test_gpu_ssh_fallback_retains_host_verification():
+def test_gpu_ssh_fallback_is_refused_without_allocation_ownership():
     class Backend:
         def __init__(self):
             self.calls = []
@@ -216,10 +216,10 @@ def test_gpu_ssh_fallback_retains_host_verification():
     backend = Backend()
     running = job()
     running.hosts = ["node01"]
-    assert Slurm(backend, "user").gpu(running)[0].util == 50
-    ssh = backend.calls[-1]
-    assert "StrictHostKeyChecking=yes" in ssh
-    assert ssh[ssh.index("--") + 1] == "node01"
+    running.gpus = 1
+    with pytest.raises(CommandError, match="SSH fallback is disabled"):
+        Slurm(backend, "user").gpu(running)
+    assert all(cmd[0] != "ssh" for cmd in backend.calls)
 
 
 def test_trace_at_exact_size_keeps_its_first_complete_sample():

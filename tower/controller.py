@@ -1922,6 +1922,24 @@ class App:
         if button in ("press", "left"):
             from .scrollbars import commit_selection_gesture
             commit_selection_gesture(self)
+        # These inspection dialogs own the whole pointer stream. A click or
+        # drag must never reach a graph, selection, or tab underneath them.
+        modal_modules = workbench.INSPECTION_MODES
+        if self.mode in modal_modules:
+            from .interaction import handle_mouse as pointer_mouse
+            pointer_mouse(self, y, x, button="motion", shift=shift)
+            from .scrollbars import handle_mouse as modal_scrollbar
+            if modal_scrollbar(self, y, x, button=button, shift=shift):
+                return
+            from .toolbar import handle_mouse as modal_toolbar
+            if modal_toolbar(self, y, x, button=button, shift=shift):
+                return
+            if fresh_activation and published_graph is not None and not content_current:
+                return
+            from importlib import import_module
+            modal = import_module("tower." + modal_modules[self.mode])
+            modal.handle_mouse(self, y, x, button=button, shift=shift)
+            return
         from .history_log_export import active as export_active, handle_mouse as export_mouse
         from .scrollbars import handle_mouse as scrollbar_mouse
         from .job_group_drag import active as group_drag_active, pending as group_drag_pending, handle_mouse as group_drag_mouse

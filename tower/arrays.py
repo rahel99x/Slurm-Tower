@@ -294,8 +294,11 @@ def summarize(jobs: Iterable[Any], finished: Iterable[Any] = (), *, max_groups: 
             if key not in groups:
                 if len(groups) >= max_groups:
                     continue
-                groups[key] = {"id": base, "cluster": cluster, "name": str(_get(record, "name")), "records": [], "declared": [], "exact": True, "warnings": [], "input_parts": 0}
+                groups[key] = {"id": base, "cluster": cluster, "name": str(_get(record, "name")), "records": [], "declared": [], "exact": True, "warnings": [], "input_parts": 0, "submit_times": []}
             group = groups[key]
+            submitted = str(_get(record, "submit"))
+            if submitted and submitted.upper() not in ("UNKNOWN", "N/A", "NONE") and len(group["submit_times"]) < 2 and submitted not in group["submit_times"]:
+                group["submit_times"].append(submitted)
             try:
                 if not match and not declaration:
                     raise ValueError("malformed array task identity")

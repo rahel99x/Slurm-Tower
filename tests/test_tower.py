@@ -426,7 +426,8 @@ def test_command_palette_and_analytics_views(tmp_path):
         app.handle("pgdn")
         rows, _ = views.compose(store.snapshot(), app, 150, 44, actions)
     assert any(plot.key[2].startswith("gpu:") for plot in chart_interaction.initialize(app)["plots"])
-    assert any(plot.key[2].startswith(("gpu:a01-05:0:", "gpu:task0:0:"))
+    gpu_keys = {f"gpu:{sample.device_key}:" for sample in store.gpu["12477369"]}
+    assert any(any(plot.key[2].startswith(key) for key in gpu_keys)
                for plot in chart_interaction.initialize(app)["plots"])
     app.analytics_view = "history"
     text = "\n".join(L.row_text(r) for r, in zip(views.compose(store.snapshot(), app, 150, 44, actions)[0:1]) for r in r)

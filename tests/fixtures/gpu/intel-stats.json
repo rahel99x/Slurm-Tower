@@ -1,0 +1,1 @@
+{"device_id":0,"device_level":[{"metrics_type":"XPUM_STATS_GPU_UTILIZATION","value":63.5},{"metrics_type":"XPUM_STATS_MEMORY_USED","value":1024}],"tile_level":[{"tile_id":0,"data_list":[{"metrics_type":"XPUM_STATS_GPU_UTILIZATION","value":90}]}]}

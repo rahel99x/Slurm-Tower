@@ -1,0 +1,1 @@
+[{"gpu": 0, "bdf": "0000:01:00.0", "uuid": "AMD-1111", "kfd_id": 1, "node_id": 0, "partition_id": 0}, {"gpu": 1, "bdf": "0000:02:00.0", "uuid": "AMD-2222", "kfd_id": 2, "node_id": 1, "partition_id": 1}]

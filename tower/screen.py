@@ -814,6 +814,12 @@ def _apply_input(app, event, hits, curses):
         commit_selection_gesture(app)
     from .startup import handle_mouse as startup_mouse
     startup_mouse(app, my, mx, button=button, shift=shift)
+    from .workbench import INSPECTION_MODES
+    if app.mode in INSPECTION_MODES:
+        # Inspection dialogs own motion, release and wheel events as well as
+        # clicks. Do not run underlying pane/browser pre-dispatch handlers.
+        app.click(my, mx, hits, button=button, shift=shift)
+        return
     from .history_log_export import active as export_active, handle_mouse as export_mouse
     from .scrollbars import handle_mouse as scrollbar_mouse
     from .job_group_drag import active as group_drag_active, pending as group_drag_pending, handle_mouse as group_drag_mouse

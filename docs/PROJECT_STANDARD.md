@@ -47,7 +47,9 @@ my-project/
 │       │   └── stderr.log
 │       └── passports/           immutable Tower provenance records
 ├── reports/
-│   └── planning.json            bounded aggregate of explicitly selected runs
+│   ├── planning.json            bounded aggregate of explicitly selected runs
+│   └── arrays/
+│       └── <cluster>-<array_id>.json  optional exact-index scientific mapping
 └── logs/                        optional Slurm output opened before job startup
 ```
 
@@ -85,6 +87,51 @@ the stable workload name would prevent comparison of repeated work.
 For an array task, use the array's parent job ID plus task index as its Slurm
 identity. Keep every task's reports separate. Batch/extern steps and repeated
 snapshots are not independent experiments.
+
+### Scientific array identities
+
+For a submitted array, publish an optional
+`reports/arrays/<cluster>-<array_id>.json` using
+[`tower.array-manifest/v1`](schemas/array-manifest.schema.json). The
+[example](../examples/array-manifest.json) shows the required structure.
+This file maps actual array indices to scientific IDs, labels, scalar
+parameters, and declared input/output paths.
+
+Use the exact cluster and parent array ID from the scheduler records. An empty
+cluster is an exact empty identity, not a wildcard. Each entry requires a
+unique integer `index` and a unique scientific `id`; `label` defaults to that
+ID. Sparse indices are valid. Preserve one complete revision per launch and
+use a new parent binding for retries submitted as a new array.
+
+Attach it with `:arraymap /absolute/project/reports/arrays/CLUSTER-ARRAYID.json`
+or **Load input map** in Research Arrays. `:arraymap inspect` opens the mapping;
+`:arraymap search TEXT` filters scientific entries. The same controls are
+available in Jobs and History Details. A job row keeps its actual Slurm ID.
+
+This is an explicit attachment in release 4.14. Adding the file to this
+directory, or adding arbitrary fields to `run.json`, does not auto-discover it.
+Tower watches the attached file's stat in the background and reports a changed
+source. It retains the validated revision until `:arraymap reload` is requested.
+Retry plans that use the mapping verify its revision before proceeding.
+Only one map is attached per session. Its connection and exact cluster/parent
+scope must match. An available submission timestamp also guards the observed
+attempt; conflicting or reused-parent evidence requires reattachment. If Slurm
+exposes no submission timestamp, Tower displays that limitation and does not
+claim to distinguish reused parent IDs by attempt.
+
+Paths in an entry are descriptive declarations. Use project-relative paths for
+portability, but do not expect this reader to resolve, open, validate, or stage
+them. The array mapping does not replace per-task `run.json`, `logs.json`,
+metrics, or output contracts.
+
+Limits are 4 MiB per manifest, 10,000 explicit entries, 64 scalar parameters per
+entry, and 32 input and 32 output paths per entry. Tower rejects duplicate
+keys/indices/IDs, nonfinite numbers, invalid fields, and concurrent writes.
+An unmapped task stays unmapped. See the
+[phase one guide](guides/phase-one.md#attach-a-scientific-array-manifest) for all
+controls and source-change behavior.
+
+### Group identity and shared paths
 
 Use a shared launch marker when several independent jobs belong to one submitted batch.
 See [Group jobs from one launch](guides/batch-launches.md) for scheduler markers, local tags, automatic deduction, and historical coverage.

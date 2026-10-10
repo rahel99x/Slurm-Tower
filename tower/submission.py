@@ -273,6 +273,8 @@ def _digest(plan: dict) -> str:
     fields = {key: plan[key] for key in ("schema", "script", "workdir", "argv", "command", "overrides", "script_sha256",
                                        "parameters", "inputs", "outputs", "resources", "directives", "issues", "valid")}
     fields.update({key: plan[key] for key in ("workflow_node_id", "symbolic_dependencies", "workflow_orchestration", "requires_workflow_orchestration", "submittable") if key in plan})
+    if isinstance(plan.get("array_retry"), dict) and "manifest" in plan["array_retry"]:
+        fields["array_retry"] = plan["array_retry"]
     _metadata_bound(fields, depth_limit=24)
     try:
         data = json.dumps(fields, sort_keys=True, ensure_ascii=True, allow_nan=False).encode()
@@ -433,6 +435,13 @@ def _revalidate(plan: dict, slurm) -> dict:
     if not plan.get("valid") or not fresh["valid"]:
         messages = "; ".join(item["message"] for item in fresh["issues"] if item["level"] == "error")
         raise ValueError("submission preflight failed: " + (messages or "original plan was invalid"))
+    if isinstance(plan.get("array_retry"), dict) and "manifest" in plan["array_retry"]:
+        from .array_manifest import validate_retry
+        from .remote import LocalFiles
+        import copy
+        validate_retry(plan, LocalFiles())
+        fresh["array_retry"] = copy.deepcopy(plan["array_retry"])
+        fresh["plan_id"] = _digest(fresh)
     return fresh
 
 
@@ -466,8 +475,14 @@ def submit(plan: dict, slurm, passport_directory: str | os.PathLike | None = Non
     try:
         fresh = _revalidate(plan, slurm)
         from . import provenance
+        resources = dict(fresh["resources"])
+        mapping = fresh.get("array_retry", {}).get("manifest")
+        if mapping:
+            # The passport keeps a compact immutable linkage; the reviewed plan
+            # and submission receipt retain the complete selected entry records.
+            resources["tower_array_manifest"] = {key: mapping[key] for key in ("schema", "source", "revision", "cluster", "array_id")}
         passport = provenance.capture(fresh["workdir"], script=fresh["script"],
-                                      resources=fresh["resources"], parameters=fresh["parameters"], inputs=fresh["inputs"])
+                                      resources=resources, parameters=fresh["parameters"], inputs=fresh["inputs"])
         passport_path = str(provenance.save(passport, passport_directory)) if passport_directory is not None else None
         # Capture performs bounded file reads too. Recheck the script, declared
         # inputs, cwd, and hidden sbatch environment options immediately before
@@ -489,6 +504,8 @@ def submit(plan: dict, slurm, passport_directory: str | os.PathLike | None = Non
                   "state": "unknown" if uncertain or (ok and not jid) else "accepted" if ok else "rejected",
                   "output": output, "job_id": jid,
                   "command": fresh["command"], "passport": passport, "passport_path": passport_path}
+        if mapping:
+            result["array_retry"] = fresh["array_retry"]
         if ok and not jid:
             result["error"] = "Slurm accepted the command but returned no unambiguous job ID; inspect the queue before retrying"
         elif uncertain:

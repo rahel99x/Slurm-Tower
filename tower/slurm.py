@@ -4,6 +4,8 @@ small cluster that evolves in time, so the parsers, the screen and the tests all
 from __future__ import annotations
 
 import os
+import json
+import threading
 import math
 import re
 import subprocess
@@ -216,12 +218,31 @@ class FakeBackend(Backend):
                         raise CommandError("srun: job step creation temporarily disabled")
                     lines = []
                     for task in range(s["nodes"]):
+                        metrics = []
                         for i in range(s["gn"]):
                             util = 50 + 45 * abs(((t / 7 + i + task) % 2) - 1)
-                            lines.append(f"{task}: {i}, {util:.0f}, {12390 + 900 * i}, 40960, NVIDIA A100-SXM4-40GB")
+                            metrics.append(f"{i}, {util:.0f}, {12390 + 900 * i}, 40960, NVIDIA A100-SXM4-40GB, GPU-fake-{task}-{i}, 0000:{i:02x}:00.0")
+                        payload = dict(tower_gpu=1, node=f"task{task}", job_id=jid,
+                                       gpus=",".join(str(i) for i in range(s["gn"])),
+                                       vendors={"nvidia": {"metrics": "\n".join(metrics)}})
+                        provider = cmd[-3] if "python3" in cmd else "auto"
+                        if provider == "amd":
+                            payload["vendors"] = {"amd": {
+                                "inventory": json.dumps([dict(gpu=i, uuid=f"AMD-fake-{task}-{i}", partition_id=0) for i in range(s["gn"])]),
+                                "metrics": json.dumps([dict(gpu=i, usage={"gfx_activity": float(metrics[i].split(",")[1])},
+                                    mem_usage={"used_vram": 12390 + 900 * i, "total_vram": 40960}) for i in range(s["gn"])])}}
+                        elif provider == "intel":
+                            payload["vendors"] = {"intel": {
+                                "inventory": json.dumps({"device_list": [dict(device_id=i, uuid=f"Intel-fake-{task}-{i}") for i in range(s["gn"])]}),
+                                "metrics": json.dumps([dict(device_id=i, device_level=[
+                                    dict(metrics_type="XPUM_STATS_GPU_UTILIZATION", value=float(metrics[i].split(",")[1])),
+                                    dict(metrics_type="XPUM_STATS_MEMORY_USED", value=12390 + 900 * i)]) for i in range(s["gn"])])}}
+                        lines.append(f"{task}: " + json.dumps(payload, separators=(",", ":")))
                     return "\n".join(lines) + "\n", 0.3
             raise CommandError("srun: no allocation")
         if name == "scontrol":
+            if cmd[1:3] == ["show", "config"]:
+                return "ClusterName = fake\nJobAcctGatherType = jobacct_gather/linux\nJobAcctGatherFrequency = task=30\n", 0.01
             if "hostnames" in cmd:
                 nl = cmd[-1]
                 m = re.match(r"^(.*)\[(\d+)-(\d+)\]$", nl)
@@ -724,7 +745,13 @@ def parse_share(text: str) -> List[dict]:
 
 # ------------------------------------------------------------------------------------------------ the layer
 class Slurm:
-    def __init__(self, backend: Backend, user: str, timeout: float = 8.0, gpu_timeout: float = 12.0, action_timeout: float = 15.0):
+    def __init__(self, backend: Backend, user: str, timeout: float = 8.0, gpu_timeout: float = 12.0, action_timeout: float = 15.0, gpu_provider: str = "auto"):
+        from .gpu_collectors import provider_name
+        self._gpu_lock = threading.Lock()
+        self.gpu_provider = provider_name(gpu_provider)
+        self.gpu_provider_generation = 0
+        self._gpu_inventory = {}
+        self.gpu_probe_warnings = {}
         self.b, self.user = backend, user
         self.timeout, self.gpu_timeout, self.action_timeout = timeout, gpu_timeout, action_timeout
         self._hosts: Dict[str, List[str]] = {}
@@ -768,31 +795,70 @@ class Slurm:
                 keep = (now, cpu)
         return Live(cpu_time=cpu, rss=rss, avg=avg, rate=rate, t=now), keep, steps
 
+    def set_gpu_provider(self, provider: str) -> bool:
+        """Change the adapter without allowing in-flight old-provider results."""
+        from .gpu_collectors import provider_name
+        provider = provider_name(provider)
+        with self._gpu_lock:
+            if provider == self.gpu_provider:
+                return False
+            self.gpu_provider = provider
+            self.gpu_provider_generation += 1
+            self._gpu_inventory.clear()
+            self.gpu_probe_warnings.clear()
+            return True
+
     def gpu(self, job: Job) -> List[GpuSample]:
-        reasons = []
+        from .gpu_collectors import MAX_NODES, parse_probe_output, probe_command
+        if job.state != "RUNNING" or not job.gpus:
+            raise CommandError(f"GPU telemetry unavailable for job {job.id}: no running GPU allocation")
+        if not re.fullmatch(r"[0-9]+(?:_[0-9]+)?(?:\+[0-9]+)?", job.id):
+            raise CommandError("GPU probe requires an exact Slurm job ID")
+        if not 1 <= job.nodes <= MAX_NODES:
+            raise CommandError(f"GPU probe supports at most {MAX_NODES} nodes per allocation")
+        with self._gpu_lock:
+            provider, generation = self.gpu_provider, self.gpu_provider_generation
+            now = time.monotonic()
+            allocation_key = (job.id, job.start, job.nodelist)
+            entries = {host: (until, value) for (owner, host), (until, value) in self._gpu_inventory.items()
+                       if owner == allocation_key and until > now}
+            cache = {host: value for host, (until, value) in entries.items()}
+        command = ["srun", "--jobid", job.id, "--overlap", "--immediate=5", "--quiet",
+                   "-N", str(job.nodes), "--ntasks", str(job.nodes), "--ntasks-per-node=1", "--cpus-per-task=1", "--label"]
+        command += probe_command(provider, max(.2, self.gpu_timeout - 2), cache)
         try:
-            out, _ = self.b.run(["srun", "--jobid", job.id, "--overlap", "--immediate=5", "--quiet", "-N", str(job.nodes), "--ntasks-per-node=1", "--label"] + NVSMI, self.gpu_timeout)
-            rows = parse_nvsmi(out, labelled=True)
-            if rows:
-                return rows
-            reasons.append("srun: nvidia-smi returned no parseable GPU rows")
-        except CommandError as exc:
-            reasons.append(f"srun: {str(exc)[:400]}")
-        rows = []
-        for node in job.hosts:
-            try:
-                out, _ = self.b.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=yes", "--", node] + NVSMI, self.gpu_timeout)
-                rows += parse_nvsmi(out, labelled=False, node=node)
-                if not rows and len(reasons) < 5:
-                    reasons.append(f"ssh {node}: nvidia-smi returned no parseable GPU rows")
-            except CommandError as exc:
-                if len(reasons) < 5:
-                    reasons.append(f"ssh {node}: {str(exc)[:400]}")
-                continue
+            out, _ = self.b.run(command, self.gpu_timeout)
+            rows, inventory, warnings = parse_probe_output(out, job_id=job.id, expected_nodes=job.nodes)
+            if len(rows) > job.gpus:
+                raise ValueError("GPU device count exceeds the requested job allocation; refusing attribution")
+            if rows and len(rows) < job.gpus:
+                warnings.append(f"Observed {len(rows)}/{job.gpus} allocated GPU units; missing devices are not idle measurements")
+        except (CommandError, ValueError) as exc:
+            raise CommandError(f"GPU telemetry unavailable for job {job.id}: srun: {str(exc)[:800]}; "
+                               "node-wide SSH fallback is disabled because it cannot establish allocation ownership") from exc
+        with self._gpu_lock:
+            if generation != self.gpu_provider_generation:
+                raise CommandError("GPU provider changed while sampling; stale reply discarded")
+            # Cache topology discovery, never live counters. Bounded and expires
+            # to discover device/partition changes without probing every frame.
+            now = time.monotonic()
+            # Merge current state: other GPU workers may have populated this
+            # cache while the allocation probe ran without the lock.
+            self._gpu_inventory = {key: value for key, value in self._gpu_inventory.items() if value[0] > now}
+            self.gpu_probe_warnings[job.id] = tuple(warnings)
+            if len(self.gpu_probe_warnings) > 1024:
+                self.gpu_probe_warnings.pop(next(iter(self.gpu_probe_warnings)))
+            for host, value in inventory.items():
+                key = (allocation_key, host)
+                until = entries[host][0] if host in entries else now + 30
+                current = self._gpu_inventory.get(key)
+                if until > now and (current is None or current[0] <= until):
+                    self._gpu_inventory[key] = (until, value)
+            while len(self._gpu_inventory) > MAX_NODES:
+                self._gpu_inventory.pop(next(iter(self._gpu_inventory)))
         if not rows:
-            if not job.hosts:
-                reasons.append("ssh fallback: allocation has no resolved hosts")
-            raise CommandError(f"GPU telemetry unavailable for job {job.id}: " + "; ".join(reasons))
+            reason = "; ".join(warnings) or "no GPU device could be matched to this allocation"
+            raise CommandError(f"GPU telemetry unavailable for job {job.id}: {reason}")
         return rows
 
     def gpu_allocations(self) -> Dict[str, Tuple[str, int]]:

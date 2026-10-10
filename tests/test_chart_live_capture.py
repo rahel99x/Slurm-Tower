@@ -179,9 +179,11 @@ def test_new_project_ribbon_cancels_actual_jobs_chart_layout_change(dashboard):
 
 @pytest.mark.parametrize("tab", ["analytics", "jobs"])
 @pytest.mark.parametrize("metric", ["cpu-rate", "resident-memory"])
-def test_retained_native_samples_can_leave_frozen_window_without_cancelling_capture(dashboard, tab, metric):
+@pytest.mark.parametrize("ascii_", [False, True])
+@pytest.mark.parametrize("width", [150, 190, 240])
+def test_retained_native_samples_can_leave_frozen_window_without_cancelling_capture(dashboard, tab, metric, ascii_, width):
     d, app = dashboard, dashboard.app
-    d.draw(tab)
+    d.draw(tab, ascii_, width=width)
     original = _metric(d, metric)
     d.mouse(original, "press")
     assert C.active(app)
@@ -193,16 +195,16 @@ def test_retained_native_samples_can_leave_frozen_window_without_cancelling_capt
     for index in range(20):
         d.store.record("7", {"k": "live", "t": 400.0 + index, "cpu": .9,
                              "rss": 50 * 1024**3})
-    d.draw(tab)
+    d.draw(tab, ascii_, width=width)
     current = _metric(d, metric)
     assert C.active(app) and current.kind == "metric-empty"
     assert current.x_bounds == original.x_bounds and current.y_bounds == original.y_bounds
     assert current.rect == original.rect and current.visible == original.visible
     d.mouse(original, "release", x=original.visible.right - 4)
     assert not C.active(app) and C.bounds(app, original.key) is not None
-    d.draw(tab)
+    d.draw(tab, ascii_, width=width)
     assert _metric(d, metric).kind == "metric-empty"
     app.click(current.visible.top + 1, current.visible.left + 4, app.last_hits, button="right")
-    d.draw(tab)
+    d.draw(tab, ascii_, width=width)
     assert _metric(d, metric).kind == "metric"
     assert _metric(d, metric).x_bounds == (400.0, 410.0)

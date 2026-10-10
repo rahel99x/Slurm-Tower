@@ -329,6 +329,16 @@ Only observed failures are eligible. Ambiguous, malformed, or excessively
 complex range evidence is reported rather than silently converted into a broad
 retry. Bounded grouping and paging limit UI work as campaigns grow.
 
+Scientific array manifests add labels, parameters, and declared paths to actual
+task indices. Use `:arraymap` to inspect the attachment. See
+[Scientific array manifests](guides/phase-one.md#attach-a-scientific-array-manifest)
+for the schema, controls, and mapping limits. A manifest does not change
+scheduler identity, infer task order, or submit a retry.
+
+Submission review also offers an explicit local shell check. See
+[Check a batch script](guides/phase-one.md#check-a-batch-script) for syntax
+checks, optional ShellCheck, and handling of remote paths.
+
 ## Evidence-based failure investigation
 
 Select a job from Jobs or History, then open Evidence, or use

@@ -71,7 +71,7 @@ def test_live_usage_corrections_invalidate_in_place(case, field):
     assert lookup(case)[1] is None
 
 
-@pytest.mark.parametrize("change", ["gpu-util", "gpu-node", "gpu-index", "gpu-mean", "tag", "note", "pin", "progress"])
+@pytest.mark.parametrize("change", ["gpu-util", "gpu-node", "gpu-index", "gpu-vendor", "gpu-uuid", "gpu-bdf", "gpu-partition", "gpu-mean", "tag", "note", "pin", "progress"])
 def test_telemetry_tags_and_progress_corrections_remain_current(case, change):
     snap, progress = case[2:4]
     if change.startswith("gpu-") and change != "gpu-mean":

@@ -1,5 +1,6 @@
 """GPU collection regressions for per-job Slurm TRES and unavailable counters."""
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -73,7 +74,7 @@ def test_per_job_gpu_allocation_is_discovered_without_scontrol_or_cpu_probes():
                 assert cmd == ["squeue", "-u", "alex", "-h", "-O", GPU_ALLOC_FMT]
                 return "7|cpu=8,gres/gpu=1,gres/gpu:rtx4090=1\n8|cpu=8\n7_1|gres/gpu=4\n", 0
             assert cmd[0] == "srun" and cmd[cmd.index("--jobid") + 1] == "7"
-            return "0: 0, 75, 2000, 24000, NVIDIA RTX 4090\n", 0
+            return json.dumps(dict(tower_gpu=1, node="desktop", job_id="7", gpus="0", vendors={"nvidia": {"metrics": "0, 75, 2000, 24000, NVIDIA RTX 4090"}}), separators=(",", ":")), 0
 
     backend = Backend()
     sampler, store = make_sampler(Slurm(backend, "alex"), [
@@ -97,7 +98,7 @@ def test_unsupported_allocation_field_is_probed_once_then_legacy_gpu_still_sampl
             self.calls.append(cmd)
             if cmd[0] == "squeue":
                 raise CommandError("squeue: Invalid job format specification: tres-alloc")
-            return "0: 0, 50, 512, 1024, GPU\n", 0
+            return json.dumps(dict(tower_gpu=1, node="desktop", job_id="2", gpus="0", vendors={"nvidia": {"metrics": "0, 50, 512, 1024, GPU"}}), separators=(",", ":")), 0
 
     backend = Backend()
     sampler, store = make_sampler(Slurm(backend, "alex"), [
@@ -206,7 +207,7 @@ def test_unmeasured_gpu_does_not_bias_measured_gpu_average():
     assert len(store.gpu["7"]) == 2
 
 
-def test_both_original_gpu_command_errors_reach_source_health():
+def test_original_gpu_probe_failure_reaches_source_health_without_unsafe_fallback():
     class Backend:
         def run(self, cmd, timeout):
             if cmd[0] == "srun":
@@ -218,7 +219,7 @@ def test_both_original_gpu_command_errors_reach_source_health():
         Slurm(Backend(), "alex").gpu(job)
     assert "job 7" in str(exc.value)
     assert "Requested nodes are busy" in str(exc.value)
-    assert "Permission denied (publickey)" in str(exc.value)
+    assert "SSH fallback is disabled" in str(exc.value)
 
 
 @pytest.mark.parametrize("source", ["live", "finished", "departed"])

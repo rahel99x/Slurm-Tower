@@ -57,6 +57,21 @@ def modal_frame(dashboard, width=120, height=36):
     return rows
 
 
+def sampling_tool_rows(hits):
+    """Account for visible diagnostic controls without fixing their wrapping.
+
+    Card heights remain exact assertions below. Only the independent toolbar
+    can occupy a different number of rows as terminal width changes.
+    """
+    controls = [(y, value) for y, kind, value in hits
+                if kind == "control" and value.get("group") == "research-tools"]
+    assert {value["id"] for _, value in controls} == {
+        "research-tools:telemetry", "research-tools:gpu-provider"}
+    assert {value["action"] for _, value in controls} == {
+        ("command", "telemetry 1"), ("command", "gpuprovider")}
+    return len({y for y, _ in controls})
+
+
 @pytest.mark.parametrize("width", [23, 24, 35, 36, 120])
 @pytest.mark.parametrize("jid", ["1", "2", "3", "missing"])
 def test_reported_live_controls_only_exist_for_the_exact_current_running_job(dashboard, width, jid):
@@ -169,7 +184,7 @@ def test_virtual_dashboard_has_identical_card_rows_and_total_at_every_scroll_win
     full_rows, full_hits = research_frame(dashboard, height=None)
     total = dashboard.app.research_rows
     metric_rows = {value: y for y, kind, value in full_hits if kind == "research_metric"}
-    assert total == 3 + 24 * 11 + 5 + 1 + 2
+    assert total == 3 + sampling_tool_rows(full_hits) + 24 * 11 + 5 + 1 + 2
     calls, raster = [], A.charts.braille_chart
     monkeypatch.setattr(A.charts, "braille_chart", lambda *args, **kwargs: (calls.append(1), raster(*args, **kwargs))[1])
     dashboard.app.research_document_mode = True
@@ -192,7 +207,7 @@ def test_hidden_or_unidentifiable_controls_do_not_reserve_phantom_document_rows(
     full_rows, full_hits = research_frame(dashboard, width, height=None)
     full_count = dashboard.app.research_rows
     expected_control_rows = int(width >= M.MIN_WIDTH and not unsupported)
-    assert full_count == 3 + 12 * (10 + expected_control_rows)
+    assert full_count == 3 + sampling_tool_rows(full_hits) + 12 * (10 + expected_control_rows)
     dashboard.app.research_document_mode = True
     dashboard.app.research_document_window = (40, 60)
     rows, hits = research_frame(dashboard, width, height=20)

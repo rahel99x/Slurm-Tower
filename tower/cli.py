@@ -52,6 +52,8 @@ class Session:
         cancel_log_export(self.app, close=True)
         from .execution_ui import close
         close(self.app)
+        from .shell_checks_ui import close as close_shell_checks
+        close_shell_checks(self.app)
         self.app.save()
         if getattr(self.app, "research", None):
             self.app.research.close()
@@ -164,6 +166,8 @@ def build(args, cfg: Config) -> Session:
     if worker_mode not in ("single", "multi"):
         raise ValueError("worker_mode must be single or multi")
     cfg.set("worker_mode", worker_mode)
+    if cfg.get("gpu_provider", "auto") not in ("auto", "nvidia", "amd", "intel"):
+        raise ValueError("gpu_provider must be auto, nvidia, amd, or intel")
     if getattr(args, "workers", None):
         cfg.ui_locked_settings = set(getattr(cfg, "ui_locked_settings", ())) | {"worker_mode"}
     from .refresh_rate import poll_position, validate_multiplier
@@ -175,7 +179,8 @@ def build(args, cfg: Config) -> Session:
     if args.fake and not user:
         user = "alex"
     backend, files, replay, user = make_backend(args, cfg, user)
-    slurm = Slurm(backend, user, timeout=cfg["timeouts"]["command"], gpu_timeout=cfg["timeouts"]["gpu"], action_timeout=cfg["timeouts"]["action"])
+    slurm = Slurm(backend, user, timeout=cfg["timeouts"]["command"], gpu_timeout=cfg["timeouts"]["gpu"], action_timeout=cfg["timeouts"]["action"],
+                  gpu_provider=cfg.get("gpu_provider", "auto"))
     sdir = None if (args.no_state or args.fake or args.replay) else scoped_state_dir(backend, cfg, user)
     store = Store(state_dir=sdir, persist=sdir is not None, series_keep=int(cfg["series_keep"]))
     if args.interval:
@@ -208,6 +213,8 @@ def build(args, cfg: Config) -> Session:
     app = App(store, sampler, actions, cfg, user, ascii_=ascii_, interactive=not (args.once or args.json or args.csv or args.watch or args.run or args.eval or args.wait_for or args.report))
     from .worker_ui import bind
     bind(app, governor)
+    from .gpu_provider_ui import bind as bind_gpu_provider
+    bind_gpu_provider(app)
     app.plugins, app.files, app.views_ref = api, files, views
     app.demo = bool(args.fake)
     app.logs.files = files

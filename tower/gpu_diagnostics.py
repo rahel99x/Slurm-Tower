@@ -1,7 +1,7 @@
 """Bounded GPU evidence from the actual scheduler, allocation and file paths.
 
 No sampler, plugins, job submission, or configuration writes are required.
-Live probes run nvidia-smi through Tower's existing allocation sampling path.
+Live probes run vendor tools through Tower's allocation-scoped sampling path.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import time
 
 from . import __version__
 from .model import gres_gpus
+from .gpu_collectors import parse_probe_output, probe_command
 from .remote import LocalFiles, SshBackend
 from .slurm import Backend, CommandError, JOB_FMT, NVSMI, SACCT_FIELDS, Slurm, parse_jobs, parse_nvsmi, parse_sacct
 
@@ -30,7 +31,7 @@ MAX_TRACE = 1 << 20
 MAX_SERIES = 2 << 20
 DEADLINE = 60.0
 JOB_ID = re.compile(r"[0-9]+(?:_[0-9]+)?(?:\+[0-9]+)?\Z")
-TOOLS = ("squeue", "scontrol", "sacct", "srun", "nvidia-smi", "ssh", "lspci")
+TOOLS = ("squeue", "scontrol", "sacct", "srun", "python3", "nvidia-smi", "amd-smi", "xpu-smi", "ssh", "lspci")
 TOOL_PROBE = ('for tool in ' + ' '.join(TOOLS) + '; do '
               'if path=$(command -v "$tool" 2>/dev/null); then printf "%s|%s\\n" "$tool" "$path"; fi; done')
 
@@ -166,7 +167,7 @@ def diagnose(cfg, backend, files, *, user, job_id="all", no_gpu=False,
     if getattr(files, "remote", False):
         from .remote import RemoteFiles
         files = RemoteFiles(evidence, timeout=cfg["timeouts"]["command"])
-    slurm = Slurm(evidence, user, timeout=cfg["timeouts"]["command"], gpu_timeout=cfg["timeouts"]["gpu"])
+    slurm = Slurm(evidence, user, timeout=cfg["timeouts"]["command"], gpu_timeout=cfg["timeouts"]["gpu"], gpu_provider=cfg.get("gpu_provider", "auto"))
     checks, jobs_report = [], []
 
     def add(code, status, detail, *, job="", next_step="", evidence_data=None):
@@ -210,24 +211,27 @@ def diagnose(cfg, backend, files, *, user, job_id="all", no_gpu=False,
         next_step="Remove --no-gpu and use :gpu on; check gpu_sampling in the selected profile." if not enabled else "",
         evidence_data=dict(config_gpu_sampling=bool(cfg["gpu_sampling"]), cli_no_gpu=no_gpu, saved_gpu=saved_gpu))
 
-    # A local hardware reading is inventory evidence, never job attribution.
+    # Host inventory is useful diagnostically but never supplies job graphs.
     host_samples = []
     try:
-        output, _ = evidence.run(NVSMI, slurm.gpu_timeout)
-        host_samples = parse_nvsmi(output, labelled=False, node="scheduler-host")
+        output, _ = evidence.run(probe_command(slurm.gpu_provider, slurm.gpu_timeout - 1), slurm.gpu_timeout)
+        host_samples, _, warnings = parse_probe_output(output, require_scope=False)
         add("host_gpu_inventory", "ok" if host_samples else "warning",
-            f"{len(host_samples)} NVIDIA devices visible on the scheduler connection host. This is not a job measurement.",
-            evidence_data=[asdict(sample) for sample in host_samples])
-    except CommandError as exc:
+            f"{len(host_samples)} devices visible on the scheduler connection host. This is not a job measurement.",
+            evidence_data=[{**asdict(sample), "node": "scheduler-host"} for sample in host_samples])
+        for warning in warnings:
+            add("host_gpu_provider", "warning", warning)
+    except (CommandError, ValueError) as exc:
         add("host_gpu_inventory", "warning", exc,
-            next_step="On Fedora, check the NVIDIA driver and nvidia-smi. A GPU-free login host is normal on a cluster.")
+            next_step="Check python3 and the selected GPU utility/driver. A GPU-free login host is normal on a cluster.")
+    if not host_samples:
         try:
             output, _ = evidence.run(["lspci", "-nn"], slurm.timeout)
             devices = [line for line in output.splitlines() if any(word in line.lower() for word in ("vga", "3d controller", "display controller"))]
             add("pci_gpu_inventory", "warning", "GPU display/controller devices on the connection host.", evidence_data=devices[:32])
-            if devices and not any("nvidia" in line.lower() or "10de:" in line.lower() for line in devices):
-                add("nvidia_backend_only", "warning", "This host's listed GPU devices are not NVIDIA. Tower's automatic GPU sampler currently uses nvidia-smi.",
-                    next_step="Use reported application metrics in Research; automatic AMD/Intel GPU sampling is not available.")
+            if devices:
+                add("gpu_provider_setup", "warning", "Hardware inventory does not establish allocation ownership or available counters.",
+                    next_step="Use :gpuprovider auto (or nvidia, amd, intel). Install the matching vendor utility and driver; check Slurm GPU GRES and compute-node python3.")
         except CommandError as exc:
             add("pci_gpu_inventory", "warning", exc)
 
@@ -315,7 +319,7 @@ def diagnose(cfg, backend, files, *, user, job_id="all", no_gpu=False,
                         node_cache[node] = {"error": str(exc)}
             entry["nodes"] = {node: node_cache[node] for node in job.hosts[:MAX_NODES]}
             if len(job.hosts) > MAX_NODES:
-                add("node_limit", "warning", f"Node evidence and SSH fallback cover the first {MAX_NODES}/{len(job.hosts)} resolved hosts. The allocation srun probe requests at most {MAX_NODES} nodes; device coverage is partial.", job=job.id)
+                add("node_limit", "warning", f"Node evidence covers the first {MAX_NODES}/{len(job.hosts)} resolved hosts. The allocation srun probe requests at most {MAX_NODES} nodes; device coverage is partial.", job=job.id)
         if not entry["allocated_gpus"]:
             add("allocation_missing", "warning", "Slurm reports no GPU allocation for this job; Tower does not assign host-wide GPU readings to CPU jobs.", job=job.id,
                 next_step="On Fedora, configure GPU GRES for the compute node and request --gpus=1 or --gres=gpu:1. A visible desktop GPU alone is not an allocation.")
@@ -332,21 +336,19 @@ def diagnose(cfg, backend, files, *, user, job_id="all", no_gpu=False,
                 samples = slurm.gpu(probe_job)
                 entry["devices"] = [asdict(sample) for sample in samples]
                 attempts = evidence.records[start_command:]
-                via_ssh = any(command["argv"][0] == "ssh" and command["status"] == "ok" for command in attempts)
-                entry["sampling_scope"] = "node-visible devices via SSH" if via_ssh else "devices visible inside the allocation probe step"
-                if via_ssh:
-                    add("ssh_device_scope", "warning", "The successful SSH fallback reports all visible devices on the node. On a shared node, allocation ownership is not established.", job=job.id,
-                        next_step="Prefer the allocation srun probe or a trace recorded inside the actual job.")
+                entry["sampling_scope"] = "devices associated by exact job identity and stable GPU IDs or a complete visible device set"
+                for warning in slurm.gpu_probe_warnings.get(job.id, ()):
+                    add("gpu_partial_coverage", "warning", warning, job=job.id)
                 valid = sum(_counter(sample.util, percent=True) for sample in samples)
                 entry["graph_samples"] = valid
                 if valid:
                     add("live_samples", "ok", f"Read utilization for {valid}/{len(samples)} observed devices. New rate and efficiency-proxy curves can be recorded.", job=job.id)
                 else:
                     add("utilization_unsupported", "warning", "Devices were detected, but utilization counters are unavailable or invalid; these are gaps, not zero utilization.", job=job.id,
-                        next_step="Inspect the nvidia-smi output in commands.jsonl. Some devices, MIG modes, and drivers do not expose this counter.")
+                        next_step="Inspect the selected vendor output in commands.jsonl. Some devices, MIG modes, and drivers do not expose this counter.")
             except CommandError as exc:
                 add(_failure_code(str(exc)), "error", exc, job=job.id,
-                    next_step="Read the srun and SSH attempts in commands.jsonl; fix the reported step, command, driver, or permission failure.")
+                    next_step="Read the allocation probe in commands.jsonl; fix the reported step, command, driver, or permission failure.")
 
         # The delimiter-separated queue/accounting path preserves spaces.
         # scontrol's ordinary key/value parser can truncate that same path.
@@ -408,7 +410,8 @@ def diagnose(cfg, backend, files, *, user, job_id="all", no_gpu=False,
     return dict(schema="tower.gpu-check/v1", tower_version=__version__,
                 generated_at=datetime.now(timezone.utc).isoformat(), mode="remote" if getattr(files, "remote", False) else "local",
                 user=user, profile=cfg.profile_name, requested_job=job_id, sampling_enabled=enabled,
-                scope="NVIDIA telemetry, exact job allocations, optional CSV traces, and retained scheduler samples. Host inventory is not job telemetry.",
+                scope="NVIDIA/AMD/Intel telemetry, verified job allocations, optional NVIDIA CSV traces, and retained scheduler samples. Host inventory is not job telemetry.",
+                gpu_provider=slurm.gpu_provider,
                 limits=dict(jobs=MAX_JOBS, nodes_per_job=MAX_NODES, commands=MAX_COMMANDS, seconds=DEADLINE,
                             stream_bytes=MAX_STREAM, retained_evidence_bytes=MAX_EVIDENCE, trace_bytes=MAX_TRACE, series_bytes=MAX_SERIES),
                 summary=dict(errors=len(errors), warnings=sum(item["status"] == "warning" for item in checks),

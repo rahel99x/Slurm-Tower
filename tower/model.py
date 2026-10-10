@@ -282,6 +282,25 @@ class GpuSample:
     used: Optional[float]                # MiB
     total: Optional[float]               # MiB
     name: str = ""
+    vendor: str = ""                    # nvidia / amd / intel; blank in legacy recordings
+    uuid: str = ""
+    bdf: str = ""
+    partition: str = ""
+
+    @property
+    def device_key(self) -> str:
+        """Stable archive identity without changing legacy-recording keys."""
+        if not self.vendor:
+            return f"{self.node}:{self.index}"
+        identity = self.uuid or self.bdf or str(self.index)
+        key = f"{self.node}:{self.vendor}:{identity}:{self.partition}"
+        if len(key) <= 128 and ":" not in str(self.node) and ":" not in self.partition:
+            return key
+        # Research snapshots bound keys to 128 characters. Preserve identity
+        # under that bound instead of allowing truncation to merge devices.
+        import hashlib
+        encoded = json.dumps([self.node, self.vendor, identity, self.partition], separators=(",", ":"))
+        return f"{self.vendor}:sha256:{hashlib.sha256(encoded.encode()).hexdigest()}"
 
 
 @dataclass
@@ -882,7 +901,7 @@ class Store:
         with self.lock:
             self.gpu[jid] = samples
             for s in samples or []:
-                key = f"{jid}:{s.node}:{s.index}"
+                key = f"{jid}:{s.device_key}"
                 if s.util is None:
                     continue
                 self.hist_gpu[key].append(s.util / 100.0)
@@ -891,7 +910,7 @@ class Store:
                 m[1] += 1
             sample = None
             if samples:
-                sample = self.record(jid, dict(t=clock.now(), k="gpu", gpu={f"{s.node}:{s.index}": [s.util, s.used, s.total] for s in samples}), _persist=False)
+                sample = self.record(jid, dict(t=clock.now(), k="gpu", gpu={s.device_key: [s.util, s.used, s.total] for s in samples}), _persist=False)
         if _persist and sample is not None:
             self.flush_persistence(_series_only=True)
         return sample

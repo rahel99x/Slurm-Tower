@@ -57,9 +57,12 @@ def test_report_clears_only_private_filter_and_renders_every_job_series():
     app.logs.bookmarks = {'/nonexistent/log.out': [2, 9]}
     app.logs.candidates = {'7': (1000, [])}
     app_before = vars(app).copy()
-    # Worker primitives retain identity; all mutable presentation data must be isolated.
+    # Worker primitives and service bindings retain identity; presentation data
+    # and the read-only inspector's cache must remain unchanged by rendering.
     primitives = (app.execution_state["cancel"], app.execution_state["progress"],
-                  app.history_log_export_state["progress_lock"])
+                  app.history_log_export_state["progress_lock"], app.shell_checks_state["cancel"],
+                  app.telemetry_state["inspector"])
+    telemetry_cache_before = copy.deepcopy(app.telemetry_state["inspector"].cache)
     memo = {id(value): value for value in primitives}
     mutable_before = {key: copy.deepcopy(value, memo.copy()) for key, value in vars(app).items()
                       if isinstance(value, (dict, list, set))}
@@ -71,6 +74,7 @@ def test_report_clears_only_private_filter_and_renders_every_job_series():
     assert vars(app) == app_before
     for key, before in mutable_before.items():
         assert getattr(app, key) == before
+    assert app.telemetry_state["inspector"].cache == telemetry_cache_before
     assert vars(app.logs) == log_before
     assert vars(views) == views_before
     assert not views.g.ascii
@@ -114,6 +118,36 @@ def test_export_failure_does_not_change_interactive_glyphs_or_state(monkeypatch)
     with pytest.raises(RuntimeError, match='render failed'):
         report.build(store.snapshot(), app, views)
     assert vars(app) == state and views.g is glyphs
+
+
+def test_private_report_copies_shell_evidence_without_copying_or_driving_worker_primitives(monkeypatch):
+    store, app, views = make_report_app()
+    state = app.shell_checks_state
+    event = state["cancel"]
+
+    def pending_callback(value):
+        pytest.fail("report invoked the live shell-check completion")
+
+    state.update(running=True, callback=pending_callback,
+                 result={"status": "findings", "sha256": "a" * 64,
+                         "findings": [{"message": "keep original evidence"}]},
+                 control_hits=[(5, "control", {"id": "shell-checks:back", "left": 3, "right": 9})])
+    local = report._ui_copy(app)
+    private = local.shell_checks_state
+    assert private is not state
+    assert private["cancel"] is event and private["callback"] is pending_callback
+    private["result"]["findings"][0]["message"] = "private edit"
+    private["control_hits"][0][2]["left"] = 99
+    assert state["result"]["findings"][0]["message"] == "keep original evidence"
+    assert state["control_hits"][0][2]["left"] == 3
+    inspector = app.telemetry_state["inspector"]
+    assert local.telemetry_state["inspector"] is inspector
+    monkeypatch.setattr(inspector, "inspect", lambda *a, **k: pytest.fail("report started telemetry inspection"))
+    page = report.build(store.snapshot(), app, views)
+    assert "End of report" in page
+    assert not event.is_set() and state["running"]
+    assert state["callback"] is pending_callback
+    assert state["result"]["findings"][0]["message"] == "keep original evidence"
 
 
 def test_event_journal_wraps_long_diagnostics_without_losing_content():

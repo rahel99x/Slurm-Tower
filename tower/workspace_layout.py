@@ -556,14 +556,25 @@ def _preserve_titles(fitted, original) -> None:
 
 def _preserve_metadata(fitted, original) -> None:
     """Prefer a longer source paragraph when a narrow view clipped it early."""
+    def chart_rows(group):
+        # Charts have already been laid out at the panel's real width. A
+        # wide source canvas can put several titles side by side; restoring
+        # that row into one narrow card wraps it and moves its frozen axes as
+        # soon as the title changes (for example when retained samples expire).
+        # Preserve the renderer's fitted title, plot and axis rows verbatim.
+        count = len(group["rows"])
+        return {row for plot in group.get("charts", ())
+                for row in range(max(0, plot.rect.top - 1),
+                                 min(count, (plot.axes or plot.rect).bottom))}
+
     originals = {}
-    interactive = {y for y, _, _ in original["hits"]}
+    interactive = {y for y, _, _ in original["hits"]} | chart_rows(original)
     for index, row in enumerate(original["rows"]):
         text = L.row_text(row).strip()
         if index not in interactive and text and _section_title(row) is None:
             originals.setdefault(text.split()[0], []).append(row)
     occurrences = {}
-    interactive = {y for y, _, _ in fitted["hits"]}
+    interactive = {y for y, _, _ in fitted["hits"]} | chart_rows(fitted)
     for index, row in enumerate(fitted["rows"]):
         text = L.row_text(row).strip()
         if index in interactive or not text or _section_title(row) is not None:
@@ -956,7 +967,8 @@ def render_body(views, snap, app, width: int, height: Optional[int], actions,
     records = chart_interaction.take_since(app, chart_mark)
     scroll_records = scrollbars.take_since(app, scroll_mark)
     groups = partition(body, hits, getattr(app, "tab", "jobs"), chart_records=records, scroll_records=scroll_records)
-    originals = {panel: {"rows": list(group["rows"]), "hits": list(group["hits"])} for panel, group in groups.items()}
+    originals = {panel: {"rows": list(group["rows"]), "hits": list(group["hits"]),
+                         "charts": group.get("charts", ())} for panel, group in groups.items()}
     rects = geometry(app, width, height, has_details=bool(groups["details"]["rows"]))
     # Refit columns and plots to their actual panel widths instead of cutting
     # away the right half of a table that was composed for a whole terminal.

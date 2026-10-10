@@ -192,9 +192,17 @@ def test_advisor_rows_cannot_claim_controls_in_an_adjacent_pane(dashboard):
     _, hits = views.compose(store.snapshot(), app, app.width, app.height)
     y, _, advisor = next(hit for hit in hits if hit[1] == "control" and hit[2]["id"].startswith("advisor-job:"))
     assert advisor["left"] > 10  # default adaptive Details column
-    main = next(value for row, kind, value in hits if row == y and kind == "control"
-                and value["id"].startswith("analytics-view:"))
-    assert not S.advisor_pointer(app, y, main["left"])
+    # Navigation and diagnostic buttons wrap independently from Advisor rows.
+    # Assert ownership against the controls actually adjacent in this frame,
+    # including the docked job browser, rather than fixing one header's y.
+    adjacent = [value for row, kind, value in hits if row == y and kind == "control"
+                and (value["right"] <= advisor["left"] or value["left"] >= advisor["right"])]
+    assert adjacent
+    for control in adjacent:
+        assert not S.advisor_pointer(app, y, control["left"])
+        assert not S.advisor_pointer(app, y, control["right"] - 1)
+    assert not S.advisor_pointer(app, y, advisor["left"] - 1)
+    assert not S.advisor_pointer(app, y, advisor["right"])
     assert S.advisor_pointer(app, y, advisor["left"] + 5)
 
 

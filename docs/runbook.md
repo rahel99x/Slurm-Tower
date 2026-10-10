@@ -15,6 +15,13 @@ To instrument another application, follow the
 [project template](../examples/project-template/README.md). It defines the run
 directories, metrics, final reports, contracts, and analysis exports Tower reads.
 
+Release 4.14 adds optional measurement and submission checks. Follow the
+[phase one setup guide](guides/phase-one.md) to select a GPU provider, inspect
+upstream sampling, check local shell scripts, and attach array input manifests.
+These features do not require Python packages. Vendor GPU tools and ShellCheck
+are optional external commands; Tower setup does not install them or alter
+Slurm services. Existing aliases and profiles remain valid after an update.
+
 ## 1. Connect to CARC and check the tools
 
 Use your institution's documented SSH hostname and username. Complete the normal

@@ -1,0 +1,23 @@
+{
+  "schema": "tower.array-manifest/v1",
+  "cluster": "",
+  "array_id": "12345",
+  "entries": [
+    {
+      "index": 2,
+      "id": "sample-A-seed-7",
+      "label": "Sample A / seed 7",
+      "parameters": {"sample": "A", "seed": 7, "learning_rate": 0.001},
+      "inputs": ["data/sample-A.csv"],
+      "outputs": ["results/sample-A-seed-7.json"]
+    },
+    {
+      "index": 19,
+      "id": "sample-B-seed-9",
+      "label": "Sample B / seed 9",
+      "parameters": {"sample": "B", "seed": 9, "learning_rate": 0.002},
+      "inputs": ["data/sample-B.csv"],
+      "outputs": ["results/sample-B-seed-9.json"]
+    }
+  ]
+}

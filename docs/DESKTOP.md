@@ -274,7 +274,10 @@ Log selection uses `y`; complete log export uses `Y`.
 If clipboard delivery is unavailable, the private exported file remains available in Activity and the export library.
 
 The supplied desktop profile enables GPU sampling for detected running GPU allocations.
-CPU-only jobs do not trigger NVIDIA sampling.
+CPU-only jobs do not trigger GPU sampling.
+Use `:gpuprovider` or **GPU source** on Sources to select Auto, NVIDIA, AMD, or
+Intel. The selected vendor utility and `python3` must be available inside the
+allocation. See [provider setup](guides/phase-one.md#select-a-gpu-provider).
 Live GPU sampling can create short `srun` steps inside an existing allocation.
 Use `:gpu off` or `--no-gpu` to disable it.
 An earlier saved off preference remains off until you enter `:gpu on`.

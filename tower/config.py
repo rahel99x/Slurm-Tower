@@ -21,7 +21,8 @@ DEFAULTS: Dict[str, Any] = {
     "log_max_mb": 32,                    # the Log tab keeps the last this many MB of a file in memory (read once, then only what is appended)
     "logs": {"manifest_file": ""},       # optional per-run log index, relative to the selected workdir
     "exports": {"projects_root": ""},   # local History log destination browser; empty: registered project or ~/projects
-    "gpu_sampling": True,                # nvidia-smi inside the job's allocation
+    "gpu_sampling": True,                # supported GPU tools inside the job's allocation
+    "gpu_provider": "auto",              # auto | nvidia | amd | intel; optional vendor tools
     "bell": False,                       # terminal bell when one of your jobs starts
     "animations": True,                  # short completion motion and two History pulses (reader is static)
     "startup_animation": True,           # brief, dismissible welcome on interactive terminal launches
@@ -88,7 +89,8 @@ mouse = true                    # enable terminal clicks and wheel input
 history_days = 2                # sacct window of the history tab
 log_lines = 8                   # stdout tail under the selected job
 log_max_mb = 32                 # the Log tab keeps the last this many MB of a file (read once, then only what is appended)
-gpu_sampling = true             # nvidia-smi inside the job's allocation (each sample is a small job step)
+gpu_sampling = true             # allocation-scoped GPU tools (each sample is a small job step)
+gpu_provider = "auto"           # auto | nvidia | amd | intel; :gpuprovider changes this live
 bell = false                    # terminal bell when one of your jobs starts
 animations = true               # short completion motion and two History pulses; false keeps static notices
 startup_animation = true        # brief welcome on interactive launches; :startup off disables it

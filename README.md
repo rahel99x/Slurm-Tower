@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Python standard library only |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.13.0 |
+| Release | Tower 4.14.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -28,9 +28,24 @@ It also provides an ASCII display mode and plain-text reports.
 [Background workers](docs/guides/background-workers.md) ·
 [Pane scrolling and text selection](docs/guides/pane-navigation.md) ·
 [Controls](docs/CONTROLS.md) ·
+[Phase one: measurement and submission checks](docs/guides/phase-one.md) ·
+[Implementation roadmap](docs/ROADMAP.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.14.0
+
+- Inspect the difference between Tower's read interval and Slurm's collection capabilities. Unknown or unavailable configuration remains explicit.
+- Select an optional NVIDIA, AMD, or Intel GPU adapter. Unsupported counters remain unknown, and device observations retain their allocation context.
+- Check a local batch script with a supported shell's syntax checker and optional ShellCheck. Checks do not execute the script or submit a job.
+- Attach scientific labels, parameters, and paths to actual Slurm array indices through a validated manifest. Task order does not determine scientific identity.
+
+Use the [phase one guide](docs/guides/phase-one.md) for interface controls,
+setup, and limits. The [roadmap](docs/ROADMAP.md) separates this release from the
+remaining twenty-six proposals and the planned stack tracer.
+See the [validation report](docs/guides/phase-one-validation.md) for test results,
+render measurements, and hardware validation limits.
 
 ## Changes in Tower 4.13.0
 

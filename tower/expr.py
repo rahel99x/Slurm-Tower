@@ -280,7 +280,7 @@ def job_ns(j, snap: dict, marks: Iterable[str] = (), tags: Optional[Dict[str, Se
     gutil = sum(measured_gpu) / len(measured_gpu) if measured_gpu else None
     mean = None
     if g:
-        key = f"{j.id}:{g[0].node}:{g[0].index}"
+        key = f"{j.id}:" + getattr(g[0], "device_key", f"{g[0].node}:{g[0].index}")
         mean = snap.get("gpu_mean", {}).get(key)
     el, lim = j.elapsed_s, j.limit_s
     sub, start = stamp(j.submit), stamp(j.start)

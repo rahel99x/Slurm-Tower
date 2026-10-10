@@ -1,0 +1,1 @@
+[{"gpu": 0, "usage": {"gfx_activity": {"value": 72.0, "unit": "%"}, "umc_activity": {"value": 12, "unit": "%"}}, "mem_usage": {"used_vram": {"value": 512, "unit": "MB"}, "total_vram": {"value": 65536, "unit": "MB"}}}, {"gpu": 1, "usage": {"gfx_activity": "N/A"}, "mem_usage": {"used_vram": {"value": 0, "unit": "MB"}, "total_vram": "N/A"}}]

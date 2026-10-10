@@ -138,9 +138,16 @@ def _form_plan(state):
         if item["key"] not in editable:
             overrides.append(item["flag"] + ("=" + item["value"] if item["value"] is not None else ""))
     overrides += ["--" + flag + "=" + values[name] for name, flag in _FLAGS.items() if values.get(name)]
-    return submission.prepare(values.get("script", ""), workdir=values.get("workdir") or None,
+    plan = submission.prepare(values.get("script", ""), workdir=values.get("workdir") or None,
                               overrides=overrides, parameters=base.get("parameters"),
                               inputs=base.get("inputs", []), outputs=base.get("outputs", []))
+    if isinstance(base.get("array_retry"), dict) and "manifest" in base["array_retry"]:
+        import copy
+        if plan["resources"].get("array") != base["array_retry"].get("indices"):
+            raise ValueError("edited array indices no longer match the reviewed scientific input map")
+        plan["array_retry"] = copy.deepcopy(base["array_retry"])
+        plan["plan_id"] = submission._digest(plan)
+    return plan
 
 
 def _open_form(app, plan):
@@ -373,6 +380,9 @@ def handle_key(app, key):
             _background(app, lambda: _form_plan(state), lambda value: _validated(app, value), "Validating the edited fields locally")
         elif key == "d":
             state["detail"], state["detail_scroll"] = True, 0
+        elif key == "h":
+            from .shell_checks_ui import open_for_plan
+            open_for_plan(app, state["plan"])
         elif key == "s":
             plan = state["plan"]
             if not plan or not plan.get("valid"):
@@ -464,7 +474,7 @@ def overlay(views, snap, app, width, height):
             lines.append([(f" {prefix} {label:<18} ", "cyan+bold" if index == state["field"] else "dim"),
                           (clean(value) or "(inherit)", "rev" if index == state["field"] else "")])
         plan = state["plan"]
-        lines.append([(" Enter edit   arrows/Tab field   p validate   d command/errors   s review submit   Esc back", "dim")])
+        lines.append([(" [Shell checks] ", "accent"), ("h   Enter edit   p validate   d command/errors   s review submit   Esc back", "dim")])
         lines.append([(" LOCAL PREFLIGHT: " + ("VALID" if plan and plan["valid"] else "ERRORS" if plan else "NEEDS VALIDATION"),
                        "green+bold" if plan and plan["valid"] else "yellow+bold")])
         if plan:
@@ -608,6 +618,16 @@ def overlay(views, snap, app, width, height):
         key, start, count, page, target, painted, setter, context = scroll_spec
         rendered = B.boxed(app, key, rendered, start=start, count=count, page=page, target=target,
                            painted=painted, setter=setter, context=context, header=-1)
+    if state["view"] == "form" and not state["detail"] and not state["running"]:
+        for y, x, row in rendered:
+            text = "".join(segment for segment, _ in row)
+            position = text.find("[Shell checks]")
+            if position >= 0:
+                left = x + vlen(text[:position])
+                state["control_hits"].append((y, "control", {
+                    "id": "execution:shell-checks", "label": "Shell checks", "left": left,
+                    "right": left + len("[Shell checks]"), "group": "execution_form",
+                    "action": ("click", y, left), "choice": "shell-checks"}))
     if state["pending_action"] and not state["detail"] and presentation:
         index = len(presentation) - 1
         if index < len(rendered) - 2:
@@ -634,6 +654,9 @@ def handle_mouse(app, y, x, button="left", shift=False):
         return True
     for row, _, value in state.get("control_hits", []):
         if row == y and value["left"] <= x < value["right"]:
+            if value["choice"] == "shell-checks":
+                handle_key(app, "h")
+                return True
             state["focus"] = value["choice"]
             # Reuse exact reviewed-plan, visibility, scope and mutation guards.
             handle_key(app, "enter")

@@ -17,7 +17,7 @@ from .model import GpuSample, Job, Live, compact, stamp
 MAX_JOBS = 10000
 _JOB_FIELDS = attrgetter(*(field.name for field in fields(Job) if field.name != "hosts"))
 _LIVE_FIELDS = attrgetter("avg", "rate", "rss")
-_GPU_FIELDS = attrgetter("node", "index", "util")
+_GPU_FIELDS = attrgetter("node", "index", "util", "vendor", "uuid", "bdf", "partition")
 _THRESHOLDS = ("cpu", "mem", "gpu", "warn_after_minutes")
 _ACTION_MARK = Actions.mark
 

@@ -15,6 +15,10 @@ The [50-improvement index](QUALITY_OF_LIFE.md) links each feature to its operati
 The [Controls guide](CONTROLS.md) lists launch modes, key bindings, and command families.
 Use those guides with the metric and architecture definitions in this reference.
 
+Tower 4.14 adds a [sampling inspector, optional GPU adapters, shell checks, and
+scientific array manifests](guides/phase-one.md). The [roadmap](ROADMAP.md)
+tracks proposals that remain unimplemented.
+
 ```bash
 tower                        # interactive (curses); q quits, ? lists the keys
 tower --fake                 # a simulated cluster: try it anywhere, no Slurm needed
@@ -734,7 +738,7 @@ and cpu is not None and cpu < 0.1'`.
 
 ## Figures and flags
 
-CPU% is the rate between two accounting samples (Slurm samples every 30 s, so it moves in steps); EFF the CPU time
+CPU% is the rate between two accounting observations. Slurm's configured collection interval can differ from Tower's read interval, so the value can move in steps. Use `:telemetry` to inspect the available configuration; unknown configuration stays unknown. EFF is the CPU time
 over elapsed × cores so far; MEM% the peak resident set against the request; GPU% the mean utilisation of the job's
 GPUs at the last sample.  FLAGS: `!cpu` `!mem` `!gpu` when a job older than `thresholds.warn_after_minutes` is below
 the configured fractions, `ending` under ten minutes before the limit, `held`, `dep`.  Finished jobs: CPU EFF and
@@ -747,7 +751,7 @@ MEM EFF are what `seff` reports, computed from sacct.
 | jobs | `squeue -u $USER` | 5 s |
 | starts | `squeue --start` (pending jobs) | 10 s, and after every queue change |
 | live | `sstat` (CPU time, peak memory of the batch step) | 5 s |
-| gpu | `nvidia-smi` through `srun --jobid ID --overlap --immediate=5`, ssh to the node as the fallback | 5 s |
+| gpu | Selected NVIDIA, AMD, or Intel vendor command inside the allocation; see [provider limits](guides/phase-one.md#select-a-gpu-provider) | 5 s |
 | nodes | `scontrol show node` | 15 s |
 | partitions | `sinfo` (partitions, GPU inventory per node) | 60 s |
 | finished | `sacct -S now-Nhours` | 60 s |
@@ -904,7 +908,8 @@ improvements in Tower 3.0 have their own [workbench map](WORKBENCH.md#the-twenty
 Job Series shows recorded GPU utilisation and its observed busy mean when telemetry is available.
 The mean uses valid retained device observations and excludes missing or invalid readings.
 It is a GPU activity proxy, not FLOP efficiency, throughput, or an allocation-use ratio.
-Session devices use node/index identities; an index-only job trace cannot identify an allocation's node or devices.
+Session devices retain node/vendor identity and stable device IDs when exposed;
+an index-only job trace cannot identify an allocation's node or devices.
 See [GPU graph interpretation](guides/charts.md#read-gpu-utilisation-and-busy-mean) for source scope and stable graph IDs.
 
 The panel, the charts and the advisor read a CSV the job writes itself, `<WorkDir>/logs/gpu-util-<jobid>.csv`, with
@@ -918,8 +923,11 @@ nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used --format=csv,
 trap 'kill $! 2>/dev/null' EXIT
 ```
 
-Without the file the dashboard still samples `nvidia-smi` live inside the allocation (`gpu_sampling`); the trace
-adds the history from before the dashboard started and survives the job.
+Without the file the dashboard can sample the selected NVIDIA, AMD, or Intel
+provider live inside the allocation (`gpu_sampling`). The example above is a
+NVIDIA trace producer; provider selection does not convert its format. A
+recorded trace adds history from before the dashboard started and survives the
+job. See [provider requirements](guides/phase-one.md#select-a-gpu-provider).
 
 ## Architecture
 

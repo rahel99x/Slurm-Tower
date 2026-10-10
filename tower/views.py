@@ -1038,7 +1038,7 @@ class Views:
         if old and lv and lv.rss is not None and j.mem_bytes and lv.rss / j.mem_bytes < self.th["mem"]:
             flags.append("!mem"); style = style or "yellow"
         if old and j.gpus and g:
-            key = f"{j.id}:{g[0].node}:{g[0].index}"
+            key = f"{j.id}:" + getattr(g[0], "device_key", f"{g[0].node}:{g[0].index}")
             mean = snap.get("gpu_mean", {}).get(key)
             if mean is not None and mean / 100 < self.th["gpu"]:
                 flags.append("!gpu"); style = "red"
@@ -1213,7 +1213,7 @@ class Views:
                 rows.append([("   gpu   ", ""), bar(g_, None, bw), ("  sampling ..." if app.gpu else "  sampling off", "dim")])
             else:
                 for x in g:
-                    key = f"{j.id}:{x.node}:{x.index}"
+                    key = f"{j.id}:" + getattr(x, "device_key", f"{x.node}:{x.index}")
                     mean = snap["gpu_mean"].get(key)
                     tag = f"gpu{x.index}" + (f"@{x.node}" if j.nodes > 1 else "")
                     util = _gpu_value(x.util)
@@ -1908,7 +1908,7 @@ class Views:
             for j in jobs:
                 for s in snap["gpu"].get(j.id) or []:
                     if s.node == nd.name or s.node.startswith("task"):
-                        key = f"{j.id}:{s.node}:{s.index}"
+                        key = f"{j.id}:" + getattr(s, "device_key", f"{s.node}:{s.index}")
                         mean = snap["gpu_mean"].get(key)
                         util = _gpu_value(s.util)
                         util_text = f"{util:3.0f}%" if util is not None else "unknown"
@@ -2498,7 +2498,15 @@ class Views:
         cols = [Column("name", "SOURCE", 6, 12), Column("state", "STATE", 5, 7), Column("every", "EVERY", 5, 6, ">"), Column("last", "LAST OK", 7, 12, ">"),
                 Column("latency", "LATENCY", 7, 8, ">"), Column("calls", "CALLS", 5, 6, ">"), Column("errors", "ERRORS", 6, 6, ">"), Column("backoff", "BACKOFF", 7, 7, ">"),
                 Column("error", "LAST ERROR", 10, 80, flex=True)]
-        prefix = []
+        from .control_rows import buttons
+        prefix, prefix_hits = buttons(self.g, width,
+            [("telemetry", "Metric sampling", ("command", "telemetry")),
+             ("gpu-provider", "GPU source", ("command", "gpuprovider"))],
+            group="source-tools", prefix="source-tools:")
+        if height is not None and height < len(prefix) + 3:
+            # Keep the selected source visible in a short pane. These tools
+            # remain available through the persistent toolbar and commands.
+            prefix, prefix_hits = [], []
         if self.visual_room(width, height):
             enabled = [h for h in hs if h.enabled]
             prefix += self.composition([("healthy", sum(bool(h.last_ok) and not h.error for h in enabled), "green"),
@@ -2516,12 +2524,12 @@ class Views:
         if not hs:
             out.append([("   Waiting for the first sample. Source health appears here automatically.", "dim")])
         out.append([("", "")])
-        out.append([("   jobs: squeue (your jobs)   starts: squeue --start   live: sstat (CPU time, peak memory)   gpu: nvidia-smi through srun --overlap, ssh fallback", "dim")])
+        out.append([("   jobs: squeue (your jobs)   starts: squeue --start   live: sstat (CPU time, peak memory)   gpu: allocation-scoped vendor tools", "dim")])
         out.append([("   nodes: scontrol show node   partitions: sinfo   finished: sacct   share: sshare   account: squeue -A   details: scontrol show job (the selected job)", "dim")])
         ev = snap["events"][-8:]
         if ev:
             out += self.event_rows(ev, width, limit=8)
-        hits = header_hits("sources", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "source", r["name"]) for i, r in enumerate(shown)]
+        hits = prefix_hits + header_hits("sources", cells, len(prefix) + 1) + [(len(prefix) + 2 + i, "source", r["name"]) for i, r in enumerate(shown)]
         record_page(app, "sources", len(shown))
         if height is not None:
             _table_scrollbar(app, "sources", width, len(prefix) + 2, vis, n, top, header=len(prefix))
@@ -2553,6 +2561,15 @@ class Views:
         from .control_rows import buttons
         out, hits = buttons(g, width, [(key, title, ("command", "view " + key)) for key, title in ANALYTICS_VIEWS],
                             selected=view, group="analytics_nav", prefix="analytics-view:")
+        import shlex
+        selected_job = getattr(app, "analytics_job", None)
+        diagnostic_command = "telemetry" + (" " + shlex.quote(str(selected_job)) if selected_job else "")
+        controls, control_hits = buttons(g, width,
+            [("telemetry", "Metric sampling", ("command", diagnostic_command)),
+             ("gpu-provider", "GPU source", ("command", "gpuprovider"))],
+            group="analytics-tools", prefix="analytics-tools:")
+        hits += [(y + len(out), kind, data) for y, kind, data in control_hits]
+        out += controls
         app.analytics_nav_rows = len(out)
         out.append([(f" window {days:g} day{'s' if days != 1 else ''}", "dim")])
         avail = None if height is None else max(0, height - len(out))
