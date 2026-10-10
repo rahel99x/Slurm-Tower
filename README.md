@@ -15,7 +15,7 @@ It also provides an ASCII display mode and plain-text reports.
 | Runtime packages | Core: Python standard library only; optional adapters have separate requirements |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.15.0 |
+| Release | Tower 4.15.1 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -34,6 +34,18 @@ It also provides an ASCII display mode and plain-text reports.
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.15.1
+
+GPU sampling can resolve numeric CUDA device IDs to stable UUIDs inside a job
+allocation. This fixes missing NVIDIA graphs on desktops that also have AMD or
+Intel graphics, while preserving allocation and MIG checks. The identity cache
+avoids repeated driver initialization during rapid polling. Successful matches
+also clear the ambiguity warning that caused unnecessary sampling backoff.
+
+Use `tower --gpu-check JOBID` to check a running job after updating. See the
+[GPU diagnosis guide](docs/guides/gpu-detection.md) for identity evidence,
+driver requirements, and recovery steps.
 
 ## Changes in Tower 4.15.0
 

@@ -133,6 +133,12 @@ def _failure_code(message):
         return "probe_timeout"
     if "permission denied" in lower or "not permitted" in lower:
         return "permission_denied"
+    if any(marker in lower for marker in (
+            "mixed gpu vendor indices", "numeric slurm gpu ids",
+            "gpu allocation identifiers unavailable", "gpu probe allocation identity",
+            "no gpu device could be matched", "device count exceeds the requested job allocation",
+            "runtime visibility", "cuda visibility", "cuda_visible_devices")):
+        return "allocation_mapping_unavailable"
     if "driver" in lower or "nvml" in lower or "driver/library" in lower:
         return "driver_unavailable"
     if "not found" in lower or "no such file" in lower:
@@ -214,7 +220,8 @@ def diagnose(cfg, backend, files, *, user, job_id="all", no_gpu=False,
     # Host inventory is useful diagnostically but never supplies job graphs.
     host_samples = []
     try:
-        output, _ = evidence.run(probe_command(slurm.gpu_provider, slurm.gpu_timeout - 1), slurm.gpu_timeout)
+        output, _ = evidence.run(probe_command(slurm.gpu_provider, slurm.gpu_timeout - 1,
+                                              resolve_visibility=False), slurm.gpu_timeout)
         host_samples, _, warnings = parse_probe_output(output, require_scope=False)
         add("host_gpu_inventory", "ok" if host_samples else "warning",
             f"{len(host_samples)} devices visible on the scheduler connection host. This is not a job measurement.",
@@ -347,8 +354,16 @@ def diagnose(cfg, backend, files, *, user, job_id="all", no_gpu=False,
                     add("utilization_unsupported", "warning", "Devices were detected, but utilization counters are unavailable or invalid; these are gaps, not zero utilization.", job=job.id,
                         next_step="Inspect the selected vendor output in commands.jsonl. Some devices, MIG modes, and drivers do not expose this counter.")
             except CommandError as exc:
-                add(_failure_code(str(exc)), "error", exc, job=job.id,
-                    next_step="Read the allocation probe in commands.jsonl; fix the reported step, command, driver, or permission failure.")
+                code = _failure_code(str(exc))
+                guidance = ("Read the allocation probe in commands.jsonl; fix the reported step, command, driver, or permission failure.")
+                if code == "allocation_mapping_unavailable":
+                    guidance = ("Read the srun reply in commands.jsonl: compare the exact job ID, Slurm GPU IDs, "
+                                "runtime visibility, and resolved device UUIDs. On NVIDIA, Tower resolves numeric "
+                                "CUDA_VISIBLE_DEVICES with the CUDA driver inside the allocation; if resolution "
+                                "failed, check its reported reason and access to libcuda.so.1 there. An AMD "
+                                "display device does not require an AMD utility to sample an allocated NVIDIA "
+                                "GPU. Do not change device visibility to include unallocated GPUs.")
+                add(code, "error", exc, job=job.id, next_step=guidance)
 
         # The delimiter-separated queue/accounting path preserves spaces.
         # scontrol's ordinary key/value parser can truncate that same path.

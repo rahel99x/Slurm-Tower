@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.15.1
+
+- Restore NVIDIA GPU measurements on mixed-graphics desktops by resolving
+  numeric CUDA visibility to stable device UUIDs inside the job allocation.
+- Resolve ambiguous device subsets with a bounded CUDA Driver API helper.
+  It creates no CUDA context and requires no new Python package. Cache identity
+  briefly per allocation and node; invalidate changed visibility or inventory.
+- Suppress obsolete ambiguity warnings after a valid stable match, so successful
+  collection does not trigger retry backoff. Preserve mixed-vendor, allocation,
+  unknown-counter, and physical MIG-parent safeguards.
+- Explain allocation identity failures in GPU diagnostics and document recovery.
+  Add hybrid-desktop, driver-helper, cache, and sampler-to-chart regressions.
+
 ## 4.15.0
 
 Implement the remaining 26 research proposals through a shared terminal

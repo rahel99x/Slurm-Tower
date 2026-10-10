@@ -10,10 +10,13 @@ on Sources or `:gpuprovider` to choose one. See
 [provider requirements](phase-one.md#select-a-gpu-provider) for compute-node
 tools, allocation identity checks, and unsupported-counter behavior.
 Numeric Slurm GRES order can differ from vendor device order. Without stable
-device evidence, phase one accepts only a matching complete visible
+device evidence, Tower accepts only a matching complete visible
 single-vendor device set, with no partition or mixed-vendor ambiguity. Opaque
 numeric subsets on shared multi-GPU nodes remain unavailable; faster polling
 cannot resolve that identity limit.
+For NVIDIA, Tower can resolve numeric `CUDA_VISIBLE_DEVICES` values to stable
+device UUIDs inside the allocation. This supports a Slurm NVIDIA GPU on a
+desktop that also has an AMD or Intel display device.
 
 ## Enable sampling on Fedora
 
@@ -144,6 +147,7 @@ Read `summary.jobs_with_graph_data` and the job-specific checks; a successful ex
 | `allocation_batch` | Reads per-job allocation TRES. This detects `--gpus` allocations omitted by the per-node `%b` field. |
 | `queue_gpu_underreported` | Allocation details show more GPUs than the queue lookup. Compare the captured resource fields and batch-query result. |
 | `allocation_missing` | Slurm reports no GPU allocation. Check compute-node GRES and the job's GPU request. |
+| `allocation_mapping_unavailable` | GPU counters or hardware can be visible, but Tower cannot prove which devices belong to this allocation. Inspect the exact Slurm job ID, GPU IDs, runtime visibility, and device UUID evidence in the captured `srun` reply. Read any CUDA visibility resolution error. |
 | `not_running` | Pending or completed jobs cannot produce a new live sample. Check recorded traces or retained samples. |
 | `live_samples` | Counts observed devices with valid utilization. Tower can record new graph samples. |
 | `utilization_unsupported` | Devices exist but the utilization counter is unavailable. Inspect the selected vendor output and device/partition/driver capabilities. |
@@ -193,6 +197,43 @@ The diagnostic deliberately leaves scheduler configuration unchanged.
 `AccountingStorageTRES=gres/gpu` records allocated GPU resources in accounting.
 It does not create live utilization measurements.
 See [Fedora accounting](../FEDORA_ACCOUNTING.md) for the accounting setup.
+
+### NVIDIA GPU with another display adapter
+
+A Fedora desktop can expose an AMD or Intel display adapter together with an
+NVIDIA GPU. Slurm can report the allocated GPU as numeric ID `0`, and its job
+step can set `CUDA_VISIBLE_DEVICES=0`. The numeric IDs alone do not identify a
+vendor or prove that vendor enumeration matches Slurm GRES order.
+
+Tower resolves this case inside the job's allocation. A bounded helper uses
+the CUDA driver to read the UUIDs of the devices visible through
+`CUDA_VISIBLE_DEVICES`. It matches those UUIDs to the NVIDIA measurements.
+The helper does not create a CUDA context or run GPU kernels. It requires the
+NVIDIA driver library `libcuda.so.1`; it does not require the CUDA toolkit,
+PyTorch, or an AMD utility to collect NVIDIA measurements.
+Tower caches identity discovery for at most 30 seconds within the same job
+allocation and node. A changed visibility mask or NVIDIA inventory invalidates
+that identity evidence. Utilization and memory counters remain fresh on each
+successful probe.
+
+If `allocation_mapping_unavailable` persists:
+
+1. Open the recorded `srun` reply in `commands.jsonl`.
+2. Confirm that its job ID identifies the selected allocation.
+3. Read the GPU IDs, runtime visibility, and CUDA visibility resolution error.
+4. Check that the NVIDIA driver library is accessible inside that allocation.
+5. Run the exact-job check again after correcting the reported problem.
+
+Keep the visibility assigned by Slurm. Do not disable the other display
+adapter or expose unallocated devices to bypass an identity error. Tower
+continues to reject ambiguous ownership and physical MIG parent counters
+that cannot describe an allocated partition.
+
+After updating Tower, restart the dashboard. A successful GPU poll adds new
+graph samples without clearing retained history. Past failed measurements
+remain unavailable; Tower does not recreate them from current utilization.
+The optional `gpu-util-<job_id>.csv` file is not required when live sampling
+works. A missing optional trace does not prevent the live GPU graphs from appearing.
 
 ## Provide an optional GPU trace
 

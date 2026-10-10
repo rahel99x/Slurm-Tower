@@ -355,6 +355,55 @@ def test_probe_failure_classification_retains_original_reason(detail, code):
     assert detail in findings(result, code, job="7")[0]["detail"]
 
 
+def test_mixed_desktop_gpu_mapping_failure_explains_identity_and_preserves_probe():
+    """A successful NVIDIA command can still lack safe allocation identity."""
+    payload = dict(tower_gpu=1, node="desktop", job_id="7", gpus="0",
+                   hardware_vendors=["amd", "nvidia"],
+                   visible={"nvidia": "0", "amd": ""},
+                   vendors={"nvidia": {"metrics":
+                       "0, 31, 2335, 24564, NVIDIA RTX 4090, "
+                       "GPU-779bcac9-8a24-3cb2-e70e-e164e94d360e, 00000000:01:00.0, [N/A]\n"}})
+    reply = "0: " + json.dumps(payload, separators=(",", ":"))
+
+    class MixedDesktopBackend(ProbeBackend):
+        def run(self, cmd, timeout=8):
+            if cmd[0] == "srun":
+                self.calls.append((list(cmd), timeout))
+                return reply, 0
+            return super().run(cmd, timeout)
+
+    backend = MixedDesktopBackend()
+    result = check(backend, job_id="7")
+    finding, = findings(result, "allocation_mapping_unavailable", job="7")
+    assert finding["status"] == "error"
+    assert "mixed GPU vendor indices" in finding["detail"]
+    assert "CUDA_VISIBLE_DEVICES" in finding["next_step"]
+    assert "libcuda.so.1" in finding["next_step"]
+    assert "does not require an AMD utility" in finding["next_step"]
+    assert result["summary"]["jobs_with_graph_data"] == 0
+    assert not findings(result, "driver_unavailable")
+    recorded, = [item for item in result["commands"] if item["argv"][0] == "srun"]
+    assert recorded["status"] == "ok" and recorded["stdout"] == reply
+    assert_read_only(backend)
+
+
+@pytest.mark.parametrize("reason", [
+    "CUDA visibility resolution unavailable: libcuda.so.1: cannot open shared object file: No such file or directory",
+    "CUDA visibility resolution unavailable: CUDA driver could not resolve ordinal 0",
+    "numeric Slurm GPU IDs do not prove a complete visible device set",
+    "Slurm GPU allocation identifiers unavailable; refusing node-wide attribution",
+    "GPU probe allocation identity does not match requested job",
+    "GPU device count exceeds the requested job allocation; refusing attribution",
+])
+def test_identity_diagnostic_retains_resolution_reason_instead_of_generic_error(reason):
+    result = check(ProbeBackend(live=CommandError(reason)), job_id="7")
+    finding, = findings(result, "allocation_mapping_unavailable", job="7")
+    assert reason in finding["detail"]
+    assert "resolved device UUIDs" in finding["next_step"]
+    assert "Do not change device visibility to include unallocated GPUs" in finding["next_step"]
+    assert not findings(result, "sampling_failed")
+
+
 def test_non_nvidia_hardware_explains_sampler_scope():
     result = check(ProbeBackend(queue="", pci="01:00.0 VGA compatible controller: AMD Navi [1002:744c]\n",
                                 errors={"nvidia-smi": "nvidia-smi: not found"}))

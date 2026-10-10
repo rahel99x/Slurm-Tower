@@ -222,6 +222,32 @@ def _tokens(raw):
     return result
 
 
+def _cuda_visibility_key(gpus, visible, order, rows):
+    """Identity-only topology signature; live counters never invalidate it."""
+    identities = sorted([[row.index, row.uuid.lower(), row.bdf.lower(), row.partition]
+                         for row in rows if row.vendor == "nvidia"])
+    return [gpus, visible, order, identities]
+
+
+def _validated_cuda_visibility(evidence, key, maximum):
+    """Accept only bounded, complete runtime evidence for the current scope."""
+    if not isinstance(evidence, dict) or evidence.get("key") != key:
+        raise ValueError("CUDA visibility identity does not match the current allocation")
+    values = evidence.get("uuids")
+    if not isinstance(values, list) or not 1 <= len(values) <= min(MAX_DEVICES, maximum):
+        raise ValueError("CUDA visible device count is empty or exceeds the allocation")
+    result = set()
+    for value in values:
+        if not isinstance(value, str) or not re.fullmatch(
+                r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
+            raise ValueError("CUDA driver returned an invalid device UUID")
+        value = value.lower()
+        if value in result or value == "gpu-00000000-0000-0000-0000-000000000000":
+            raise ValueError("CUDA driver returned a duplicate or empty device UUID")
+        result.add(value)
+    return result
+
+
 def parse_probe_output(raw, *, job_id="", require_scope=True, expected_nodes=None):
     """Parse interleaved --label lines and return (samples, cache, warnings).
 
@@ -280,8 +306,6 @@ def parse_probe_output(raw, *, job_id="", require_scope=True, expected_nodes=Non
         # must not turn an ambiguous global GPU index into a matching device.
         namespaces = set(devices) | set(hardware) | {row.vendor for row in node_rows}
         mixed = len(namespaces) > 1
-        if require_scope and mixed and any(token.isdecimal() for token in allowed):
-            warnings.append(f"{node}: mixed GPU vendor indices cannot be matched to numeric Slurm IDs; UUID/BDF allocation identity is required")
         visible = payload.get("visible", {})
         if not isinstance(visible, dict):
             raise ValueError("Invalid GPU runtime visibility evidence")
@@ -291,14 +315,44 @@ def parse_probe_output(raw, *, job_id="", require_scope=True, expected_nodes=Non
                 tokens = _tokens(visible.get(vendor, ""))
                 stable_visibility[vendor] = {token for token in tokens if not token.isdecimal()}
         numeric = {token for token in allowed if token.isdecimal()}
+        resolved_cuda = set()
+        resolution_failed = False
+        if require_scope and payload.get("cuda_visibility") is not None:
+            try:
+                cuda_visible = visible.get("nvidia", "")
+                visible_tokens = _tokens(cuda_visible)
+                order = payload.get("cuda_device_order", "")
+                if (not numeric or len(numeric) != len(allowed) or not visible_tokens
+                        or not all(token.isdecimal() for token in visible_tokens)
+                        or not isinstance(order, str) or len(order) > 128):
+                    raise ValueError("CUDA resolution requires numeric allocation and runtime visibility")
+                key = _cuda_visibility_key(payload.get("gpus", ""), cuda_visible, order, node_rows)
+                resolved_cuda = _validated_cuda_visibility(
+                    payload["cuda_visibility"], key, min(len(numeric), len(visible_tokens)))
+                identities = {row.uuid.lower() for row in node_rows if row.vendor == "nvidia"}
+                if not resolved_cuda.issubset(identities):
+                    raise ValueError("CUDA visible UUID is absent from the current NVIDIA inventory")
+                stable_visibility["nvidia"] = resolved_cuda
+                node_cache["_cuda_visibility"] = payload["cuda_visibility"]
+            except ValueError as exc:
+                resolution_failed = True
+                resolved_cuda = set()
+                warnings.append(f"{node}: CUDA visibility resolution unavailable: {exc}")
+        elif require_scope and payload.get("cuda_visibility_error"):
+            resolution_failed = True
+            warnings.append(f"{node}: CUDA visibility resolution unavailable: "
+                            + clean(payload["cuda_visibility_error"], 300))
         # Slurm's global GRES indices need not equal a utility's indices.
         # Numeric scope can identify a complete visible set, not an arbitrary
         # subset. This also preserves the common single-GPU workstation case.
-        complete_set = (not mixed and bool(numeric) and len(numeric) == len(allowed)
+        complete_set = (not mixed and not resolution_failed and bool(numeric) and len(numeric) == len(allowed)
                         and len(node_rows) == len(numeric)
                         and not any(row.partition == "mig-parent" for row in node_rows))
         if require_scope and node_rows and numeric and not complete_set and not any(stable_visibility.values()):
-            warnings.append(f"{node}: numeric Slurm GPU IDs do not prove a complete visible device set; UUID/BDF runtime visibility is required for a subset")
+            if mixed:
+                warnings.append(f"{node}: mixed GPU vendor indices cannot be matched to numeric Slurm IDs; UUID/BDF allocation identity is required")
+            else:
+                warnings.append(f"{node}: numeric Slurm GPU IDs do not prove a complete visible device set; UUID/BDF runtime visibility is required for a subset")
         for row in node_rows:
             if require_scope and row.partition == "mig-parent":
                 warnings.append(f"{node}/nvidia: physical MIG parent cannot supply partition-specific job counters")
@@ -307,6 +361,10 @@ def parse_probe_output(raw, *, job_id="", require_scope=True, expected_nodes=Non
                 candidates = {row.uuid.lower(), row.bdf.lower()} - {""}
                 stable = stable_visibility.get(row.vendor, set())
                 matched = bool(candidates.intersection(stable or allowed))
+                # A runtime mask cannot override an explicit scheduler UUID or
+                # PCI identity. Contradictory evidence must never widen scope.
+                if allowed and not numeric and stable and not candidates.intersection(allowed):
+                    continue
                 if not matched and (stable or not complete_set):
                     continue
             samples.append(row)
@@ -324,12 +382,64 @@ def parse_probe_output(raw, *, job_id="", require_scope=True, expected_nodes=Non
     return samples, cache, warnings[:16]
 
 
+# Resolve CUDA ordinals using the same driver/runtime visibility as the job.
+# Keep driver initialization outside the probe parent: even a wedged driver is
+# stopped by the existing subprocess deadline. No contexts or workloads start.
+CUDA_VISIBILITY_SOURCE = r'''
+import ctypes, json, os, sys, uuid
+try:
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    parts = mask.split(",")
+    if (not mask or len(mask) > 16384 or len(parts) > 256
+            or any(not p.strip().isascii() or not p.strip().isdecimal() for p in parts)):
+        raise RuntimeError("explicit numeric CUDA_VISIBLE_DEVICES is required")
+    driver = ctypes.CDLL("libcuda.so.1")
+    class CUuuid(ctypes.Structure):
+        _fields_ = [("bytes", ctypes.c_ubyte * 16)]
+    def function(name, args):
+        fn = getattr(driver, name)
+        fn.argtypes, fn.restype = args, ctypes.c_int
+        return fn
+    def checked(fn, *args):
+        status = fn(*args)
+        if status:
+            raise RuntimeError("CUDA driver " + getattr(fn, "__name__", "call")
+                               + " failed with status " + str(status))
+    initialize = function("cuInit", [ctypes.c_uint])
+    count_devices = function("cuDeviceGetCount", [ctypes.POINTER(ctypes.c_int)])
+    get_device = function("cuDeviceGet", [ctypes.POINTER(ctypes.c_int), ctypes.c_int])
+    try:
+        get_uuid = function("cuDeviceGetUuid_v2", [ctypes.POINTER(CUuuid), ctypes.c_int])
+    except AttributeError:
+        get_uuid = function("cuDeviceGetUuid", [ctypes.POINTER(CUuuid), ctypes.c_int])
+    checked(initialize, 0)
+    count = ctypes.c_int()
+    checked(count_devices, ctypes.byref(count))
+    if not 1 <= count.value <= min(256, len(parts)):
+        raise RuntimeError("CUDA visible device count is empty or exceeds the runtime visibility mask")
+    identities = []
+    for ordinal in range(count.value):
+        device, ident = ctypes.c_int(), CUuuid()
+        checked(get_device, ctypes.byref(device), ordinal)
+        checked(get_uuid, ctypes.byref(ident), device.value)
+        raw = bytes(ident.bytes)
+        value = "GPU-" + str(uuid.UUID(bytes=raw))
+        if not any(raw) or value in identities:
+            raise RuntimeError("CUDA driver returned a duplicate or empty device UUID")
+        identities.append(value)
+    print(json.dumps(identities, separators=(",", ":")))
+except (OSError, AttributeError, RuntimeError, ValueError) as exc:
+    print(str(exc)[:400], file=sys.stderr)
+    raise SystemExit(1)
+'''
+
+
 # Standalone program: do not import Tower on compute nodes. Fixed commands only.
 # Every child has a deadline and bounded disk output before the parent reads it.
-PROBE_SOURCE = r'''
-import glob, json, os, shutil, socket, subprocess, sys, tempfile, time
+PROBE_SOURCE = "CUDA_VISIBILITY_SOURCE = " + repr(CUDA_VISIBILITY_SOURCE) + "\n" + r'''
+import csv, glob, io, json, os, re, shutil, socket, subprocess, sys, tempfile, time
 LIMIT = 262144
-provider, budget, cached_text = sys.argv[1:4]
+resolve_flag, provider, budget, cached_text = sys.argv[1:5]
 deadline = time.monotonic() + max(.2, min(10., float(budget)))
 node = os.getenv("SLURMD_NODENAME") or socket.gethostname()
 try:
@@ -410,12 +520,89 @@ for vendor, binary in (("nvidia", "nvidia-smi"), ("amd", "amd-smi"), ("intel", "
         vendors[vendor] = {"error": str(exc)[:400]}
 if not vendors and not errors:
     errors.append("No supported GPU utility found (nvidia-smi, amd-smi, xpu-smi)")
+gpus = os.getenv("SLURM_STEP_GPUS") or os.getenv("SLURM_JOB_GPUS", "")
+cuda_visible = os.getenv("CUDA_VISIBLE_DEVICES", "")
+cuda_order = os.getenv("CUDA_DEVICE_ORDER", "")
+cuda_evidence, cuda_error = None, ""
+
+def numeric_ids(raw, ranges=False):
+    if not isinstance(raw, str) or not raw or len(raw) > 16384:
+        return set()
+    found = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if re.fullmatch(r"[0-9]{1,5}", part):
+            found.add(int(part))
+        elif ranges and re.fullmatch(r"[0-9]{1,5}-[0-9]{1,5}", part):
+            lo, hi = map(int, part.split("-"))
+            if hi < lo or hi - lo >= 256:
+                return set()
+            found.update(range(lo, hi + 1))
+        else:
+            return set()
+        if len(found) > 256 or max(found) > 65535:
+            return set()
+    return found
+
+def valid_evidence(value, key, maximum):
+    if not isinstance(value, dict) or value.get("key") != key:
+        return False
+    values = value.get("uuids")
+    if not isinstance(values, list) or not 1 <= len(values) <= min(256, maximum):
+        return False
+    if any(not isinstance(v, str) or not re.fullmatch(
+            r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", v) for v in values):
+        return False
+    lowered = {v.lower() for v in values}
+    inventory = {identity[1] for identity in key[3]}
+    return (len(lowered) == len(values) and lowered.issubset(inventory)
+            and "gpu-00000000-0000-0000-0000-000000000000" not in lowered)
+
+allocated, visible_ids = numeric_ids(gpus, True), numeric_ids(cuda_visible)
+nvidia = vendors.get("nvidia", {})
+if (resolve_flag == "1" and os.getenv("SLURM_JOB_ID") and allocated
+        and visible_ids and nvidia.get("metrics")):
+    try:
+        identities = []
+        for row in csv.reader(io.StringIO(nvidia["metrics"]), skipinitialspace=True):
+            if not row:
+                continue
+            row = [value.strip() for value in row]
+            if len(row) < 7 or not re.fullmatch(r"[0-9]{1,5}", row[0]):
+                raise ValueError("NVIDIA inventory lacks a stable device identity")
+            identities.append([int(row[0]), row[5].lower(), row[6].lower(),
+                "mig-parent" if len(row) > 7 and row[7].lower() == "enabled" else ""])
+            if len(identities) > 256:
+                raise ValueError("NVIDIA inventory exceeds 256 devices")
+        mixed = len(set(vendors) | hardware_vendors) > 1
+        # Complete single-vendor inventory already proves the whole allocated
+        # set. Resolve ordinals only when extra hardware or a subset makes the
+        # global Slurm indices ambiguous. Never do this for host diagnostics.
+        if identities and (mixed or len(identities) != len(allocated)):
+            key = [gpus, cuda_visible, cuda_order, sorted(identities)]
+            saved = cached.get("_cuda_visibility") if isinstance(cached, dict) else None
+            maximum = min(len(allocated), len(visible_ids))
+            if valid_evidence(saved, key, maximum):
+                cuda_evidence = saved
+            else:
+                values = json.loads(run([sys.executable, "-I", "-S", "-c", CUDA_VISIBILITY_SOURCE]))
+                proposed = {"key": key, "uuids": values}
+                if not valid_evidence(proposed, key, maximum):
+                    raise ValueError("CUDA runtime identities are empty, excessive, or absent from NVIDIA inventory")
+                cuda_evidence = proposed
+    except (OSError, ValueError, RuntimeError, AttributeError, RecursionError) as exc:
+        cuda_error = str(exc)[:400]
 result = {"tower_gpu": 1, "node": node, "job_id": os.getenv("SLURM_JOB_ID", ""),
     "array_job_id": os.getenv("SLURM_ARRAY_JOB_ID", ""), "array_task_id": os.getenv("SLURM_ARRAY_TASK_ID", ""),
     "het_job_id": os.getenv("SLURM_HET_JOB_ID", ""), "het_offset": os.getenv("SLURM_HET_GROUP", ""),
-    "gpus": os.getenv("SLURM_STEP_GPUS") or os.getenv("SLURM_JOB_GPUS", ""),
+    "gpus": gpus,
     "vendors": vendors, "errors": errors, "hardware_vendors": sorted(hardware_vendors),
-    "visible": {"nvidia": os.getenv("CUDA_VISIBLE_DEVICES", ""), "amd": os.getenv("ROCR_VISIBLE_DEVICES", "")}}
+    "visible": {"nvidia": cuda_visible, "amd": os.getenv("ROCR_VISIBLE_DEVICES", "")},
+    "cuda_device_order": cuda_order}
+if cuda_evidence is not None:
+    result["cuda_visibility"] = cuda_evidence
+if cuda_error:
+    result["cuda_visibility_error"] = cuda_error
 encoded = json.dumps(result, separators=(",", ":"))
 if len(encoded.encode()) > 524288:
     result["vendors"] = {}
@@ -425,9 +612,10 @@ print(encoded)
 '''
 
 
-def probe_command(provider="auto", budget=8., cache=None):
+def probe_command(provider="auto", budget=8., cache=None, *, resolve_visibility=True):
     provider = provider_name(provider)
     cached = json.dumps(cache or {}, separators=(",", ":"))
     if len(cached) > 65536:
         cached = "{}"
-    return ["python3", "-I", "-S", "-c", PROBE_SOURCE, provider, str(max(.2, min(10., budget))), cached]
+    return ["python3", "-I", "-S", "-c", PROBE_SOURCE, "1" if resolve_visibility else "0",
+            provider, str(max(.2, min(10., budget))), cached]
