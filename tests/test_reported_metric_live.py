@@ -69,7 +69,11 @@ def sampling_tool_rows(hits):
         "research-tools:telemetry", "research-tools:gpu-provider"}
     assert {value["action"] for _, value in controls} == {
         ("command", "telemetry 1"), ("command", "gpuprovider")}
-    return len({y for y, _ in controls})
+    operations = [(y, value) for y, kind, value in hits
+                  if kind == "control" and value.get("group") == "operation-tools"]
+    assert {value["action"] for _, value in operations} == {
+        ("command", "ops acceptance"), ("command", "ops statistics"), ("command", "ops energy")}
+    return len({y for y, _ in controls + operations})
 
 
 @pytest.mark.parametrize("width", [23, 24, 35, 36, 120])

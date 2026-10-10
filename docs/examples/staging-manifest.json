@@ -1,0 +1,23 @@
+{
+  "schema": "tower.staging/v1",
+  "id": "experiment-42",
+  "retention": "keep-source",
+  "entries": [
+    {
+      "id": "input-example",
+      "direction": "input",
+      "source": "/project/data/empty.txt",
+      "destination": "/scratch/experiment-42/empty.txt",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "output-example",
+      "direction": "output",
+      "source": "/scratch/experiment-42/empty-result.txt",
+      "destination": "/project/results/experiment-42/empty-result.txt",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

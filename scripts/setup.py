@@ -16,7 +16,7 @@ import venv
 ROOT = Path(__file__).resolve().parents[1]
 RESEARCH_SMOKE_VIEWS = (
     "experiment", "arrays", "evidence", "artifacts", "passport", "submit",
-    "predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow",
+    "predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow", "operations",
 )
 
 
@@ -122,7 +122,7 @@ def validate(python, mode, host, report, profile=""):
         config = scratch / "config.json"
         config.write_text("{}\n", encoding="utf-8")
         command = [python, ROOT / "tower", "--config", config, "--no-state", "--no-plugins"]
-        print("Validating simulated jobs, Unicode and ASCII terminal views, all 12 Research workspaces, and the ASCII report...", flush=True)
+        print(f"Validating simulated jobs, Unicode and ASCII terminal views, all {len(RESEARCH_SMOKE_VIEWS)} Research workspaces, and the ASCII report...", flush=True)
         snapshot = json.loads(run([*command, "--fake", "--json"], capture=True))
         if not isinstance(snapshot, dict) or not snapshot.get("jobs"):
             raise SetupError("The simulated cluster did not produce any jobs.")

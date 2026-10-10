@@ -783,6 +783,10 @@ def _apply_input(app, event, hits, curses):
             if export_active(app):
                 export_paste(app, mouse)
                 return
+            if app.mode == "operations":
+                from .ops_ui import paste as operation_paste
+                operation_paste(app, mouse)
+                return
             from .command_ui import paste
             paste(app, mouse)
         return
@@ -1471,8 +1475,9 @@ def run_curses(app, views, sampler, store, actions, cfg):
         painter = _DifferentialPainter(stdscr, paint)
         app.views_ref = views
         from . import startup
+        from .ops_ui import defer_quit as defer_operation_quit
         startup.begin(app)
-        while not app.quit:
+        while not app.quit or defer_operation_quit(app):
             if painted_theme != app.theme:
                 painted_theme = app.theme
                 # The whole screen is invalidated before pairs are reseeded.
@@ -1499,6 +1504,11 @@ def run_curses(app, views, sampler, store, actions, cfg):
                 _timed_ui(app, "document", cache.rebuild, app, views, store, actions, width, height)
                 pending_input = _timed_ui(app, "prepaint_input", _drain_prepaint_motion,
                                          app, stdscr, curses, cache.hits, pending_input)
+            if _operation_terminal(app, stdscr, curses, mouse_enabled):
+                pending_input = None
+                painter.invalidate()
+                cache.dirty = True
+                continue
             rows, overlays, bar = _timed_ui(app, "feedback", cache.feedback, app, views)
             hits, snap = cache.hits, cache.snapshot
             stdscr.timeout(cache.wait_ms())
@@ -1555,6 +1565,39 @@ def run_curses(app, views, sampler, store, actions, cfg):
         if bracketed:
             sys.stdout.write("\033[?2004l")
             sys.stdout.flush()
+
+
+def _operation_terminal(app, stdscr, curses, mouse_enabled):
+    """Hand an explicitly reviewed allocation to the terminal, then restore it."""
+    from . import ops_ui
+    argv = ops_ui.take_terminal(app)
+    if argv is None:
+        return False
+    bracketed = sys.stdout.isatty()
+    curses.endwin()
+    _mouse_reporting(False)
+    if bracketed:
+        sys.stdout.write("\033[?2004l")
+        sys.stdout.flush()
+    try:
+        result = subprocess.call(argv)
+        app.say("Allocation terminal closed" + (f" (exit {result})." if result else "."))
+    except (OSError, KeyboardInterrupt) as exc:
+        app.fail("Allocation terminal: " + str(exc))
+    finally:
+        # Shell input must never become Tower shortcuts after returning.
+        _INPUT_READERS.pop(id(stdscr), None)
+        try:
+            curses.flushinp()
+        except curses.error:
+            pass
+        _mouse_reporting(mouse_enabled)
+        if bracketed:
+            sys.stdout.write("\033[?2004h")
+            sys.stdout.flush()
+        stdscr.touchwin()
+        stdscr.refresh()
+    return True
 
 
 def run_watch(app, views, sampler, store, actions, cfg, interval: float, color: bool, width_hint: int = 120):

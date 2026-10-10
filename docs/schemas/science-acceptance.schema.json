@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tower acceptance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "tower.acceptance/v1"
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -1e+100,
+                  "maximum": 1e+100
+                },
+                "absolute": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1e+100
+                },
+                "relative": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1e+100
+                }
+              },
+              "required": [
+                "value",
+                "absolute",
+                "relative"
+              ]
+            },
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "id",
+          "expected"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 10000
+    }
+  },
+  "required": [
+    "schema",
+    "cases"
+  ]
+}

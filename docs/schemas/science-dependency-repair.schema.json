@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tower dependency-repair v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "tower.dependency-repair/v1"
+    },
+    "repairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "pattern": "^[0-9]+(_[0-9]+)?(\\+[0-9]+)?$"
+          },
+          "submit_time": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "dependency": {
+            "type": "string",
+            "maxLength": 16384
+          }
+        },
+        "required": [
+          "job_id",
+          "submit_time",
+          "dependency"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 128
+    }
+  },
+  "required": [
+    "schema",
+    "repairs"
+  ]
+}

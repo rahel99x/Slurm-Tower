@@ -1,0 +1,50 @@
+{
+  "schema": "tower.statistics/v1",
+  "design": "paired",
+  "unit": "independently seeded simulation",
+  "confidence": 0.95,
+  "control": [
+    {
+      "id": "0",
+      "value": 10.1
+    },
+    {
+      "id": "1",
+      "value": 10.5
+    },
+    {
+      "id": "2",
+      "value": 10.3
+    },
+    {
+      "id": "3",
+      "value": 10.2
+    },
+    {
+      "id": "4",
+      "value": 10.8
+    }
+  ],
+  "treatment": [
+    {
+      "id": "0",
+      "value": 9.3
+    },
+    {
+      "id": "1",
+      "value": 9.6
+    },
+    {
+      "id": "2",
+      "value": 9.2
+    },
+    {
+      "id": "3",
+      "value": 9.4
+    },
+    {
+      "id": "4",
+      "value": 9.9
+    }
+  ]
+}

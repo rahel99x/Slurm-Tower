@@ -1,0 +1,11 @@
+{
+  "schema": "tower.results/v1",
+  "runs": [
+    {
+      "id": "sum-three",
+      "metrics": {
+        "sum": 6
+      }
+    }
+  ]
+}

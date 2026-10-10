@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rahel99x/Slurm-Tower/docs/schemas/workflow-engine.schema.json",
+  "title": "Tower read-only native workflow runtime snapshot",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "engine", "workflow_id", "nodes"],
+  "properties": {
+    "schema": {"const": "tower.workflow-engine/v1"},
+    "engine": {"const": "snakemake"},
+    "workflow_id": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "nodes": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "dependencies"],
+        "properties": {
+          "id": {"type": ["string", "integer"]},
+          "rule": {"type": "string", "maxLength": 4096},
+          "native_id": {"type": "string", "maxLength": 256},
+          "state": {"type": "string", "maxLength": 128},
+          "attempt": {"type": ["string", "integer"]},
+          "dependencies": {"type": "array", "maxItems": 10000, "uniqueItems": true, "items": {"type": ["string", "integer"]}}
+        }
+      }
+    }
+  }
+}

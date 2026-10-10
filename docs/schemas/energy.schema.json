@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tower campaign energy per useful work",
+  "type": "object", "required": ["schema", "work_unit", "attempts"],
+  "properties": {
+    "schema": {"const": "tower.energy/v1"},
+    "work_unit": {"type": "string", "minLength": 1, "maxLength": 80},
+    "attempts": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {
+      "type": "object", "required": ["cluster", "job_id", "attempt", "state", "accepted_work"],
+      "properties": {
+        "cluster": {"$ref": "#/$defs/identity"}, "job_id": {"$ref": "#/$defs/identity"}, "attempt": {"$ref": "#/$defs/identity"},
+        "state": {"$ref": "#/$defs/identity"}, "accepted_work": {"$ref": "#/$defs/number"},
+        "energy": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/energy"}]}
+      }
+    }}
+  },
+  "$defs": {
+    "identity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "number": {"type": ["number", "null"], "minimum": 0, "maximum": 1e100},
+    "time": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 253402300799}, {"type": "string", "format": "date-time"}]},
+    "energy": {
+      "type": "object", "required": ["scope", "attribution", "source", "unit"],
+      "properties": {
+        "scope": {"enum": ["job", "node", "gpu"]}, "attribution": {"enum": ["exclusive", "shared", "allocated_fraction"]},
+        "source": {"$ref": "#/$defs/identity"}, "kind": {"enum": ["total", "counter", "power"]},
+        "unit": {"enum": ["J", "kJ", "Wh", "kWh", "W"]}, "value": {"$ref": "#/$defs/number"},
+        "fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "coverage_complete": {"type": "boolean"},
+        "window_start": {"$ref": "#/$defs/time"}, "window_end": {"$ref": "#/$defs/time"},
+        "max_gap_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 1e100},
+        "samples": {"type": "array", "minItems": 1, "maxItems": 100000, "items": {
+          "type": "object", "required": ["t", "value"], "properties": {"t": {"$ref": "#/$defs/time"}, "value": {"$ref": "#/$defs/number"}}
+        }}
+      }
+    }
+  },
+  "description": "At most 4 MiB. One accounting series per unique cluster/job/attempt prevents overlapping node and GPU double counting. Total requires J/kJ/Wh/kWh and coverage_complete=true for verified completeness. Counter requires energy units; power requires W. Sample times strictly increase inside the complete attempt window. Missing intervals and resets remain unknown. Include all failed attempts. Shared-source energy is not job energy. Mixed scope boundaries cannot produce campaign efficiency."
+}

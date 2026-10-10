@@ -886,6 +886,40 @@ See [Artifacts](guides/artifacts.md) for size limits, source identity, and decla
 
 ## Command families
 
+### Research and cluster operations
+
+Release 4.15 adds forms for the twenty-six operations in the
+[operation catalog](guides/operations.md#all-twenty-six-operation-keys).
+Open **File → Research and cluster operations**, or use a related Sources,
+Analytics, or Research button. Embedded Research views expose the same controls.
+
+| Control | Function |
+| --- | --- |
+| `:ops`, `:ops catalog` | Open the complete catalog |
+| `:ops FEATURE`, `:ops open FEATURE` | Open a feature's editable form |
+| `:ops run FEATURE field=value` | Inspect explicit inputs; quote values that contain spaces |
+| Click or Enter on a field | Edit text or cycle fixed choices |
+| Enter / Esc while editing | Accept / discard the field edit |
+| Up / Down, page keys, Home / End | Move through catalog entries, fields, or report lines |
+| Tab / Shift-Tab | Switch content and button focus |
+| Left / Right | Move action-button focus |
+| **Inspect / prepare**, `:ops inspect` | Collect evidence or prepare a reviewable plan |
+| **Review action**, `:ops review` | Display the exact current action plan |
+| **Confirm apply**, `:ops apply` | Apply only the displayed, current, unused review |
+| **Edit inputs**, `:ops form` | Return to the input form |
+| `r`, **Refresh** | Inspect the current inputs again |
+| `v`, then movement; Shift-click | Select report or review lines |
+| `y`, **Copy report**, `:ops copy` | Copy selected lines, or the complete structured report when no selection exists |
+| Right-click | Clear selected report lines |
+| Wheel / scrollbar | Scroll the operation pane |
+| **Cancel inspection**, `:ops cancel` | Cancel a read-only inspection at a bounded checkpoint |
+| Esc / `q`, **Close**, `:ops close` | Return to the prior view; a running action still has its result collected |
+
+A review expires after five minutes and is invalid after a scope, attempt, or
+source change. Inspection never confirms a change. The interface consumes the
+plan before it starts Apply. An unknown submission result needs reconciliation,
+not a repeated click. Read the [operation review rules](guides/operations.md#review-background-work-and-recovery-rules).
+
 ### Phase one inspection controls
 
 These controls are available in release 4.14. Inspectors do not submit jobs.
@@ -945,6 +979,7 @@ Job-changing commands open a review; scripted changes require `--yes`.
 | Provenance | `passport` | [Research](RESEARCH.md) |
 | Submission preparation | `prepare`, `preflight`, `submit`, `array` | [Research](RESEARCH.md) |
 | Shell checks and scientific array mapping | `shellcheck`, `arraymap` | [Phase one](guides/phase-one.md) |
+| Research and cluster operation forms | `ops` | [Operation catalog and controls](guides/operations.md) |
 | Resource and queue evidence | `predict`, `forecast`, `blockers`, `tradeoffs`, `choose` | [Planning](WAVE_TWO.md) |
 | Experiment and workflow execution | `scaling`, `workflow`, `orchestrate`, `execution` | [Planning](WAVE_TWO.md) |
 | Recorded sessions | `replay` | [Reference](reference.md#recording-and-replay) |

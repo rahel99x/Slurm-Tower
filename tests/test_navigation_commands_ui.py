@@ -171,9 +171,9 @@ def test_workspace_picker_scrolls_to_last_workspace(dashboard):
     overlay_text(navigation, app, views, store, height=12)
     navigation.handle_key(app, "end")
     text = overlay_text(navigation, app, views, store, height=12)
-    assert "Workflow" in text
+    assert "Operations" in text
     navigation.handle_key(app, "enter")
-    assert app.research_view == "workflow"
+    assert app.research_view == "operations"
 
 
 def test_research_view_back_restores_prior_view(dashboard):

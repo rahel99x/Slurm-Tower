@@ -15,7 +15,7 @@ from .worker_scheduler import WorkerScheduler
 
 RESEARCH_VIEWS = [("experiment", "Experiment"), ("arrays", "Arrays"),
                   ("evidence", "Evidence"), ("artifacts", "Artifacts"),
-                  ("passport", "Passport"), ("submit", "Submit")] + PLANNING_VIEWS
+                  ("passport", "Passport"), ("submit", "Submit")] + PLANNING_VIEWS + [("operations", "Operations")]
 
 
 def clean(value, ascii_=False, limit=4096):
@@ -273,6 +273,9 @@ class ResearchHub:
 
     def _read(self, context):
         view, settings, snap = context["view"], context["settings"], context["snap"]
+        if view == "operations":
+            from .operations import catalog
+            return {"status": "ok", "summary": "Research and cluster operations", "operations": catalog()}
         if view in dict(PLANNING_VIEWS):
             return self._planning(context)
         if view == "experiment":

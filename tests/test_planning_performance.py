@@ -230,7 +230,7 @@ def test_cached_twelve_view_redraw_performs_no_io_or_scheduler_queries(cached_da
                 assert len(rows) == height
     assert not calls
     assert hub.future is original_worker
-    assert len(hub.cache) == 12
+    assert len(hub.cache) == len(RESEARCH_VIEWS)
     # A generous ceiling catches accidental blocking waits without enforcing
     # fragile microbenchmarks on a shared CI machine.
     assert time.monotonic() - started < 10

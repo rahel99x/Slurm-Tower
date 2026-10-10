@@ -1,0 +1,1 @@
+Example application checkpoint. Replace this file with an atomically published application snapshot.

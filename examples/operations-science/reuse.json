@@ -1,0 +1,55 @@
+{
+  "schema": "tower.reuse/v1",
+  "identity": {
+    "project": "sum-three-example",
+    "code_sha256": "133b23137e9fb81e566540a0239c4606b5b2a9bcc09d3cdf06dfce37bee82c25",
+    "environment_sha256": "e8679a70ab8b9b19c225a09dbebfc071a6facb10ec5703180ccdc06010a722c3",
+    "parameters_sha256": "1f3aa772dd5ecd94d5ec8f979d61ac1f786998469f80e09a746f8169d9da5f7a",
+    "inputs_sha256": {
+      "input.txt": "14c5e74c4b96ccef41cd94db73a9ec3348038ac094feca4fd897cecffa07cdae",
+      "requirements.lock": "6138c7ed534772d9b246f5c8417e3484bcfddc24e2980cf38efdb71a2e682941"
+    }
+  },
+  "dependencies": [
+    {
+      "path": "solver.py",
+      "sha256": "133b23137e9fb81e566540a0239c4606b5b2a9bcc09d3cdf06dfce37bee82c25",
+      "role": "code"
+    },
+    {
+      "path": "environment.json",
+      "sha256": "e8679a70ab8b9b19c225a09dbebfc071a6facb10ec5703180ccdc06010a722c3",
+      "role": "environment"
+    },
+    {
+      "path": "parameters.json",
+      "sha256": "1f3aa772dd5ecd94d5ec8f979d61ac1f786998469f80e09a746f8169d9da5f7a",
+      "role": "parameters"
+    },
+    {
+      "path": "input.txt",
+      "sha256": "14c5e74c4b96ccef41cd94db73a9ec3348038ac094feca4fd897cecffa07cdae",
+      "role": "input"
+    },
+    {
+      "path": "requirements.lock",
+      "sha256": "6138c7ed534772d9b246f5c8417e3484bcfddc24e2980cf38efdb71a2e682941",
+      "role": "input"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "answer.txt",
+      "sha256": "06e9d52c1720fca412803e3b07c4b228ff113e303f4c7ab94665319d832bbfb7",
+      "target": "results/answer.txt"
+    }
+  ],
+  "acceptance": {
+    "path": "acceptance.json",
+    "sha256": "913ec9a6b0264dac5e90590b7e00e6e0d47e8f2eaee80cd1bf72e6dc7a020ab7"
+  },
+  "results": {
+    "path": "results.json",
+    "sha256": "028fbd3497682a23eae241ccadc363b1096b8ae7a6000a8de9424638e93a0144"
+  }
+}

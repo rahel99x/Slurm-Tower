@@ -1,0 +1,29 @@
+{
+  "schema": "tower.checkpoint-restart/v1",
+  "id": "example-restart-01",
+  "script": "restart.sbatch",
+  "script_sha256": "63751a3a318d5c83ee93f56e2a0c594a6382b471e5afc0d0f6fa7048dc4624b2",
+  "workdir": ".",
+  "checkpoint": {
+    "path": "checkpoint.txt",
+    "sha256": "251a0e1814ea5d709acf455cf6ee32535c706b24a4213ba6df68baf9c1358a6f",
+    "complete": true
+  },
+  "compatibility": {
+    "expected": {
+      "application": "example-reader-1",
+      "format": "text-v1",
+      "runtime": "python3"
+    },
+    "actual": {
+      "application": "example-reader-1",
+      "format": "text-v1",
+      "runtime": "python3"
+    }
+  },
+  "source_job": {
+    "id": "1234_7",
+    "cluster": "example-cluster",
+    "start": "2026-01-02T10:00:00"
+  }
+}

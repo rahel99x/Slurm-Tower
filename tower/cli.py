@@ -54,6 +54,8 @@ class Session:
         close(self.app)
         from .shell_checks_ui import close as close_shell_checks
         close_shell_checks(self.app)
+        from .ops_ui import shutdown as shutdown_operations
+        shutdown_operations(self.app)
         self.app.save()
         if getattr(self.app, "research", None):
             self.app.research.close()

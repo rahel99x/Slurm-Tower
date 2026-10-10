@@ -414,6 +414,15 @@ def _inspector(views, snap, app, job, width, state):
     rows = [[(" Live summary" if active else "Recent summary", "heading+bold")],
             [(clean(f" Job {job.id}  {job.name}", views.g.ascii), "cyan+bold")]]
     hits = []
+    from . import ops_ui
+    keys = ("allocation-shell", "placement", "batch-script") if active else ("checkpoint", "batch-script", "incidents")
+    if active and str(getattr(job, "state", "")).startswith("PENDING"):
+        keys = ("pending-edit", "dependency-repair", "array-throttle")
+    controls, control_hits = ops_ui.contextual_controls(views.g, width, keys)
+    for y, _, value in control_hits:
+        target = ("inline_operation", {"job": job.id, "feature": value["action"][1].split()[-1]})
+        hits.append((len(rows) + y, "job_panel_action", (target, value["left"], value["right"])))
+    rows.extend(controls)
     if active:
         for item in views.selected_panel(snap, job, width, 0, app):
             text = L.row_text(item).lstrip()
@@ -929,11 +938,17 @@ def _content_action(app, target):
         else:
             quick_advisor.cancel(app)
         return True
-    if kind in ("inline_log", "inline_logs", "inline_evidence"):
+    if kind in ("inline_log", "inline_logs", "inline_evidence", "inline_operation"):
         jid = value.get("job") if isinstance(value, dict) else value
         if jid != state.get("job") or jid != getattr(app, "selected_id", None):
             return False
-        if kind == "inline_logs":
+        if kind == "inline_operation":
+            from . import ops_ui
+            ops_ui.run_command(app, ["ops", value["feature"]])
+            form = ops_ui.initialize(app)
+            if "job_id" in form["values"]:
+                form["values"]["job_id"] = str(jid)
+        elif kind == "inline_logs":
             app.open_log(jid)
         elif kind == "inline_evidence":
             _activate(app, "research", view="evidence")

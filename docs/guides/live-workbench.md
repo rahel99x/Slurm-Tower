@@ -483,7 +483,7 @@ See [Tables](tables.md), [Log display](log-view.md), and [Navigation](navigation
 | Choice | Result |
 | --- | --- |
 | Each of the ten page names | Open that page |
-| Research: each workspace name | Open one of the twelve Research workspaces |
+| Research: each workspace name | Open one of the thirteen Research workspaces |
 | Search Research workspaces | Open the searchable workspace picker |
 | Jump to job, run, file, or view | Open universal jump search |
 | Back to previous location | Restore the previous destination |

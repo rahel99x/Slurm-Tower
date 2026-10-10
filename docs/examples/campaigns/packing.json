@@ -1,0 +1,13 @@
+{
+  "schema": "tower.packed-tasks/v1",
+  "id": "example-packed-01",
+  "workdir": ".",
+  "cpus": 2,
+  "memory_mb": 256,
+  "parallel": 2,
+  "walltime": "00:05:00",
+  "tasks": [
+    {"id": "one", "argv": ["python3", "-c", "print('logical task one')"], "cpus": 1, "memory_mb": 128},
+    {"id": "two", "argv": ["python3", "-c", "print('logical task two')"], "cpus": 1, "memory_mb": 128}
+  ]
+}

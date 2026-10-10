@@ -111,7 +111,7 @@ def test_all_twelve_views_fit_terminal_and_preserve_character_fallback(planning_
     session.views.set_ascii(ascii_)
     session.app._ascii_cfg = ascii_
     session.app.set_theme(session.app.theme)
-    assert len(RESEARCH_VIEWS) == 12
+    assert len(RESEARCH_VIEWS) == 13
     for view, _ in RESEARCH_VIEWS:
         result = load_view(session, view)
         assert result.get("status") not in {"loading", "error", "empty"}, (view, result)
@@ -148,13 +148,13 @@ def test_research_navigation_cycles_twelve_views_and_file_job_selection(planning
     app = session.app
     app.research_view = "experiment"
     visited = []
-    for _ in range(12):
+    for _ in range(len(RESEARCH_VIEWS)):
         visited.append(app.research_view)
         app.handle("right")
     assert visited == [view for view, _ in RESEARCH_VIEWS]
     assert app.research_view == "experiment"
     app.handle("left")
-    assert app.research_view == "workflow"
+    assert app.research_view == "operations"
     load_view(session, "forecast")
     text_frame(session)
     assert [j["id"] for j in app.research_data_jobs] == ["901", "902"]

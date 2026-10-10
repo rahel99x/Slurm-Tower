@@ -25,7 +25,8 @@ my-project/
 │   │   └── outputs.v1.json
 │   └── definitions/             optional experiment and workflow recipes
 │       ├── scaling.json
-│       └── workflow.json
+│       ├── workflow.json
+│       └── operations/          optional explicit policies and campaign recipes
 ├── runs/
 │   └── <run_id>/                one execution attempt, created exclusively
 │       ├── run.json             identity, lifecycle, and declared file paths
@@ -40,7 +41,8 @@ my-project/
 │       │   ├── tradeoffs.json   explicit comparable resource candidates
 │       │   ├── scaling.json    controlled measurements or a scaling recipe
 │       │   ├── workflow.json   actual dependency recipe and timing evidence
-│       │   └── submit.json     captured read-only native submission preflight
+│       │   ├── submit.json     captured read-only native submission preflight
+│       │   └── operations/    declared science, profiler, or workflow evidence
 │       ├── outputs/             tables, models, checkpoints, other results
 │       ├── logs/
 │       │   ├── stdout.log
@@ -48,6 +50,7 @@ my-project/
 │       └── passports/           immutable Tower provenance records
 ├── reports/
 │   ├── planning.json            bounded aggregate of explicitly selected runs
+│   ├── operations/              explicit campaign/cohort operation evidence
 │   └── arrays/
 │       └── <cluster>-<array_id>.json  optional exact-index scientific mapping
 └── logs/                        optional Slurm output opened before job startup
@@ -344,6 +347,69 @@ Tower validates `run.json` during bounded discovery or explicit selection,
 reads metrics directly, and checks declared files through contracts. It analyzes
 `summary.json` records after explicit placement in a supported planning bundle.
 The template supplies that aggregation step; discovery does not manufacture it.
+
+## Research operation contracts
+
+Tower 4.15 adds explicit forms for twenty-six operations. Open `:ops catalog`,
+or use a related view button. These sources are separate from automatic
+`run.json` binding: adding a file to the recommended directory does not load it,
+arm an action, or start a service. Set its exact path in the operation form and
+select **Inspect / prepare**. See the [complete operation catalog](guides/operations.md).
+
+Keep reusable policies and recipes in
+`PROJECT/.tower/definitions/operations/`. Keep measurements for one attempt in
+`PROJECT/runs/<run_id>/reports/operations/`. Keep an explicitly selected cohort
+or campaign in `PROJECT/reports/operations/`. The names below are conventions;
+the schema and exact path supplied to a form determine the reader.
+
+| Source | Suggested filename | Form / contract |
+| --- | --- | --- |
+| Python, native-library, and optional container requirements | `.tower/definitions/operations/environment.json` | `environment`; [tower.environment/v1](schemas/science-environment.schema.json) |
+| Scientific acceptance rules | `.tower/definitions/operations/acceptance.json` | `acceptance`; [tower.acceptance/v1](schemas/science-acceptance.schema.json) |
+| Actual scientific measurements | `RUN/reports/operations/results.json` | `acceptance`; [result contract](schemas/science-results.schema.json) |
+| Declared independent units or exact pairs | `reports/operations/statistics.json` | `statistics`; [comparison contract](schemas/science-statistics.schema.json) |
+| Exact requested code, environment, and parameter identity | `.tower/definitions/operations/identity.json` | `reuse`; [identity contract](schemas/science-identity.schema.json) |
+| Verified inputs, outputs, identity, and acceptance evidence | `RUN/reports/operations/reuse.json` | `reuse`; [reuse contract](schemas/science-reuse.schema.json) |
+| Exact pending-job dependency repair recipe | `reports/operations/dependency-repair.json` | `dependency-repair`; [repair contract](schemas/science-dependency-repair.schema.json) |
+| Checkpoint path/hash, completed source attempt, compatible restart recipe | `RUN/reports/operations/checkpoint.json` | `checkpoint`; `tower.checkpoint-restart/v1`, [example and rules](guides/operations-campaigns.md#checkpoint-recovery) |
+| Discrete search space, budget, trial script, and observations | `reports/operations/search.json` | `search`; `tower.parameter-search/v1`, [example and rules](guides/operations-campaigns.md#adaptive-parameter-search) |
+| Logical tasks and resource budgets | `.tower/definitions/operations/packing.json` | `packing`; `tower.packed-tasks/v1`, [example and rules](guides/operations-campaigns.md#short-task-packing) |
+| Owned pool and scaling bounds | `.tower/definitions/operations/dask.json` | `dask`; `tower.dask-pool/v1`, [example and rules](guides/operations-campaigns.md#elastic-dask-pool) |
+| Distinct Slurm components and coupled launch | `.tower/definitions/operations/heterogeneous.json` | `heterogeneous`; `tower.heterogeneous-allocation/v1`, [example and rules](guides/operations-campaigns.md#heterogeneous-allocation) |
+| Declared input/output transfer paths, sizes, and hashes | `reports/operations/staging.json` | `staging`; [tower.staging/v1](schemas/staging.schema.json), [example](examples/staging-manifest.json) |
+| Native Nextflow trace | `RUN/reports/operations/trace.tsv` | `workflow-engine`; [native TSV fields](guides/operations-services.md#nextflow) |
+| Native Snakemake DAG or runtime plugin snapshot | `RUN/reports/operations/workflow-engine.json` | `workflow-engine`; [snapshot contract](schemas/workflow-engine.schema.json), [example](examples/workflow-engine.json) |
+| Exclusive profiler rank/phase observations | `RUN/reports/operations/profiler.json` | `bottlenecks`; [tower.profiler/v1](schemas/profiler.schema.json), [example](../examples/scale-profiler.json) |
+| Explicit cluster endpoints or profile references | `.tower/definitions/operations/clusters.json` | `clusters`; [workspace contract](schemas/cluster-workspace.schema.json), [example](../examples/scale-clusters.json) |
+| Permitted node-event intervals and reasons | `reports/operations/incidents.json` | `incidents`; [tower.incidents/v1](schemas/incidents.schema.json), [example](../examples/scale-incidents.json) |
+| Attempt energy, attribution, coverage, and accepted work | `reports/operations/energy.json` | `energy`; [tower.energy/v1](schemas/energy.schema.json), [example](../examples/scale-energy.json) |
+
+`RUN` means `PROJECT/runs/<run_id>`. Read the
+[science guide](guides/operations-science.md) before adapting the
+[science examples](../examples/operations-science). Keep missing or unknown
+measurements distinct from zero. A successful Slurm exit does not establish
+scientific acceptance. Energy totals include failed attempts, and statistical
+units must identify actual independent observations or explicit pairs.
+
+Publish producer snapshots atomically. Do not rewrite the file while a reader
+is validating its identity. Preserve exact cluster, job ID, submit/start
+attempt, logical task, and workflow-run identities where the contract requires
+them. Append only complete newline-terminated trace rows. A bounded tail is
+not a complete workflow history.
+
+Operation plans and service state are Tower-owned outputs. Do not synthesize
+an action plan or copy one between connections. Common action receipts use
+`tower.operation-receipt/v1` under Tower's state directory in
+`operations-receipts/`; transfer, campaign, and service adapters also retain
+their own durable records. Keep this private operational state out of project
+Git history. Share a reviewed structured report when another researcher needs
+the evidence.
+
+The [operation guide](guides/operations.md#review-background-work-and-recovery-rules)
+defines review lifetime, cancellation, worker behavior, and unknown-action
+reconciliation. A schema validator checks document shape; the native reader
+also checks identity, bounds, file contents, and graph semantics. A passing
+schema check alone never authorizes a scheduler change or proves valid science.
 
 ## Log locations: `logs.json`
 

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tower distributed profiler evidence",
+  "type": "object",
+  "required": ["schema", "cluster", "job_id", "attempt", "records"],
+  "properties": {
+    "schema": {"const": "tower.profiler/v1"},
+    "cluster": {"$ref": "#/$defs/identity"},
+    "job_id": {"$ref": "#/$defs/identity"},
+    "attempt": {"$ref": "#/$defs/identity", "description": "Exact Slurm SubmitTime/StartTime for a started job, or SubmitTime only when StartTime is unknown. Required to verify a selected job and distinguish requeues."},
+    "expected_ranks": {"type": "array", "minItems": 1, "maxItems": 20000, "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+    "ordered_barrier_phases": {"type": "boolean"},
+    "records": {
+      "type": "array", "minItems": 1, "maxItems": 20000,
+      "items": {
+        "type": "object", "required": ["rank", "phase"],
+        "properties": {
+          "rank": {"type": "integer", "minimum": 0},
+          "node": {"$ref": "#/$defs/identity"}, "phase": {"$ref": "#/$defs/identity"},
+          "elapsed_s": {"$ref": "#/$defs/measurement"}, "cpu_s": {"$ref": "#/$defs/measurement"},
+          "mpi_s": {"$ref": "#/$defs/measurement"}, "io_s": {"$ref": "#/$defs/measurement"},
+          "read_bytes": {"$ref": "#/$defs/measurement"}, "write_bytes": {"$ref": "#/$defs/measurement"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "measurement": {"type": ["number", "null"], "minimum": 0, "maximum": 1e100}
+  },
+  "description": "At most 4 MiB. Unique rank/phase pairs; exclusive MPI and I/O wall durations may not exceed elapsed_s. Missing measurements remain unknown. Positive values below 1e-100 are rejected. Full expected rank coverage and declared ordered barriers are required for the phase envelope. This is not a reconstructed asynchronous critical path."
+}

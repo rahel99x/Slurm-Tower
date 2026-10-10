@@ -1,0 +1,9 @@
+{
+  "schema": "tower.workflow-engine/v1",
+  "engine": "snakemake",
+  "workflow_id": "experiment-42-run-1",
+  "nodes": [
+    {"id": "align-1", "rule": "align", "native_id": "1234", "state": "completed", "attempt": 1, "dependencies": []},
+    {"id": "report-1", "rule": "report", "native_id": "1235", "state": "running", "attempt": 1, "dependencies": ["align-1"]}
+  ]
+}

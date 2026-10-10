@@ -96,6 +96,7 @@ def menu_items(app, menu):
     if menu == "File":
         return [
             Item("project", "Open project...", "project ", True, description="Discover a standard project and its run inventory."),
+            Item("operations", "Research and cluster operations", "ops"),
             Item("runs", "Project runs and attempts", "runs", context="project"),
             Item("outputs", "Run output artifacts", "outputs", context="binding"),
             Item("metrics", "Attach metrics stream...", "metrics ", True),

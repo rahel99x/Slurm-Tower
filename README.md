@@ -12,10 +12,10 @@ It also provides an ASCII display mode and plain-text reports.
 | Interface | Terminal only; curses for the interactive display |
 | Python | Python 3.10 or later, with curses and venv support |
 | Operating system | Linux, macOS, or Windows through WSL |
-| Runtime packages | Python standard library only |
+| Runtime packages | Core: Python standard library only; optional adapters have separate requirements |
 | Live data | Slurm commands available to your cluster account |
 | Demonstration | Simulated scheduler; no cluster account required |
-| Release | Tower 4.14.0 |
+| Release | Tower 4.15.0 |
 | License | [MIT](LICENSE) |
 
 [Installation and operation](docs/runbook.md) ·
@@ -29,10 +29,34 @@ It also provides an ASCII display mode and plain-text reports.
 [Pane scrolling and text selection](docs/guides/pane-navigation.md) ·
 [Controls](docs/CONTROLS.md) ·
 [Phase one: measurement and submission checks](docs/guides/phase-one.md) ·
+[Research and cluster operations](docs/guides/operations.md) ·
 [Implementation roadmap](docs/ROADMAP.md) ·
 [All 50 improvements](docs/QUALITY_OF_LIFE.md) ·
 [Complete reference](docs/reference.md) ·
 [Project reporting standard](docs/PROJECT_STANDARD.md)
+
+## Changes in Tower 4.15.0
+
+The twenty-six remaining research proposals now have explicit operation forms
+and supported adapters. Open **File → Research and cluster operations**, or
+enter `:ops catalog`. Related buttons also appear in Sources, Analytics, and
+Research views, including embedded Research views in job Details.
+
+- Inspect storage, quotas, reservations, licenses, service health, retained scripts, and allocation placement. Review pending-job edits, array concurrency, and allocation attachment.
+- Compare environments, evaluate scientific acceptance and statistics, verify result reuse, and repair declared dependencies.
+- Prepare checkpoint restarts, bounded parameter searches, packed tasks, Dask pools, heterogeneous allocations, and verified file transfers. Reconnect to a persistent read-only monitor and observe native workflow evidence.
+- Inspect profiler exports, concurrent cluster snapshots, historical incidents, and energy per accepted result.
+
+Set the fields and select **Inspect / prepare**. Changes require **Review
+action → Confirm apply**. The work runs outside rendering and preserves the
+current page when a result arrives. Source limits, unavailable evidence,
+partial actions, and uncertain submissions remain explicit.
+
+Read the [operation catalog and controls](docs/guides/operations.md) for every
+feature, its [validation record](docs/guides/operations-validation.md), and
+the [rollout status](docs/ROADMAP.md) for the exact implementation scope.
+Optional engines and site features require their documented dependencies.
+The proposed 5.0 stack tracer remains a separate design.
 
 ## Changes in Tower 4.14.0
 
@@ -42,8 +66,8 @@ It also provides an ASCII display mode and plain-text reports.
 - Attach scientific labels, parameters, and paths to actual Slurm array indices through a validated manifest. Task order does not determine scientific identity.
 
 Use the [phase one guide](docs/guides/phase-one.md) for interface controls,
-setup, and limits. The [roadmap](docs/ROADMAP.md) separates this release from the
-remaining twenty-six proposals and the planned stack tracer.
+setup, and limits. The [roadmap](docs/ROADMAP.md) records the later 4.15 operation
+rollout and the separate planned stack tracer.
 See the [validation report](docs/guides/phase-one-validation.md) for test results,
 render measurements, and hardware validation limits.
 
@@ -549,7 +573,7 @@ See [log search](docs/guides/log-search.md) and [log display](docs/guides/log-vi
 Use the [project reporting standard](docs/PROJECT_STANDARD.md) for portable integration.
 Copy the [project template](examples/project-template/README.md) when you start an integration.
 The reporter uses the Python standard library.
-The standard defines an exact source location for each of the twelve Research workspaces.
+The standard defines source locations for the Research workspaces and operation manifests.
 
 ```text
 my-project/
@@ -619,7 +643,7 @@ See [execution and recovery](docs/WORKBENCH.md#execute-a-reviewed-workflow-or-sc
 | Method | Command | Result |
 | --- | --- | --- |
 | Inspect prerequisites | `tower --doctor` | Local environment checks |
-| Diagnose missing GPU graphs | `tower --gpu-check` | Current job allocations, NVIDIA sampling, traces, and retained samples |
+| Diagnose missing GPU graphs | `tower --gpu-check` | Current job allocations, selected GPU adapter, traces, and retained samples |
 | Inspect a simulated environment | `tower --doctor --fake` | Checks without Slurm |
 | Export one page | `tower --once --tab history` | One terminal frame |
 | Export a snapshot | `tower --json` | Machine-readable JSON |
@@ -671,7 +695,8 @@ Source minimum intervals and retry backoff remain in effect.
 Sources shows the effective intervals.
 
 Live GPU sampling creates short `srun` steps inside an existing allocation.
-It can fall back to SSH on a compute node.
+The compute-node helper needs Python 3 and a supported vendor tool.
+It requires allocation evidence before attributing a device to the selected job.
 Enable this feature only where cluster policy permits it.
 Use `--no-gpu` to disable it for one launch.
 
@@ -697,6 +722,12 @@ See [Documentation style](docs/DOCUMENTATION_STYLE.md) for terminology and proce
 | Inspect graph windows, ranges, events, and units | [Chart guide](docs/guides/charts.md) |
 | Page through declared output files | [Artifact guide](docs/guides/artifacts.md) |
 | Review completions, exports, diagnostics, and alerts | [Operations guide](docs/guides/operations.md) |
+| Use all twenty-six research and cluster operations | [Operation catalog, controls, and review rules](docs/guides/operations.md#all-twenty-six-operation-keys) |
+| Check storage, pending jobs, arrays, reservations, licenses, and allocation access | [Cluster operations](docs/guides/operations-cluster.md) |
+| Verify environments, scientific results, statistics, reuse, and dependencies | [Science operations](docs/guides/operations-science.md) |
+| Run checkpoint recovery, searches, packing, Dask, or heterogeneous allocations | [Campaign operations](docs/guides/operations-campaigns.md) |
+| Monitor persistently, stage verified files, or inspect native workflows | [Service operations](docs/guides/operations-services.md) |
+| Inspect rank bottlenecks, clusters, incidents, and energy | [Scale diagnostics](docs/guides/operations-scale.md) |
 | Diagnose missing GPU measurements | [GPU detection checks](docs/guides/gpu-detection.md) |
 | Use the original terminal workbench | [Workbench guide](docs/WORKBENCH.md) |
 | Instrument projects and define reports | [Project reporting standard](docs/PROJECT_STANDARD.md) |

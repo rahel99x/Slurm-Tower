@@ -233,7 +233,9 @@ def _scope(app):
     return (mode, getattr(app, "tab", ""), toolbar.get("menu"), toolbar.get("panel"),
             analysis.get("modal"), _state(app, "table_tools_state").get("modal"),
             id(getattr(app, "confirm", None)) if mode == "confirm" else None,
-            id(_state(app, "execution_state").get("review")) if mode == "execution" else None)
+            id(_state(app, "execution_state").get("review")) if mode == "execution" else None,
+            tuple(_state(app, "ops_state").get(key) for key in ("generation", "view", "editing"))
+            if mode == "operations" else None)
 
 
 def _viewport(app):
@@ -304,7 +306,9 @@ def _context(app):
             repr(execution.get("pending_action"))[:512] if getattr(app, "mode", "main") == "execution" else None,
             _viewport(app),
             getattr(app, "analytics_job", None), getattr(app, "research_job_id", None), getattr(app, "log_job", None),
-            tuple(binding.get(name) for name in ("project_root", "run_id", "job_id", "attempt")))
+            tuple(binding.get(name) for name in ("project_root", "run_id", "job_id", "attempt")),
+            tuple(_state(app, "ops_state").get(key) for key in ("generation", "view", "editing"))
+            if getattr(app, "mode", "main") == "operations" else None)
 
 
 def _current(app):
@@ -503,7 +507,8 @@ def _modal_controls(app, rows, width, height, spans):
                    "log_compare": "log_workbench_state", "log_diff": "log_workbench_state",
                    "execution": "execution_state", "columns": "table_state",
                    "telemetry": "telemetry_state", "shell_checks": "shell_checks_state",
-                   "arraymap": "array_manifest_state", "gpu_provider": "gpu_provider_state"}
+                   "arraymap": "array_manifest_state", "gpu_provider": "gpu_provider_state",
+                   "operations": "ops_state"}
     # The log workbench uses additional mode names; only current modal data may
     # contribute controls, never a previous hidden panel's registries.
     state_name = state_names.get(mode)
@@ -957,6 +962,13 @@ def _activate(app, control, *, keyboard=False):
 def handle_key(app, key):
     state = initialize(app)
     if state["routing"]:
+        return False
+    if (getattr(app, "mode", "main") == "operations"
+            and _state(app, "ops_state").get("editing") is not None):
+        # A field entered through the shared button graph owns its caret keys.
+        # Returning focus to the graph here would turn Home/Enter into actions.
+        state["active"] = False
+        state["pending_focus"] = None
         return False
     if key == "f8":
         _focus(app, not state["active"])

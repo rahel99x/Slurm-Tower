@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tower concurrent cluster workspace",
+  "type": "object", "required": ["schema", "clusters"],
+  "properties": {
+    "schema": {"const": "tower.cluster-workspace/v1"},
+    "clusters": {"type": "array", "minItems": 1, "maxItems": 8,
+      "items": {"type": "object", "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "profile": {"type": "string", "maxLength": 80},
+          "host": {"type": "string", "maxLength": 256},
+          "ssh_user": {"type": "string", "maxLength": 256},
+          "user": {"type": "string", "maxLength": 128},
+          "cluster": {"type": "string", "maxLength": 256, "pattern": "^[A-Za-z0-9_.-]*$"}
+        }
+      }
+    }
+  },
+  "description": "Unique source names. An explicit empty host means the machine running Tower. A profile inherits Tower configuration, including host and trusted ssh_opts. Direct manifest SSH options are not accepted as transport options. Cluster selects Slurm -M; it is optional on single-cluster login hosts. No connection switch or scheduler mutation occurs."
+}

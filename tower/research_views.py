@@ -31,7 +31,8 @@ def render(views, snap, app, width, height):
     if hub is None:
         return nav + [row(" Research services are unavailable.", "yellow")], nav_hits
     context = hub.context(snap, app)
-    result = hub.request(context)
+    # The operations catalog is metadata, not a collector request.
+    result = {"status": "ok"} if view == "operations" else hub.request(context)
     analysis = analysis_ui.initialize(app)
     if view == "experiment":
         app.analysis_result = result
@@ -54,11 +55,20 @@ def render(views, snap, app, width, height):
             group="research-tools", prefix="research-tools:")
         hits += [(y + len(rows), kind, data) for y, kind, data in control_hits]
         rows += controls
+    from . import ops_ui
+    if view in ops_ui.CONTEXT_TOOLS:
+        controls, control_hits = ops_ui.contextual_controls(g, width, ops_ui.CONTEXT_TOOLS[view])
+        hits += [(y + len(rows), kind, data) for y, kind, data in control_hits]
+        rows += controls
     structured = ((view == "experiment" and "series" in result) or (view == "artifacts" and "outputs" in result)
                   or view in ("predict", "forecast", "blockers", "tradeoffs", "scaling", "workflow")
                   and any(key in result for key in ("metrics", "predicted_start", "evidence", "candidates", "points", "runs", "issues", "nodes")))
     if result.get("status") in ("loading", "empty", "error", "incomplete") and not structured:
         rows.append(row(" " + result.get("summary", "No data yet."), "red" if result.get("status") == "error" else "dim"))
+    elif view == "operations":
+        content, control_hits = ops_ui.catalog_rows(g, width)
+        hits += [(y + len(rows), kind, data) for y, kind, data in control_hits]
+        rows += content
     elif view == "experiment":
         rows.append(row(f" {result.get('path', '')}  |  {result.get('records', 0)} records  |  phase {result.get('phase') or 'unreported'}", "dim"))
         progress = result.get("progress") or {}

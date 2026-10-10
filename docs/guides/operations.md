@@ -1,4 +1,220 @@
-# Activity, diagnostics, completions, and alerts
+# Research operations and application diagnostics
+
+[README](../../README.md) · [Controls](../CONTROLS.md) · [Rollout status](../ROADMAP.md) · [Validation](operations-validation.md)
+
+Tower 4.15 adds twenty-six operations from the research review. Each operation
+has a terminal form, bounded background inspection, and a readable report.
+An operation that changes a job, starts a service, submits work, or writes
+results also has a separate action review. The four additions from 4.14 remain
+available through their [phase one controls](phase-one.md).
+
+## Open and use an operation
+
+1. Open **File → Research and cluster operations**, or enter `:ops catalog`.
+2. Select an operation with the mouse, or use Up/Down and Enter.
+3. Select a field. Type a value and press Enter, or cycle its fixed choices.
+4. Select **Inspect / prepare**. The shared background worker collects evidence.
+5. Read the result and its warnings. Use **Edit inputs** or **Refresh** as needed.
+6. If the result offers **Review action**, select it and inspect the exact plan.
+7. Select **Confirm apply** only when the displayed scope and action are correct.
+
+Inspection never silently confirms a plan. Some explicit inspections create
+short, read-only Slurm steps to measure allocation placement or compute-host
+runtime. The operation guide identifies those probes. A generated environment
+bundle is written only after review; Tower does not execute its recreation
+script.
+
+Use `:ops FEATURE` to open a form directly. Use
+`:ops run FEATURE field=value` to inspect explicit inputs. Quote values that
+contain spaces. Examples:
+
+```text
+:ops storage
+:ops run storage path=/scratch/project min_free_gib=100
+:ops run pending-edit job_id=1234 field=TimeLimit value=02:00:00
+:ops run workflow-engine engine=nextflow source=/project/run/trace.tsv
+:ops run energy path=examples/scale-energy.json
+```
+
+Direct `run` commands inspect or prepare; they do not bypass action review.
+The `ops apply` command also requires a displayed current review. An old
+release's generic `--yes` flag is not a replacement for that review.
+
+### Keyboard, mouse, and report controls
+
+| Control | Result |
+| --- | --- |
+| Up / Down, Page Up / Page Down, Home / End | Select and scroll catalog entries, fields, or report lines |
+| Enter / Space | Open the selected operation, edit its field, cycle a choice, or activate the focused button |
+| Tab / Shift-Tab | Switch between content and action-button focus |
+| Left / Right | Move action-button focus |
+| Click a field or button | Activate that visible control |
+| Wheel or scrollbar | Scroll the visible operation pane |
+| `v`, then movement keys | Select a range of report or review lines |
+| Shift-click | Extend a line selection |
+| `y`, **Copy report**, or `:ops copy` | Copy selected lines, or the complete structured result when no lines are selected |
+| Right-click | Clear the report line selection |
+| `r`, **Refresh**, or `:ops inspect` | Repeat inspection of the current inputs |
+| **Edit inputs**, or `:ops form` | Return to the form without applying its plan |
+| **All tools**, or `:ops catalog` | Return to the operation catalog |
+| **Cancel inspection**, or `:ops cancel` | Request cancellation at the next bounded inspection checkpoint |
+| Esc / `q`, **Close**, or `:ops close` | Return to the prior view |
+
+While editing text, Left/Right, Home/End, Backspace, and Delete edit that field.
+The highlighted caret stays visible as you move through a long path. Paste
+inserts text at the caret. Use one line with no tabs or control characters;
+each paste can contain at most 4096 characters, and a field can contain at most
+8192 characters. An invalid or oversized paste leaves the field unchanged.
+Pasting never runs an operation. Enter accepts the edit; Esc discards it.
+Field choices cycle without opening an editor. The report display has an 8192-line limit. A notice identifies
+truncation. **Copy report** without a selection copies the complete structured
+evidence that the adapter retained, including its own source-limit warnings.
+Copying cannot recover records that an adapter omitted at its collection limit.
+
+### Controls in the relevant views
+
+The global catalog always includes every operation. Related views also have
+buttons that open the same forms. Research buttons also appear in Research
+views embedded in Jobs or History Details.
+
+| View | Related operations |
+| --- | --- |
+| Sources | Slurm doctor, cluster workspace, storage readiness |
+| Analytics | Bottlenecks, statistical comparison, energy |
+| Research Experiment | Acceptance, statistics, energy |
+| Research Arrays | Existing array concurrency, search, packing |
+| Research Evidence | Bottlenecks, placement, incidents |
+| Research Artifacts | Storage, staging, verified reuse |
+| Research Passport | Environment comparison and recreation bundle |
+| Research Submit | Pending-job edit, retained batch script, heterogeneous allocation |
+| Research Workflow | Dependency repair, native workflow observer, checkpoint restart, persistent monitor, Dask |
+| Research Forecast | Reservations and licenses |
+| Research Blockers | Slurm doctor, pending-job edit, licenses |
+| Research Scaling | Bottlenecks, placement, Dask |
+
+A job-ID field starts with the selected job when available. Check the field
+before inspection. A highlighted row is not sufficient evidence for changing
+a job; the adapter also rechecks the scheduler identity and required state.
+
+## All twenty-six operation keys
+
+The scope below describes the implemented adapters. A supplied manifest or
+export is required where shown. An operation name does not imply automatic
+support for every scheduler, application, profiler, or workflow format.
+
+| Proposal | Key | Available operation and boundary | Guide |
+| --- | --- | --- | --- |
+| P01 | `storage` | Free bytes/inodes and explicit user, group, or project quota evidence; no file walk | [Cluster](operations-cluster.md#storage-space-inodes-and-quotas--p01) |
+| P02 | `pending-edit` | Review one supported field on an unchanged pending job; re-read its result | [Cluster](operations-cluster.md#edit-one-pending-job-field--p02) |
+| P03 | `array-throttle` | Change a real existing array's concurrency; zero means unlimited | [Cluster](operations-cluster.md#change-live-array-concurrency--p03) |
+| P04 | `reservations` | Read available reservation windows, resources, and access restrictions | [Cluster](operations-cluster.md#reservation-timeline--p04) |
+| P05 | `licenses` | Read Slurm's license inventory; no claim about unreported vendor-server use | [Cluster](operations-cluster.md#license-inventory--p05) |
+| A05 | `slurm-doctor` | Read controller, accounting, partition, and selected configuration evidence | [Cluster](operations-cluster.md#slurm-service-doctor--a05) |
+| A20 | `batch-script` | Retrieve Slurm's retained script; optionally create a new local copy | [Cluster](operations-cluster.md#retrieve-a-retained-batch-script--a20) |
+| A19 | `allocation-shell` | Review a shell step or exact numeric-step attachment, then return to Tower | [Cluster](operations-cluster.md#allocation-shell-and-step-attachment--a19) |
+| A01 | `environment` | Compare pinned runtime evidence; write a hashed Python/optional Apptainer recreation bundle | [Science](operations-science.md) |
+| A02 | `placement` | Inspect existing allocation-process CPU, NUMA, and GPU visibility; no affinity changes | [Science](operations-science.md) |
+| A04 | `acceptance` | Check all required measurements against project-defined tolerances | [Science](operations-science.md) |
+| A07 | `statistics` | Independent-unit or exact-pair comparisons with Student t uncertainty | [Science](operations-science.md) |
+| A08 | `reuse` | Verify identity, dependencies, accepted science, and output hashes before copying to a new directory | [Science](operations-science.md) |
+| A15 | `dependency-repair` | Review exact pending dependency changes and report partial outcomes | [Science](operations-science.md) |
+| S01 | `checkpoint` | Verify a declared complete checkpoint and compatible recipe before an exact restart | [Campaigns](operations-campaigns.md#checkpoint-recovery) |
+| A06 | `search` | Bounded discrete parameter search with persistent trial identity and explicit launches | [Campaigns](operations-campaigns.md#adaptive-parameter-search) |
+| A09 | `packing` | Submit one resource-bounded allocation that runs declared tasks in exclusive steps | [Campaigns](operations-campaigns.md#short-task-packing) |
+| A10 | `dask` | Start, inspect, scale, or stop one owned optional dask-jobqueue controller | [Campaigns](operations-campaigns.md#elastic-dask-pool) |
+| A12 | `heterogeneous` | Compose distinct Slurm components and their coupled `srun` launch | [Campaigns](operations-campaigns.md#heterogeneous-allocation) |
+| S03 | `supervisor` | Reconnectable Linux read-only queue/accounting monitor; no automatic recovery | [Services](operations-services.md#persistent-monitor--s03) |
+| S04 | `staging` | Stream declared input/output files between visible mounts with checksum verification and receipts | [Services](operations-services.md#verified-staging-and-return--s04) |
+| A11 | `workflow-engine` | Observe Nextflow TSV or Snakemake DAG/runtime evidence; native engine owns execution | [Services](operations-services.md#native-workflow-observer--a11) |
+| S02 | `bottlenecks` | Inspect bounded rank/phase JSON or Darshan POSIX text; no automatic profiler attachment | [Scale](operations-scale.md#distributed-bottleneck-explorer) |
+| S05 | `clusters` | Concurrent, isolated multi-cluster snapshot with exact attempt identity | [Scale](operations-scale.md#concurrent-cluster-workspace) |
+| A17 | `incidents` | Correlate exact job nodes and time with permitted event evidence | [Scale](operations-scale.md#historical-incident-correlation) |
+| A18 | `energy` | Account for all declared attempts per accepted unit, with explicit attribution and coverage | [Scale](operations-scale.md#energy-per-useful-result) |
+
+## Review, background work, and recovery rules
+
+An action plan records its inputs, exact connection scope, evidence, digest,
+creation time, and relevant job attempt. Reviews expire after five minutes.
+Changing the connection, attempt, source, or action requires another inspection.
+The interface consumes a plan before starting its action. Repeated clicks
+cannot submit the same plan again. Adapter receipts provide additional durable
+protection for campaign launches and transfers.
+
+With normal state persistence, the common action layer writes
+`operations-receipts/<plan-digest>.intent.json` before execution and a matching
+`.result.json` when it collects the outcome. These files use
+`tower.operation-receipt/v1`. A durable intent prevents the same plan from
+being attempted again after a restart. An error record can describe a partial
+or unknown outcome; read the result and inspect current state before preparing
+another review. With `--no-state`, this common persistence is unavailable and
+Tower reports that limit. Adapter-specific requirements can still refuse an
+action that needs a durable state directory.
+
+Scheduler updates are not transactional. A dependency repair or campaign launch
+can partially succeed. Read every outcome. A command timeout or lost response
+can leave its result unknown; it does not prove that Slurm rejected the action.
+Inspect Slurm and the durable receipt before deciding how to continue. Tower
+does not blindly repeat uncertain submissions.
+
+Inspection uses the existing research worker lane and keeps I/O outside
+rendering and pointer handling. **Single** means one background worker with a
+separate responsive UI thread. **Multi** permits the existing worker scheduler
+to distribute work. Switching modes drains in-flight work under that scheduler;
+it does not abandon an operation result. The cluster workspace bounds its own
+source readers and joins them before the parent operation ends.
+
+Closing a read-only inspection requests cancellation. Closing a running action
+does not detach its result or erase its receipt. The result is collected without
+opening a different tab or replacing the selected job. A standalone monitor or
+Dask controller is a separate persistent process; use that operation's Stop
+action when it must end. Closing the terminal or switching worker modes does
+not stop those services.
+
+Source reads, command output, records, graph edges, and file sizes have adapter
+limits. Large collections report omissions or refuse oversized evidence. No
+operation recursively scans an undeclared project tree. A missing counter,
+unsupported command, absent permission, or stale observation remains distinct
+from a measured zero and a successful action.
+
+## Project contracts and optional dependencies
+
+Keep reusable input policies in `.tower/definitions/operations/`. Keep generated
+per-attempt evidence in `runs/<run_id>/reports/operations/`, and campaign evidence
+in `reports/operations/`. These are recommended locations, not automatic
+attachment rules. Enter explicit paths in operation forms. The existing
+`run.json`, `metrics.jsonl`, and `logs.json` contracts remain unchanged.
+
+Use the [project standard](../PROJECT_STANDARD.md#research-operation-contracts)
+for the file mapping, the [schema index](../schemas/README.md) for machine-readable
+contracts, and each group guide for examples and adapter-specific fields.
+Publish producer snapshots atomically, retain exact cluster/job/attempt identity,
+and provide scientific acceptance criteria rather than equating an exit code
+with correct science.
+
+| Capability | Additional requirement |
+| --- | --- |
+| Core operations and parsing | Standard-library Tower installation and the relevant readable files |
+| Slurm commands or mutations | Matching Slurm clients, account permissions, and supported site configuration |
+| Lustre quota | Optional `lfs`; generic quota uses the site's `quota` command |
+| Allocation/runtime probes | Compute-node Python 3 and permission for bounded `srun` steps |
+| Environment recreation | Compatible Python/venv and hash-locked packages; optional Apptainer for a declared container |
+| Dask pool | Optional `dask-jobqueue` on the controller, compatible workers, and site network/queue configuration |
+| Persistent monitor and Dask identity | Linux `/proc`; site-approved service hosting |
+| Native workflow observation | A supported Nextflow trace or Snakemake DAG/runtime export |
+| Darshan inspection | An exported `darshan-parser` POSIX text file; Tower does not parse native binary traces |
+
+Use a local Tower session on the target host for local file mutations,
+submission composers, and persistent-service controls. SSH-capable inspections
+read through their captured connection. A remote path never authorizes a
+silent local substitute. Recorded sessions cannot prepare or apply live changes.
+
+Read the [validation record](operations-validation.md). The automated suite
+covers parser errors, stale evidence, identity reuse, worker transitions,
+pointer routing, interrupted work, and sequential module interactions.
+Real site permissions, hardware, filesystem semantics, and optional engine
+installations require the target-system checks described in the group guides.
+
+## Activity, diagnostics, completions, and alerts
 
 [README](../../README.md) · [Controls](../CONTROLS.md) · [Feature index](../QUALITY_OF_LIFE.md)
 

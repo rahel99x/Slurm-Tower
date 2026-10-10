@@ -1,0 +1,11 @@
+{
+  "schema": "tower.parameter-search/v1",
+  "id": "example-search-01",
+  "script": "trial.sbatch",
+  "workdir": ".",
+  "budget": 5,
+  "max_parallel": 2,
+  "direction": "minimize",
+  "parameters": {"x": [0, 1, 2, 3, 4]},
+  "observations": []
+}

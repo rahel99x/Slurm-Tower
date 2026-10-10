@@ -71,7 +71,7 @@ def test_local_setup_checks_and_prints_selected_profile_without_running_slurm(tm
 def test_setup_covers_every_research_workspace():
     from tower.research import RESEARCH_VIEWS
     assert set(setup.RESEARCH_SMOKE_VIEWS) == {name for name, _ in RESEARCH_VIEWS}
-    assert len(setup.RESEARCH_SMOKE_VIEWS) == 12
+    assert len(setup.RESEARCH_SMOKE_VIEWS) == 13
 
 
 def test_setup_preserves_unrelated_paths(tmp_path):

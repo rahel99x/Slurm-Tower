@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tower environment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "tower.environment/v1"
+    },
+    "python": {
+      "type": "string",
+      "pattern": "^3\\.[0-9]{1,2}\\.[0-9]{1,3}$"
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "machine": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "packages": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 2048,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "lockfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ]
+    },
+    "native": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "libc",
+        "minimum_version"
+      ],
+      "properties": {
+        "libc": {
+          "enum": [
+            "glibc",
+            "musl"
+          ]
+        },
+        "minimum_version": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+){1,3}$"
+        }
+      }
+    },
+    "container": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reference"
+          ],
+          "properties": {
+            "kind": {
+              "const": "oci"
+            },
+            "reference": {
+              "type": "string",
+              "pattern": "^docker://[A-Za-z0-9][A-Za-z0-9._:/-]{1,500}@sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sif"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "python",
+    "platform",
+    "machine",
+    "packages",
+    "lockfile"
+  ]
+}

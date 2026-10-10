@@ -17,6 +17,30 @@ files or require a JSON Schema package.
 | [submission-plan.v1.schema.json](submission-plan.v1.schema.json) | `runs/<run_id>/reports/submit.json` | Intact native preflight shown as read-only Submit evidence |
 | [array-manifest.schema.json](array-manifest.schema.json) | `reports/arrays/<cluster>-<array_id>.json` | Explicit `arraymap` attachment; exact cluster, parent, and task-index matching |
 
+Release 4.15 adds explicit operation inputs. These documents do not change
+automatic run discovery and are not new `run.json` path keys. Select them in
+the relevant operation form. See [operation contracts](../PROJECT_STANDARD.md#research-operation-contracts).
+
+| Contract | Operation | Reference |
+| --- | --- | --- |
+| [science-environment.schema.json](science-environment.schema.json) | `environment` | Pinned Python/runtime and lockfile/image identity |
+| [science-acceptance.schema.json](science-acceptance.schema.json), [science-results.schema.json](science-results.schema.json) | `acceptance` | Required scientific tolerances and actual measurements |
+| [science-statistics.schema.json](science-statistics.schema.json) | `statistics` | Independent units or exact paired observations |
+| [science-identity.schema.json](science-identity.schema.json), [science-reuse.schema.json](science-reuse.schema.json) | `reuse` | Requested identity, declared dependencies, acceptance, and outputs |
+| [science-dependency-repair.schema.json](science-dependency-repair.schema.json) | `dependency-repair` | Exact pending dependency changes |
+| [staging.schema.json](staging.schema.json) | `staging` | Explicit source/destination, size, SHA-256, direction, and keep-source retention |
+| [workflow-engine.schema.json](workflow-engine.schema.json) | `workflow-engine` | Snakemake runtime snapshot; native DAG and Nextflow TSV are separate supported formats |
+| [profiler.schema.json](profiler.schema.json) | `bottlenecks` | Exact rank/phase measurements and attempt identity |
+| [cluster-workspace.schema.json](cluster-workspace.schema.json) | `clusters` | Explicit endpoints or profile references |
+| [incidents.schema.json](incidents.schema.json) | `incidents` | Node/time event evidence |
+| [energy.schema.json](energy.schema.json) | `energy` | Attempt energy, attribution, measurement coverage, and accepted work |
+
+Campaign recipe contracts and complete examples are in the
+[campaign guide](../guides/operations-campaigns.md). Native readers enforce
+cross-field semantics, uniqueness, graph cycles, stable file identity, and
+content hashes in addition to schema shape. A valid schema alone is not an
+action authorization or scientific validation result.
+
 `planning.v1.schema.json` also includes native workflow and scaling recipe
 definitions as `$defs.workflowRecipe` and `$defs.scalingRecipe`. Standalone
 recipes retain their native `{"version": 1, "kind": "tower.workflow"}` or

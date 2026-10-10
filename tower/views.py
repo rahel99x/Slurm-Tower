@@ -2501,7 +2501,10 @@ class Views:
         from .control_rows import buttons
         prefix, prefix_hits = buttons(self.g, width,
             [("telemetry", "Metric sampling", ("command", "telemetry")),
-             ("gpu-provider", "GPU source", ("command", "gpuprovider"))],
+             ("gpu-provider", "GPU source", ("command", "gpuprovider")),
+             ("doctor", "Slurm doctor", ("command", "ops slurm-doctor")),
+             ("clusters", "Cluster workspace", ("command", "ops clusters")),
+             ("storage", "Storage readiness", ("command", "ops storage"))],
             group="source-tools", prefix="source-tools:")
         if height is not None and height < len(prefix) + 3:
             # Keep the selected source visible in a short pane. These tools
@@ -2570,6 +2573,14 @@ class Views:
             group="analytics-tools", prefix="analytics-tools:")
         hits += [(y + len(out), kind, data) for y, kind, data in control_hits]
         out += controls
+        if not getattr(app, "analytics_document_mode", False):
+            # The Jobs Details adapter discards this navigation prefix. Keep
+            # standalone controls without rebuilding invisible buttons for
+            # every live graph frame in an inline document.
+            from . import ops_ui
+            controls, control_hits = ops_ui.contextual_controls(g, width, ("bottlenecks", "statistics", "energy"))
+            hits += [(y + len(out), kind, data) for y, kind, data in control_hits]
+            out += controls
         app.analytics_nav_rows = len(out)
         out.append([(f" window {days:g} day{'s' if days != 1 else ''}", "dim")])
         avail = None if height is None else max(0, height - len(out))

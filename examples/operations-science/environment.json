@@ -1,0 +1,13 @@
+{
+  "schema": "tower.environment/v1",
+  "python": "3.11.8",
+  "platform": "Linux",
+  "machine": "x86_64",
+  "packages": {
+    "typing-extensions": "4.12.2"
+  },
+  "lockfile": {
+    "path": "requirements.lock",
+    "sha256": "6138c7ed534772d9b246f5c8417e3484bcfddc24e2980cf38efdb71a2e682941"
+  }
+}

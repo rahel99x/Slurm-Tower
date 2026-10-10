@@ -5,12 +5,13 @@ import importlib
 from functools import lru_cache
 
 INSPECTION_MODES = {"telemetry": "telemetry_ui", "shell_checks": "shell_checks_ui",
-                    "arraymap": "array_manifest_ui", "gpu_provider": "gpu_provider_ui"}
+                    "arraymap": "array_manifest_ui", "gpu_provider": "gpu_provider_ui",
+                    "operations": "ops_ui"}
 
 FEATURES = ("startup", "job_group_menu", "job_group_drag", "history_log_export", "refresh_rate", "worker_ui", "toolbar", "scrollbars", "pane_drag", "metric_live", "chart_interaction", "history_browser", "job_selection", "interaction", "scrolling", "recent_history", "job_panels", "analytics_document", "workspace_layout", "navigation_ui", "command_ui", "navigation_tools",
             "table_ui", "table_tools", "activity_ui", "session_tools", "project_ui",
             "log_workbench", "log_tools", "analysis_ui", "execution_ui", "job_progress",
-            "telemetry_ui", "shell_checks_ui", "array_manifest_ui", "gpu_provider_ui")
+            "telemetry_ui", "shell_checks_ui", "array_manifest_ui", "gpu_provider_ui", "ops_ui")
 
 
 @lru_cache(maxsize=1)

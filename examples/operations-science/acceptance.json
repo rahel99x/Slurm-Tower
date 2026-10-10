@@ -1,0 +1,15 @@
+{
+  "schema": "tower.acceptance/v1",
+  "cases": [
+    {
+      "id": "sum-three",
+      "expected": {
+        "sum": {
+          "value": 6,
+          "absolute": 0,
+          "relative": 0
+        }
+      }
+    }
+  ]
+}
